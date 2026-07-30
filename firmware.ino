@@ -676,10 +676,27 @@ bool isMotion(uint8_t s) {
 
 void waitForIMUData() {
   if (!bleConnected) {
-    // No BLE central — safe to sleep between INT pulses
+    // No BLE central — safe to sleep between INT pulses.
+    //
+    // The BNO INT line is LEVEL-meaningful (LOW = data waiting), but our ISR
+    // is edge-triggered (FALLING). If a new report becomes ready while INT is
+    // already asserted — e.g. it arrives during/just after the caller's
+    // getSensorEvent() drain, before the line has risen — no fresh falling
+    // edge is produced, imuDataReady is never set, and __WFE() would sleep
+    // straight through the pending data. The BNO then retries (its ~10ms INT
+    // timeout) and, after being ignored long enough, its internal watchdog
+    // reboots the part (~6.6s) — the periodic reset that spikes idle current.
+    //
+    // Guard against the missed edge by checking the pin level directly: never
+    // sleep while INT is already LOW, and treat a LOW level as a wake even if
+    // the edge ISR didn't fire.
+    if (digitalRead(BNO_INT_PIN) == LOW) {
+      imuDataReady = false;
+      return;                       // data already pending — go read it now
+    }
     __SEV();
     __WFE();
-    while (!imuDataReady) {
+    while (!imuDataReady && digitalRead(BNO_INT_PIN) == HIGH) {
       __WFE();
     }
     imuDataReady = false;
@@ -876,7 +893,11 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    Serial.println("IMU reset detected in idle");
+    // Reset reason (from the BNO's reset message): 1=POR/brownout,
+    // 2=internal, 3=watchdog, 4=external, 5=other. A recurring ~6.6s reset
+    // reporting reason 3 confirms the internal-watchdog / missed-INT theory;
+    // reason 1 points at power/decoupling instead.
+    LOGF("IMU reset detected in IDLE — reason: %u", (unsigned)imu.getResetReason());
 
     bnoInRunningMode = false;
     imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
@@ -918,7 +939,7 @@ void handleIdle() {
 
 void handleStaticPosture() {
   if (imu.wasReset()) {
-    LOG("IMU: reset detected in STATIC_POSTURE — reconfiguring");
+    LOGF("IMU: reset in STATIC_POSTURE — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
     bnoInRunningMode = false;
     configureBNO_Running();
     lastStabilityEvent = millis();
@@ -990,7 +1011,7 @@ void handleStaticPosture() {
 
 void handleActiveRecording() {
   if (imu.wasReset()) {
-    LOG("IMU: reset detected in ACTIVE_RECORDING — reconfiguring");
+    LOGF("IMU: reset in ACTIVE_RECORDING — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
     bnoInRunningMode = false;
     configureBNO_Running();
     lastStabilityEvent = millis();
