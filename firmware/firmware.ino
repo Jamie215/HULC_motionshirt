@@ -134,6 +134,15 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
+// IDLE now runs the Stability *Classifier* (0x13) instead of the Stability
+// *Detector* (0x1C). Bench testing proved that enabling 0x1C is what makes
+// this BNO086 self-reset every ~6.9s (the reset inrush was the idle current
+// spike). 0x13 — already used in the running states with no resets — is
+// stable and reports the same motion classes. This is the idle classifier
+// report interval: raise it to cut wake frequency, lower it for faster
+// motion-onset detection.
+#define IDLE_STABILITY_MS           1000
+
 
 // =============================================================================
 // SECTION 5 — Timeouts (ms)
@@ -676,10 +685,27 @@ bool isMotion(uint8_t s) {
 
 void waitForIMUData() {
   if (!bleConnected) {
-    // No BLE central — safe to sleep between INT pulses
+    // No BLE central — safe to sleep between INT pulses.
+    //
+    // The BNO INT line is LEVEL-meaningful (LOW = data waiting), but our ISR
+    // is edge-triggered (FALLING). If a new report becomes ready while INT is
+    // already asserted — e.g. it arrives during/just after the caller's
+    // getSensorEvent() drain, before the line has risen — no fresh falling
+    // edge is produced, imuDataReady is never set, and __WFE() would sleep
+    // straight through the pending data. The BNO then retries (its ~10ms INT
+    // timeout) and, after being ignored long enough, its internal watchdog
+    // reboots the part (~6.6s) — the periodic reset that spikes idle current.
+    //
+    // Guard against the missed edge by checking the pin level directly: never
+    // sleep while INT is already LOW, and treat a LOW level as a wake even if
+    // the edge ISR didn't fire.
+    if (digitalRead(BNO_INT_PIN) == LOW) {
+      imuDataReady = false;
+      return;                       // data already pending — go read it now
+    }
     __SEV();
     __WFE();
-    while (!imuDataReady) {
+    while (!imuDataReady && digitalRead(BNO_INT_PIN) == HIGH) {
       __WFE();
     }
     imuDataReady = false;
@@ -706,17 +732,25 @@ void waitForIMUData() {
 // SECTION 15 — BNO086 Mode Switching
 // =============================================================================
 
+// Enables the report that drives IDLE. Kept in one place so
+// configureBNO_Idle() and handleIdle()'s reset-recovery path stay in sync.
+// See IDLE_STABILITY_MS above for why this is the Stability Classifier (0x13)
+// and not the Stability Detector (0x1C).
+void enableIdleReports() {
+  imu.enableStabilityClassifier(IDLE_STABILITY_MS);
+}
+
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (Detector only)");
+  LOGF("BNO: soft reset → IDLE mode (Stability Classifier @ %dms)", IDLE_STABILITY_MS);
   imu.softReset();
   delay(150);
 
-  imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
+  enableIdleReports();
   bnoInRunningMode = false;
 
   imu.wasReset();
 
-  LOGF("BNO: Stability Detector (0x1C) enabled");
+  LOGF("BNO: IDLE Stability Classifier (0x13) enabled");
 }
 
 void configureBNO_Running() {
@@ -876,10 +910,14 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    Serial.println("IMU reset detected in idle");
+    // NOTE: getResetReason() returns prodIds.entry[0].resetCause, which the
+    // SparkFun library captures ONCE at begin() and does not refresh on later
+    // resets — so this prints the *boot* cause, not this reset's. Treat it as
+    // a weak hint only; the IDLE_WAKE_SOURCE A/B test is the real probe.
+    LOGF("IMU reset detected in IDLE — boot-cached reason: %u", (unsigned)imu.getResetReason());
 
     bnoInRunningMode = false;
-    imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
+    enableIdleReports();
 
     delay(50);
     while (imu.getSensorEvent()) {}
@@ -892,14 +930,15 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
-    if (id == SH2_STABILITY_DETECTOR) {
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
 
-      uint8_t val = imu.getStabilityClassifier();
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
 
-      if (val == DETECTOR_EXITED) {
-        LOGF("DETECTOR: EXITED — patient moving → ACTIVE_RECORDING");
+      if (isMotion(s)) {
+        LOGF("STABILITY: MOTION — patient moving → ACTIVE_RECORDING");
         activeHz         = DEFAULT_ACTIVE_HZ;
         lastMotionTime   = millis();
         onTableStartTime = 0;
@@ -918,7 +957,7 @@ void handleIdle() {
 
 void handleStaticPosture() {
   if (imu.wasReset()) {
-    LOG("IMU: reset detected in STATIC_POSTURE — reconfiguring");
+    LOGF("IMU: reset in STATIC_POSTURE — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
     bnoInRunningMode = false;
     configureBNO_Running();
     lastStabilityEvent = millis();
@@ -990,7 +1029,7 @@ void handleStaticPosture() {
 
 void handleActiveRecording() {
   if (imu.wasReset()) {
-    LOG("IMU: reset detected in ACTIVE_RECORDING — reconfiguring");
+    LOGF("IMU: reset in ACTIVE_RECORDING — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
     bnoInRunningMode = false;
     configureBNO_Running();
     lastStabilityEvent = millis();
