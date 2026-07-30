@@ -134,22 +134,14 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
-// ── IDLE wake-source diagnostic / config ──────────────────────────────────
-// The BNO086 self-resets on a fixed ~6.9s cadence while IDLE (confirmed to be
-// independent of host INT handling). This selects what report is enabled in
-// IDLE so the cause can be isolated on the bench:
-//   0 = Stability Detector 0x1C only     (normal behavior)
-//   1 = No reports enabled               (if the ~6.9s resets PERSIST → the
-//                                          cause is hardware/power; if they
-//                                          STOP → the 0x1C config triggers it)
-//   2 = Continuous low-rate RV keep-alive (tests whether a steady report
-//                                          stream prevents the self-reset —
-//                                          a candidate fix, trading a little
-//                                          idle current for no reset spikes)
-// Arms 1 and 2 are diagnostic only — IDLE will NOT wake to ACTIVE_RECORDING
-// in those modes (no detector events). Return to 0 for normal operation.
-#define IDLE_WAKE_SOURCE            0
-#define IDLE_KEEPALIVE_RV_MS        500   // used when IDLE_WAKE_SOURCE == 2
+// IDLE now runs the Stability *Classifier* (0x13) instead of the Stability
+// *Detector* (0x1C). Bench testing proved that enabling 0x1C is what makes
+// this BNO086 self-reset every ~6.9s (the reset inrush was the idle current
+// spike). 0x13 — already used in the running states with no resets — is
+// stable and reports the same motion classes. This is the idle classifier
+// report interval: raise it to cut wake frequency, lower it for faster
+// motion-onset detection.
+#define IDLE_STABILITY_MS           1000
 
 
 // =============================================================================
@@ -740,22 +732,16 @@ void waitForIMUData() {
 // SECTION 15 — BNO086 Mode Switching
 // =============================================================================
 
-// Enables whatever report drives IDLE, per IDLE_WAKE_SOURCE. Kept in one
-// place so configureBNO_Idle() and the in-handler reset-recovery path in
-// handleIdle() stay in sync.
+// Enables the report that drives IDLE. Kept in one place so
+// configureBNO_Idle() and handleIdle()'s reset-recovery path stay in sync.
+// See IDLE_STABILITY_MS above for why this is the Stability Classifier (0x13)
+// and not the Stability Detector (0x1C).
 void enableIdleReports() {
-#if   IDLE_WAKE_SOURCE == 0
-  imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
-#elif IDLE_WAKE_SOURCE == 1
-  LOGF("BNO: DIAG — no idle reports enabled");
-#elif IDLE_WAKE_SOURCE == 2
-  imu.enableRotationVector(IDLE_KEEPALIVE_RV_MS);
-  LOGF("BNO: DIAG — RV keep-alive @ %dms", IDLE_KEEPALIVE_RV_MS);
-#endif
+  imu.enableStabilityClassifier(IDLE_STABILITY_MS);
 }
 
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (wake source %d)", IDLE_WAKE_SOURCE);
+  LOGF("BNO: soft reset → IDLE mode (Stability Classifier @ %dms)", IDLE_STABILITY_MS);
   imu.softReset();
   delay(150);
 
@@ -764,7 +750,7 @@ void configureBNO_Idle() {
 
   imu.wasReset();
 
-  LOGF("BNO: IDLE reports configured");
+  LOGF("BNO: IDLE Stability Classifier (0x13) enabled");
 }
 
 void configureBNO_Running() {
@@ -944,14 +930,15 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
-    if (id == SH2_STABILITY_DETECTOR) {
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
 
-      uint8_t val = imu.getStabilityClassifier();
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
 
-      if (val == DETECTOR_EXITED) {
-        LOGF("DETECTOR: EXITED — patient moving → ACTIVE_RECORDING");
+      if (isMotion(s)) {
+        LOGF("STABILITY: MOTION — patient moving → ACTIVE_RECORDING");
         activeHz         = DEFAULT_ACTIVE_HZ;
         lastMotionTime   = millis();
         onTableStartTime = 0;
