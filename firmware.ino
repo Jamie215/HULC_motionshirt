@@ -134,6 +134,23 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
+// ── IDLE wake-source diagnostic / config ──────────────────────────────────
+// The BNO086 self-resets on a fixed ~6.9s cadence while IDLE (confirmed to be
+// independent of host INT handling). This selects what report is enabled in
+// IDLE so the cause can be isolated on the bench:
+//   0 = Stability Detector 0x1C only     (normal behavior)
+//   1 = No reports enabled               (if the ~6.9s resets PERSIST → the
+//                                          cause is hardware/power; if they
+//                                          STOP → the 0x1C config triggers it)
+//   2 = Continuous low-rate RV keep-alive (tests whether a steady report
+//                                          stream prevents the self-reset —
+//                                          a candidate fix, trading a little
+//                                          idle current for no reset spikes)
+// Arms 1 and 2 are diagnostic only — IDLE will NOT wake to ACTIVE_RECORDING
+// in those modes (no detector events). Return to 0 for normal operation.
+#define IDLE_WAKE_SOURCE            0
+#define IDLE_KEEPALIVE_RV_MS        500   // used when IDLE_WAKE_SOURCE == 2
+
 
 // =============================================================================
 // SECTION 5 — Timeouts (ms)
@@ -723,17 +740,31 @@ void waitForIMUData() {
 // SECTION 15 — BNO086 Mode Switching
 // =============================================================================
 
+// Enables whatever report drives IDLE, per IDLE_WAKE_SOURCE. Kept in one
+// place so configureBNO_Idle() and the in-handler reset-recovery path in
+// handleIdle() stay in sync.
+void enableIdleReports() {
+#if   IDLE_WAKE_SOURCE == 0
+  imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
+#elif IDLE_WAKE_SOURCE == 1
+  LOGF("BNO: DIAG — no idle reports enabled");
+#elif IDLE_WAKE_SOURCE == 2
+  imu.enableRotationVector(IDLE_KEEPALIVE_RV_MS);
+  LOGF("BNO: DIAG — RV keep-alive @ %dms", IDLE_KEEPALIVE_RV_MS);
+#endif
+}
+
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (Detector only)");
+  LOGF("BNO: soft reset → IDLE mode (wake source %d)", IDLE_WAKE_SOURCE);
   imu.softReset();
   delay(150);
 
-  imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
+  enableIdleReports();
   bnoInRunningMode = false;
 
   imu.wasReset();
 
-  LOGF("BNO: Stability Detector (0x1C) enabled");
+  LOGF("BNO: IDLE reports configured");
 }
 
 void configureBNO_Running() {
@@ -893,14 +924,14 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    // Reset reason (from the BNO's reset message): 1=POR/brownout,
-    // 2=internal, 3=watchdog, 4=external, 5=other. A recurring ~6.6s reset
-    // reporting reason 3 confirms the internal-watchdog / missed-INT theory;
-    // reason 1 points at power/decoupling instead.
-    LOGF("IMU reset detected in IDLE — reason: %u", (unsigned)imu.getResetReason());
+    // NOTE: getResetReason() returns prodIds.entry[0].resetCause, which the
+    // SparkFun library captures ONCE at begin() and does not refresh on later
+    // resets — so this prints the *boot* cause, not this reset's. Treat it as
+    // a weak hint only; the IDLE_WAKE_SOURCE A/B test is the real probe.
+    LOGF("IMU reset detected in IDLE — boot-cached reason: %u", (unsigned)imu.getResetReason());
 
     bnoInRunningMode = false;
-    imu.enableReport(SH2_STABILITY_DETECTOR, DETECTOR_INTERVAL_MS);
+    enableIdleReports();
 
     delay(50);
     while (imu.getSensorEvent()) {}
