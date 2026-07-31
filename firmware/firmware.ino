@@ -66,9 +66,9 @@
 //   [16–19] float   quat_z  (k)
 //
 // States (unchanged from Phase 3):
-//   IDLE             — Significant Motion (0x12) wake only. One-shot low-power
-//                      detector; BNO silent until real motion. Optionally also
-//                      sleeps the hub (sh2_devSleep) — see IDLE_USE_DEVSLEEP.
+//   IDLE             — Stability Detector (0x1C) wake + hub devSleep (~7mA).
+//                      Reboots ~6.6s while asleep (inherent) — see Section 3
+//                      and IDLE_USE_DEVSLEEP.
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
@@ -125,70 +125,37 @@
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
 
-// Significant Motion (0x12) — the IDLE wake source.
-//
-// This is CEVA's implementation of the Android SIGNIFICANT_MOTION sensor: a
-// one-shot, low-power, self-disarming wake detector. When armed it runs only a
-// low-rate accelerometer + a lightweight motion algorithm (no gyro, no fusion),
-// emits a SINGLE report when significant motion is detected, then disables
-// itself — so IDLE stays completely silent (no periodic reports, no periodic
-// INT edges) until the patient actually moves. We re-arm it on every IDLE entry.
-//
-// WHY THIS OVER THE CLASSIFIER (0x13) IN IDLE:
-//   The classifier emits a report every IDLE_STABILITY_MS (~1s), i.e. periodic
-//   INT traffic even at rest. SigMotion is silent until motion, which both
-//   (a) removes the periodic-idle-reporting behavior that the ~6.9s self-reset
-//   fed on (see waitForIMUData notes), and (b) should draw less than the
-//   continuously-classifying 0x13.
-//
-// MEASURE BEFORE YOU TRUST THE POWER CLAIM:
-//   0x13 (measured ~7mA) is ALSO accelerometer-based, so the SigMotion win may
-//   be a couple mA (continuous-classify+report vs armed-but-silent), not the
-//   large drop the "sleep" framing implies. Confirm the real IDLE delta with a
-//   bench ammeter — the datasheet number is not a substitute. Note too that the
-//   bulk of system idle current is the nRF52840 (BLE advertising + always-on
-//   QSPI + System-ON sleep), which this change does not touch.
+// Significant Motion (0x12) — NO LONGER the IDLE wake source (kept for
+// reference / easy re-test). Bench result: under devSleep, 0x12 self-rebooted
+// every ~1.17s regardless of report interval, and dropping alwaysOn only made
+// it collapse to a ~2ms hold with no motion wake. The Stability Detector holds
+// devSleep ~6x longer (~6.6s) and is the proven 7mA / wakes-on-motion config,
+// so IDLE now arms the DETECTOR (0x1C, defined above) instead.
 #ifndef SH2_SIGNIFICANT_MOTION
 #define SH2_SIGNIFICANT_MOTION 0x12
 #endif
 
-// ── Optional deep sleep (Option B — EXPERIMENTAL) ──────────────────────────
-// Set to 1 to ALSO put the BNO's sensor hub into executable-channel sleep
-// (sh2_devSleep) while idle, on top of arming Significant Motion. To survive
-// that sleep AND still wake the host, SigMotion must be armed with BOTH:
-//   • alwaysOnEnabled = true  — "Sensor remains on in sleep state" (keeps the
-//                               detector running while the hub is asleep)
-//   • wakeupEnabled   = true  — "Wake host on event" (report goes on the wake
-//                               channel and pulls INT to wake the nRF)
-// SparkFun's enableReport() hardcodes both false, so the devsleep path arms
-// 0x12 via sh2_setSensorConfig() directly (see enableIdleReports()). On the
-// wake event we call modeOn() before reconfiguring the running-mode reports.
-//
-// DEADLOCK RISK — READ BEFORE TRUSTING: whether the part actually keeps a
-// wake/always-on sensor alive across sh2_devSleep is board- and
-// firmware-dependent and NOT something the datasheet nails down. If it does
-// not, the BNO never pulls INT, the nRF __WFE's forever, and IDLE becomes a
-// one-way trap that only a reset clears. That's why this is a flag: 0 = proven
-// Option A (SigMotion only, host System-ON sleep); 1 = bench-test the deep
-// path and confirm the board wakes on real motion. If it doesn't wake, set
-// back to 0.
+// ── BNO hub deep sleep (sh2_devSleep) ──────────────────────────────────────
+// devSleep is REQUIRED for low power: without it the hub stays awake at ~22mA
+// no matter which sensor is armed; with it the system drops to ~7mA. The cost
+// is a periodic self-reboot while asleep (the BNO will not hold host-commanded
+// devSleep with a wake sensor armed — it reboots on a config-dependent
+// timeout). The armed sensor sets that timeout: Stability Detector ~6.6s,
+// SigMotion ~1.17s. This reboot is INHERENT, not a bug we can code away; each
+// one is a brief re-arm (no data is logged in IDLE), and it is already priced
+// into the ~7mA average. Set to 0 only to fall back to the 22mA no-sleep path.
 #define IDLE_USE_DEVSLEEP  1
 
-// Wake-sensor config flags for the devSleep path (tunable for bench isolation).
-// The report INTERVAL was ruled out as the reset driver — 10ms and 1000ms both
-// reboot ~1s, and between reboots the host services ZERO reports, so the BNO is
-// self-rebooting on an internal timeout, not missing an INT. The remaining
-// suspects for the 1.17s (SigMotion, both flags on) vs 6.6s (detector, likely
-// flags off) reboot timeout are these two flags. Sweep the four combos:
-//   ALWAYSON=1, WAKEUP=1  — original both-on run: reboots ~1.17s
-//   ALWAYSON=0, WAKEUP=1  — DEFAULT below (next test): does dropping "remains on
-//                           in sleep" lengthen/stop the reboot? THEN verify real
-//                           motion still wakes it — if it no longer wakes, always-on
-//                           was both keeping the detector alive in sleep AND
-//                           driving the reboots (the fundamental tradeoff).
-//   ALWAYSON=1, WAKEUP=0  /  0,0  — further isolation if needed.
+// Wake-sensor config flags for the devSleep path. Bench-established:
+//   • alwaysOnEnabled MUST be 1 — "Sensor remains on in sleep state". With it 0
+//     the hub collapses out of devSleep in ~2ms AND never wakes on motion, so
+//     it is load-bearing, not the reboot cause (my earlier guess was backwards).
+//   • wakeupEnabled = 1 — "Wake host on event": the detector's EXITED report is
+//     delivered on the wake channel and pulls INT to wake the nRF.
+// SparkFun's enableReport() hardcodes both false, so the devsleep path arms the
+// sensor via sh2_setSensorConfig() directly (see enableIdleReports()).
 #define IDLE_WAKE_WAKEUP_EN    1
-#define IDLE_WAKE_ALWAYSON_EN  0
+#define IDLE_WAKE_ALWAYSON_EN  1
 
 
 // =============================================================================
@@ -201,28 +168,14 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
-// IDLE arms Significant Motion (0x12) as the sole wake source (see Section 3).
-// This interval is how often the hub ROUSES to evaluate the accel — under
-// devSleep it directly drives the periodic-reset cadence: a fast interval keeps
-// waking the sleeping hub and trips its SHTP watchdog often; a slow interval
-// lets it sleep undisturbed between checks.
-//
-//   Old default here was 10ms (100Hz) — ~6500x FASTER than the classifier's
-//   ~65s (the classifier is capped at uint16 ms). That over-fast interval is
-//   the leading suspect for SigMotion+devSleep resetting every ~1s vs the
-//   detector's ~6.6s at a 1s interval.
-//
-// SWEEP THIS to kill the resets. enableReport()/sh2_setSensorConfig take a
-// uint32 in MICROSECONDS, so the ceiling is ~4.29e9 us ≈ 71 min — far more
-// headroom than the classifier ever had. Ladder to try, watching the reset
-// cadence AND that real motion still wakes fast:
-//   1s (1000000, below — matches the detector baseline for a clean A/B)
-//   → 10s (10000000) → 60s (60000000) → longer
-// Push it as long as motion-onset latency stays acceptable. Open question the
-// bench answers: does 0x12 still fire the INSTANT motion happens at a long
-// interval (true event interrupt — long interval is free), or only once per
-// interval (poll — long interval = slow to notice motion)?
-#define IDLE_SIGMOTION_INTERVAL_US  1000000UL   // 1s — sweep upward (see above)
+// IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
+// This is the reverted config: SigMotion (0x12) under devSleep self-rebooted
+// every ~1.17s and never confirmed a motion wake, while the detector holds
+// devSleep ~6.6s and is the proven 7mA / wakes-on-motion config. The report
+// interval was ruled out as the reboot driver (10ms vs 1000ms were identical),
+// so this value is not critical — it's just the detector's evaluation cadence.
+// enableReport()/sh2_setSensorConfig take a uint32 in MICROSECONDS.
+#define IDLE_DETECTOR_INTERVAL_US   (DETECTOR_INTERVAL_MS * 1000UL)   // 1s
 
 // Retained: previously the IDLE Stability Classifier report interval. No
 // longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
@@ -824,11 +777,11 @@ void waitForIMUData() {
 
 // Enables the report that drives IDLE. Kept in one place so configureBNO_Idle()
 // and handleIdle()'s reset-recovery path stay in sync; re-armed on every IDLE
-// entry since SigMotion auto-disarms after firing. See Section 3 for why IDLE
-// uses Significant Motion (0x12) and what IDLE_USE_DEVSLEEP changes.
+// entry. See Section 3 for why IDLE arms the Stability Detector (0x1C) and what
+// IDLE_USE_DEVSLEEP changes.
 void enableIdleReports() {
 #if IDLE_USE_DEVSLEEP
-  // Deep-sleep path: arm 0x12 as a WAKE + ALWAYS-ON sensor so it keeps running
+  // Deep-sleep path: arm 0x1C as a WAKE + ALWAYS-ON sensor so it keeps running
   // while the hub is in devSleep and can pull INT to wake the host. SparkFun's
   // enableReport() forces both flags false, so configure the sh2 layer directly
   // (sh2_setSensorConfig / sh2_SensorConfig_t come from sh2.h, included by the
@@ -836,20 +789,20 @@ void enableIdleReports() {
   sh2_SensorConfig_t cfg = {};          // value-init: all fields zero/false
   cfg.wakeupEnabled     = IDLE_WAKE_WAKEUP_EN;    // "Wake host on event"
   cfg.alwaysOnEnabled   = IDLE_WAKE_ALWAYSON_EN;  // "Sensor remains on in sleep state"
-  cfg.reportInterval_us = IDLE_SIGMOTION_INTERVAL_US;
-  int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_SIGNIFICANT_MOTION, &cfg);
+  cfg.reportInterval_us = IDLE_DETECTOR_INTERVAL_US;
+  int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_STABILITY_DETECTOR, &cfg);
   if (rc != SH2_OK) {
-    LOGF("BNO: sh2_setSensorConfig(0x12) FAILED rc=%d — using enableReport()", rc);
-    imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_SIGMOTION_INTERVAL_US);
+    LOGF("BNO: sh2_setSensorConfig(0x1C) FAILED rc=%d — using enableReport()", rc);
+    imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
   }
 #else
   // Option A: host stays in System-ON (__WFE) sleep reading INT; hub not slept.
-  imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_SIGMOTION_INTERVAL_US);
+  imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
 #endif
 }
 
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (Significant Motion 0x12 wake)");
+  LOGF("BNO: soft reset → IDLE mode (Stability Detector 0x1C wake)");
   imu.softReset();
   delay(150);
 
@@ -864,14 +817,14 @@ void configureBNO_Idle() {
   delay(20);
   if (imu.modeSleep()) {
     lastDevSleepMs = millis();
-    LOGF("BNO: devSleep engaged (wakeup=%d alwaysOn=%d) — hub asleep, 0x12 armed",
+    LOGF("BNO: devSleep engaged (wakeup=%d alwaysOn=%d) — hub asleep, 0x1C armed",
          IDLE_WAKE_WAKEUP_EN, IDLE_WAKE_ALWAYSON_EN);
   } else {
-    LOGF("BNO: modeSleep() FAILED — SigMotion running without devSleep");
+    LOGF("BNO: modeSleep() FAILED — detector running without devSleep");
   }
 #endif
 
-  LOGF("BNO: IDLE Significant Motion (0x12) armed — silent until motion");
+  LOGF("BNO: IDLE Stability Detector (0x1C) armed as wake source");
 }
 
 void configureBNO_Running() {
@@ -1056,7 +1009,7 @@ void handleIdle() {
 
 #if IDLE_USE_DEVSLEEP
     // Reboot leaves the hub awake — re-enter devSleep so a rare idle reset
-    // doesn't silently fall back to the higher-power (awake) SigMotion path.
+    // doesn't silently fall back to the higher-power (awake) detector path.
     delay(20);
     if (imu.modeSleep()) lastDevSleepMs = millis();
 #endif
@@ -1067,30 +1020,33 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
-    // IDLE is silent by design (SigMotion doesn't stream), so ANY event here is
-    // notable. Print the raw report ID to confirm on-bench that SparkFun's
-    // getSensorEvent() surfaces 0x12 via getSensorEventID() — the library has
-    // no named parser for Significant Motion, so this is the verification hook.
+    // IDLE is near-silent (only the periodic devSleep reboot + the detector's
+    // EXITED event), so log every raw report ID for on-bench visibility.
     LOGF("IDLE: BNO event id=0x%02X", id);
 
-    if (id == SH2_SIGNIFICANT_MOTION) {
-      // The event itself is the signal — no payload needed. SigMotion has now
-      // auto-disarmed; configureBNO_Running() takes over on the transition.
-      LOGF("SIGMOTION: significant motion detected → ACTIVE_RECORDING");
-#if IDLE_USE_DEVSLEEP
-      // Hub was in devSleep — wake it before applyPendingTransition() runs
-      // configureBNO_Running() (which issues enableRotationVector, etc.).
-      imu.modeOn();
-      delay(20);
-#endif
+    if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
-      activeHz           = DEFAULT_ACTIVE_HZ;
-      lastMotionTime     = millis();
-      onTableStartTime   = 0;
-      lastActiveSample   = 0;
-      requestTransition(STATE_ACTIVE_RECORDING);
-      return;
+
+      // Detector reports enter/exit stability; the SparkFun lib exposes the
+      // value through getStabilityClassifier(). EXITED = stability broken =
+      // motion started → wake into ACTIVE_RECORDING. (ENTERED is ignored.)
+      uint8_t val = imu.getStabilityClassifier();
+      if (val == DETECTOR_EXITED) {
+        LOGF("DETECTOR: EXITED — patient moving → ACTIVE_RECORDING");
+#if IDLE_USE_DEVSLEEP
+        // Hub was in devSleep — wake it before applyPendingTransition() runs
+        // configureBNO_Running() (which issues enableRotationVector, etc.).
+        imu.modeOn();
+        delay(20);
+#endif
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
     }
   }
 }
