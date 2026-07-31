@@ -66,7 +66,8 @@
 //   [16–19] float   quat_z  (k)
 //
 // States (unchanged from Phase 3):
-//   IDLE             — Stability Detector only, ~7.4mA
+//   IDLE             — Significant Motion (0x12) wake only. One-shot low-power
+//                      detector; BNO is silent until real motion. See Section 3.
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
@@ -123,6 +124,33 @@
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
 
+// Significant Motion (0x12) — the IDLE wake source.
+//
+// This is CEVA's implementation of the Android SIGNIFICANT_MOTION sensor: a
+// one-shot, low-power, self-disarming wake detector. When armed it runs only a
+// low-rate accelerometer + a lightweight motion algorithm (no gyro, no fusion),
+// emits a SINGLE report when significant motion is detected, then disables
+// itself — so IDLE stays completely silent (no periodic reports, no periodic
+// INT edges) until the patient actually moves. We re-arm it on every IDLE entry.
+//
+// WHY THIS OVER THE CLASSIFIER (0x13) IN IDLE:
+//   The classifier emits a report every IDLE_STABILITY_MS (~1s), i.e. periodic
+//   INT traffic even at rest. SigMotion is silent until motion, which both
+//   (a) removes the periodic-idle-reporting behavior that the ~6.9s self-reset
+//   fed on (see waitForIMUData notes), and (b) should draw less than the
+//   continuously-classifying 0x13.
+//
+// MEASURE BEFORE YOU TRUST THE POWER CLAIM:
+//   0x13 (measured ~7mA) is ALSO accelerometer-based, so the SigMotion win may
+//   be a couple mA (continuous-classify+report vs armed-but-silent), not the
+//   large drop the "sleep" framing implies. Confirm the real IDLE delta with a
+//   bench ammeter — the datasheet number is not a substitute. Note too that the
+//   bulk of system idle current is the nRF52840 (BLE advertising + always-on
+//   QSPI + System-ON sleep), which this change does not touch.
+#ifndef SH2_SIGNIFICANT_MOTION
+#define SH2_SIGNIFICANT_MOTION 0x12
+#endif
+
 
 // =============================================================================
 // SECTION 4 — Sampling Rates
@@ -134,13 +162,16 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
-// IDLE now runs the Stability *Classifier* (0x13) instead of the Stability
-// *Detector* (0x1C). Bench testing proved that enabling 0x1C is what makes
-// this BNO086 self-reset every ~6.9s (the reset inrush was the idle current
-// spike). 0x13 — already used in the running states with no resets — is
-// stable and reports the same motion classes. This is the idle classifier
-// report interval: raise it to cut wake frequency, lower it for faster
-// motion-onset detection.
+// IDLE now arms Significant Motion (0x12) as the sole wake source (see
+// Section 3). This is the interval hint passed to enableReport() — for a
+// one-shot detector it governs the algorithm's evaluation cadence, not a
+// report rate (SigMotion does not stream). Left at the library default;
+// tune during the bench power/latency test if needed. Larger = lower power
+// but slower/less-sensitive motion-onset detection.
+#define IDLE_SIGMOTION_INTERVAL_US  10000UL
+
+// Retained: previously the IDLE Stability Classifier report interval. No
+// longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
 #define IDLE_STABILITY_MS           1000
 
 
@@ -734,14 +765,18 @@ void waitForIMUData() {
 
 // Enables the report that drives IDLE. Kept in one place so
 // configureBNO_Idle() and handleIdle()'s reset-recovery path stay in sync.
-// See IDLE_STABILITY_MS above for why this is the Stability Classifier (0x13)
-// and not the Stability Detector (0x1C).
+// See Section 3 for why IDLE arms Significant Motion (0x12) — a one-shot,
+// low-power, self-disarming wake detector — instead of a streaming classifier.
+// SigMotion has no dedicated SparkFun helper, so we arm it via the generic
+// enableReport(). NOTE: enableReport() sets wakeupEnabled=false, so this pairs
+// with the host staying in System-ON sleep (__WFE) and reading INT — NOT with
+// modeSleep()/sh2_devSleep, which would need a true wake-channel sensor.
 void enableIdleReports() {
-  imu.enableStabilityClassifier(IDLE_STABILITY_MS);
+  imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_SIGMOTION_INTERVAL_US);
 }
 
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (Stability Classifier @ %dms)", IDLE_STABILITY_MS);
+  LOGF("BNO: soft reset → IDLE mode (Significant Motion 0x12 wake)");
   imu.softReset();
   delay(150);
 
@@ -750,7 +785,7 @@ void configureBNO_Idle() {
 
   imu.wasReset();
 
-  LOGF("BNO: IDLE Stability Classifier (0x13) enabled");
+  LOGF("BNO: IDLE Significant Motion (0x12) armed — silent until motion");
 }
 
 void configureBNO_Running() {
@@ -930,22 +965,24 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
-    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+    // IDLE is silent by design (SigMotion doesn't stream), so ANY event here is
+    // notable. Print the raw report ID to confirm on-bench that SparkFun's
+    // getSensorEvent() surfaces 0x12 via getSensorEventID() — the library has
+    // no named parser for Significant Motion, so this is the verification hook.
+    LOGF("IDLE: BNO event id=0x%02X", id);
+
+    if (id == SH2_SIGNIFICANT_MOTION) {
+      // The event itself is the signal — no payload needed. SigMotion has now
+      // auto-disarmed; configureBNO_Running() takes over on the transition.
+      LOGF("SIGMOTION: significant motion detected → ACTIVE_RECORDING");
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
-
-      uint8_t s = imu.getStabilityClassifier();
-      logStabilityIfChanged(s);
-
-      if (isMotion(s)) {
-        LOGF("STABILITY: MOTION — patient moving → ACTIVE_RECORDING");
-        activeHz         = DEFAULT_ACTIVE_HZ;
-        lastMotionTime   = millis();
-        onTableStartTime = 0;
-        lastActiveSample = 0;
-        requestTransition(STATE_ACTIVE_RECORDING);
-        return;
-      }
+      activeHz           = DEFAULT_ACTIVE_HZ;
+      lastMotionTime     = millis();
+      onTableStartTime   = 0;
+      lastActiveSample   = 0;
+      requestTransition(STATE_ACTIVE_RECORDING);
+      return;
     }
   }
 }
