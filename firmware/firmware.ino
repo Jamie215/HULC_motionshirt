@@ -169,13 +169,21 @@
 #define ACTIVE_STABILITY_MS         500
 
 // IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
-// This is the reverted config: SigMotion (0x12) under devSleep self-rebooted
-// every ~1.17s and never confirmed a motion wake, while the detector holds
-// devSleep ~6.6s and is the proven 7mA / wakes-on-motion config. The report
-// interval was ruled out as the reboot driver (10ms vs 1000ms were identical),
-// so this value is not critical — it's just the detector's evaluation cadence.
-// enableReport()/sh2_setSensorConfig take a uint32 in MICROSECONDS.
-#define IDLE_DETECTOR_INTERVAL_US   (DETECTOR_INTERVAL_MS * 1000UL)   // 1s
+// Bench finding: the detector STREAMS a heartbeat report at this interval, and
+// each one wakes the nRF — at 1s that kept IDLE at ~11mA (not the ~7mA target).
+// Lengthening the interval cuts those wakeups. Unlike the SigMotion reboot
+// cadence (which ignored interval), THIS heartbeat rate tracks the interval.
+//
+// CEILING: reportInterval_us is uint32 microseconds → hard max 4,294,967,295us
+// ≈ 71.6 min. But there's a lower PRACTICAL cap: the hub reboots every ~5s and
+// re-arms the detector, resetting the heartbeat timer — so any interval beyond
+// the reboot period never fires (the reboot pre-empts it), and the ~5s reboot
+// becomes the wakeup floor. Past ~10s, raising this does nothing for idle power.
+//
+// TRADEOFF TO VERIFY: if the detector only evaluates at the heartbeat (poll),
+// a long interval also slows motion-onset detection. Watch the move→EXITED
+// latency on the bench. 10s is chosen to sit just above the reboot interval.
+#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
 
 // Retained: previously the IDLE Stability Classifier report interval. No
 // longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
