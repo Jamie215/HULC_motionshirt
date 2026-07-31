@@ -185,13 +185,28 @@
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 
-// IDLE now arms Significant Motion (0x12) as the sole wake source (see
-// Section 3). This is the interval hint passed to enableReport() — for a
-// one-shot detector it governs the algorithm's evaluation cadence, not a
-// report rate (SigMotion does not stream). Left at the library default;
-// tune during the bench power/latency test if needed. Larger = lower power
-// but slower/less-sensitive motion-onset detection.
-#define IDLE_SIGMOTION_INTERVAL_US  10000UL
+// IDLE arms Significant Motion (0x12) as the sole wake source (see Section 3).
+// This interval is how often the hub ROUSES to evaluate the accel — under
+// devSleep it directly drives the periodic-reset cadence: a fast interval keeps
+// waking the sleeping hub and trips its SHTP watchdog often; a slow interval
+// lets it sleep undisturbed between checks.
+//
+//   Old default here was 10ms (100Hz) — ~6500x FASTER than the classifier's
+//   ~65s (the classifier is capped at uint16 ms). That over-fast interval is
+//   the leading suspect for SigMotion+devSleep resetting every ~1s vs the
+//   detector's ~6.6s at a 1s interval.
+//
+// SWEEP THIS to kill the resets. enableReport()/sh2_setSensorConfig take a
+// uint32 in MICROSECONDS, so the ceiling is ~4.29e9 us ≈ 71 min — far more
+// headroom than the classifier ever had. Ladder to try, watching the reset
+// cadence AND that real motion still wakes fast:
+//   1s (1000000, below — matches the detector baseline for a clean A/B)
+//   → 10s (10000000) → 60s (60000000) → longer
+// Push it as long as motion-onset latency stays acceptable. Open question the
+// bench answers: does 0x12 still fire the INSTANT motion happens at a long
+// interval (true event interrupt — long interval is free), or only once per
+// interval (poll — long interval = slow to notice motion)?
+#define IDLE_SIGMOTION_INTERVAL_US  1000000UL   // 1s — sweep upward (see above)
 
 // Retained: previously the IDLE Stability Classifier report interval. No
 // longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
