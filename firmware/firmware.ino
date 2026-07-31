@@ -67,7 +67,8 @@
 //
 // States (unchanged from Phase 3):
 //   IDLE             — Significant Motion (0x12) wake only. One-shot low-power
-//                      detector; BNO is silent until real motion. See Section 3.
+//                      detector; BNO silent until real motion. Optionally also
+//                      sleeps the hub (sh2_devSleep) — see IDLE_USE_DEVSLEEP.
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
@@ -150,6 +151,28 @@
 #ifndef SH2_SIGNIFICANT_MOTION
 #define SH2_SIGNIFICANT_MOTION 0x12
 #endif
+
+// ── Optional deep sleep (Option B — EXPERIMENTAL) ──────────────────────────
+// Set to 1 to ALSO put the BNO's sensor hub into executable-channel sleep
+// (sh2_devSleep) while idle, on top of arming Significant Motion. To survive
+// that sleep AND still wake the host, SigMotion must be armed with BOTH:
+//   • alwaysOnEnabled = true  — "Sensor remains on in sleep state" (keeps the
+//                               detector running while the hub is asleep)
+//   • wakeupEnabled   = true  — "Wake host on event" (report goes on the wake
+//                               channel and pulls INT to wake the nRF)
+// SparkFun's enableReport() hardcodes both false, so the devsleep path arms
+// 0x12 via sh2_setSensorConfig() directly (see enableIdleReports()). On the
+// wake event we call modeOn() before reconfiguring the running-mode reports.
+//
+// DEADLOCK RISK — READ BEFORE TRUSTING: whether the part actually keeps a
+// wake/always-on sensor alive across sh2_devSleep is board- and
+// firmware-dependent and NOT something the datasheet nails down. If it does
+// not, the BNO never pulls INT, the nRF __WFE's forever, and IDLE becomes a
+// one-way trap that only a reset clears. That's why this is a flag: 0 = proven
+// Option A (SigMotion only, host System-ON sleep); 1 = bench-test the deep
+// path and confirm the board wakes on real motion. If it doesn't wake, set
+// back to 0.
+#define IDLE_USE_DEVSLEEP  1
 
 
 // =============================================================================
@@ -763,16 +786,30 @@ void waitForIMUData() {
 // SECTION 15 — BNO086 Mode Switching
 // =============================================================================
 
-// Enables the report that drives IDLE. Kept in one place so
-// configureBNO_Idle() and handleIdle()'s reset-recovery path stay in sync.
-// See Section 3 for why IDLE arms Significant Motion (0x12) — a one-shot,
-// low-power, self-disarming wake detector — instead of a streaming classifier.
-// SigMotion has no dedicated SparkFun helper, so we arm it via the generic
-// enableReport(). NOTE: enableReport() sets wakeupEnabled=false, so this pairs
-// with the host staying in System-ON sleep (__WFE) and reading INT — NOT with
-// modeSleep()/sh2_devSleep, which would need a true wake-channel sensor.
+// Enables the report that drives IDLE. Kept in one place so configureBNO_Idle()
+// and handleIdle()'s reset-recovery path stay in sync; re-armed on every IDLE
+// entry since SigMotion auto-disarms after firing. See Section 3 for why IDLE
+// uses Significant Motion (0x12) and what IDLE_USE_DEVSLEEP changes.
 void enableIdleReports() {
+#if IDLE_USE_DEVSLEEP
+  // Deep-sleep path: arm 0x12 as a WAKE + ALWAYS-ON sensor so it keeps running
+  // while the hub is in devSleep and can pull INT to wake the host. SparkFun's
+  // enableReport() forces both flags false, so configure the sh2 layer directly
+  // (sh2_setSensorConfig / sh2_SensorConfig_t come from sh2.h, included by the
+  // library header). Falls back to the plain report if the config is rejected.
+  sh2_SensorConfig_t cfg = {};          // value-init: all fields zero/false
+  cfg.wakeupEnabled     = true;         // "Wake host on event"
+  cfg.alwaysOnEnabled   = true;         // "Sensor remains on in sleep state"
+  cfg.reportInterval_us = IDLE_SIGMOTION_INTERVAL_US;
+  int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_SIGNIFICANT_MOTION, &cfg);
+  if (rc != SH2_OK) {
+    LOGF("BNO: sh2_setSensorConfig(0x12) FAILED rc=%d — using enableReport()", rc);
+    imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_SIGMOTION_INTERVAL_US);
+  }
+#else
+  // Option A: host stays in System-ON (__WFE) sleep reading INT; hub not slept.
   imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_SIGMOTION_INTERVAL_US);
+#endif
 }
 
 void configureBNO_Idle() {
@@ -784,6 +821,17 @@ void configureBNO_Idle() {
   bnoInRunningMode = false;
 
   imu.wasReset();
+
+#if IDLE_USE_DEVSLEEP
+  // Arm-then-sleep ordering matters: the wake sensor must be configured before
+  // the hub sleeps. Let the feature config settle, then drop the hub.
+  delay(20);
+  if (imu.modeSleep()) {
+    LOGF("BNO: devSleep engaged — hub asleep, 0x12 armed as wake source");
+  } else {
+    LOGF("BNO: modeSleep() FAILED — SigMotion running without devSleep");
+  }
+#endif
 
   LOGF("BNO: IDLE Significant Motion (0x12) armed — silent until motion");
 }
@@ -958,6 +1006,13 @@ void handleIdle() {
     while (imu.getSensorEvent()) {}
     imu.wasReset();
     imuDataReady = false;
+
+#if IDLE_USE_DEVSLEEP
+    // Reboot leaves the hub awake — re-enter devSleep so a rare idle reset
+    // doesn't silently fall back to the higher-power (awake) SigMotion path.
+    delay(20);
+    imu.modeSleep();
+#endif
   }
 
   waitForIMUData();
@@ -975,6 +1030,12 @@ void handleIdle() {
       // The event itself is the signal — no payload needed. SigMotion has now
       // auto-disarmed; configureBNO_Running() takes over on the transition.
       LOGF("SIGMOTION: significant motion detected → ACTIVE_RECORDING");
+#if IDLE_USE_DEVSLEEP
+      // Hub was in devSleep — wake it before applyPendingTransition() runs
+      // configureBNO_Running() (which issues enableRotationVector, etc.).
+      imu.modeOn();
+      delay(20);
+#endif
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
       activeHz           = DEFAULT_ACTIVE_HZ;
