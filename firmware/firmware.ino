@@ -174,6 +174,22 @@
 // back to 0.
 #define IDLE_USE_DEVSLEEP  1
 
+// Wake-sensor config flags for the devSleep path (tunable for bench isolation).
+// The report INTERVAL was ruled out as the reset driver — 10ms and 1000ms both
+// reboot ~1s, and between reboots the host services ZERO reports, so the BNO is
+// self-rebooting on an internal timeout, not missing an INT. The remaining
+// suspects for the 1.17s (SigMotion, both flags on) vs 6.6s (detector, likely
+// flags off) reboot timeout are these two flags. Sweep the four combos:
+//   ALWAYSON=1, WAKEUP=1  — original both-on run: reboots ~1.17s
+//   ALWAYSON=0, WAKEUP=1  — DEFAULT below (next test): does dropping "remains on
+//                           in sleep" lengthen/stop the reboot? THEN verify real
+//                           motion still wakes it — if it no longer wakes, always-on
+//                           was both keeping the detector alive in sleep AND
+//                           driving the reboots (the fundamental tradeoff).
+//   ALWAYSON=1, WAKEUP=0  /  0,0  — further isolation if needed.
+#define IDLE_WAKE_WAKEUP_EN    1
+#define IDLE_WAKE_ALWAYSON_EN  0
+
 
 // =============================================================================
 // SECTION 4 — Sampling Rates
@@ -366,6 +382,11 @@ uint8_t      consecutiveResets   = 0;
 
 // ── BNO config guard ──
 bool         bnoInRunningMode    = false;
+
+// ── devSleep instrumentation ──
+// millis() captured right after each successful modeSleep(), so the reset
+// handler can report exactly how long the hub held devSleep before rebooting.
+uint32_t     lastDevSleepMs      = 0;
 
 volatile bool imuDataReady = false;
 
@@ -813,8 +834,8 @@ void enableIdleReports() {
   // (sh2_setSensorConfig / sh2_SensorConfig_t come from sh2.h, included by the
   // library header). Falls back to the plain report if the config is rejected.
   sh2_SensorConfig_t cfg = {};          // value-init: all fields zero/false
-  cfg.wakeupEnabled     = true;         // "Wake host on event"
-  cfg.alwaysOnEnabled   = true;         // "Sensor remains on in sleep state"
+  cfg.wakeupEnabled     = IDLE_WAKE_WAKEUP_EN;    // "Wake host on event"
+  cfg.alwaysOnEnabled   = IDLE_WAKE_ALWAYSON_EN;  // "Sensor remains on in sleep state"
   cfg.reportInterval_us = IDLE_SIGMOTION_INTERVAL_US;
   int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_SIGNIFICANT_MOTION, &cfg);
   if (rc != SH2_OK) {
@@ -842,7 +863,9 @@ void configureBNO_Idle() {
   // the hub sleeps. Let the feature config settle, then drop the hub.
   delay(20);
   if (imu.modeSleep()) {
-    LOGF("BNO: devSleep engaged — hub asleep, 0x12 armed as wake source");
+    lastDevSleepMs = millis();
+    LOGF("BNO: devSleep engaged (wakeup=%d alwaysOn=%d) — hub asleep, 0x12 armed",
+         IDLE_WAKE_WAKEUP_EN, IDLE_WAKE_ALWAYSON_EN);
   } else {
     LOGF("BNO: modeSleep() FAILED — SigMotion running without devSleep");
   }
@@ -1008,17 +1031,26 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    // NOTE: getResetReason() returns prodIds.entry[0].resetCause, which the
-    // SparkFun library captures ONCE at begin() and does not refresh on later
-    // resets — so this prints the *boot* cause, not this reset's. Treat it as
-    // a weak hint only; the IDLE_WAKE_SOURCE A/B test is the real probe.
-    LOGF("IMU reset detected in IDLE — boot-cached reason: %u", (unsigned)imu.getResetReason());
+    // How long the hub actually held devSleep before rebooting — the precise
+    // per-config timeout (getResetReason() is boot-cached and useless here, so
+    // we don't print it). If this ~matches across flag combos the reboot is a
+    // fixed internal timeout; if it stretches when alwaysOn is dropped, the
+    // flag is the driver.
+    uint32_t sleptFor = millis() - lastDevSleepMs;
 
     bnoInRunningMode = false;
     enableIdleReports();
 
+    // Drain + log what the BNO emits around the reboot. We expect only the
+    // post-reset advertisement here (nothing serviced during sleep) — confirm.
     delay(50);
-    while (imu.getSensorEvent()) {}
+    uint16_t drained = 0;
+    uint8_t  lastId  = 0;
+    while (imu.getSensorEvent()) { lastId = imu.getSensorEventID(); drained++; }
+    LOGF("IDLE reset: held devSleep %lums — drained %u post-reset events "
+         "(lastId=0x%02X), INT=%d", sleptFor, drained, lastId,
+         digitalRead(BNO_INT_PIN));
+
     imu.wasReset();
     imuDataReady = false;
 
@@ -1026,7 +1058,7 @@ void handleIdle() {
     // Reboot leaves the hub awake — re-enter devSleep so a rare idle reset
     // doesn't silently fall back to the higher-power (awake) SigMotion path.
     delay(20);
-    imu.modeSleep();
+    if (imu.modeSleep()) lastDevSleepMs = millis();
 #endif
   }
 
