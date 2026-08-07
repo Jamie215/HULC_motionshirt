@@ -69,8 +69,29 @@
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
 #endif
+#ifndef SH2_SIGNIFICANT_MOTION
+#define SH2_SIGNIFICANT_MOTION 0x12
+#endif
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
+
+// ── IDLE wake-source experiment selector ───────────────────────────────────
+// The bench log showed the BNO self-reboots every ~6.4s in IDLE even with the
+// hub AWAKE (devSleep off) — so the reboot is NOT a devSleep artifact. Use this
+// switch to localize the cause. Recompile with each value and watch the
+// "held Nms since arm" figure printed on every IDLE reset:
+//   DETECTOR  — arm Stability Detector 0x1C (baseline; the ~6.4s case)
+//   NONE      — arm NOTHING. If the reboot STOPS, arming 0x1C is the cause.
+//               If it PERSISTS, the reboot is systemic (I2C/wiring/hub), not
+//               the detector. This is the decisive experiment.
+//   SIGMOTION — arm Significant Motion 0x12. Production notes claim ~1.17s
+//               under devSleep; if it's also ~1.17s here, the reboot period is
+//               set by the armed sensor type and devSleep is irrelevant.
+#define IDLE_WAKE_DETECTOR   0
+#define IDLE_WAKE_NONE       1
+#define IDLE_WAKE_SIGMOTION  2
+
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR
 
 
 // =============================================================================
@@ -193,6 +214,11 @@ uint8_t      consecutiveResets   = 0;
 // ── BNO config guard ──
 bool         bnoInRunningMode    = false;
 
+// ── IDLE reset instrumentation ──
+// millis() captured right after each IDLE arm, so handleIdle() can report how
+// long the hub ran before self-rebooting (the precise per-config reboot period).
+uint32_t     idleArmedMs         = 0;
+
 volatile bool imuDataReady = false;
 
 
@@ -246,11 +272,18 @@ void waitForIMUData() {
 // SECTION 13 — BNO086 Mode Switching
 // =============================================================================
 
-// Arms the Stability Detector (0x1C) as the IDLE motion wake source.
+// Arms the IDLE motion wake source (selected by IDLE_WAKE_SOURCE).
 // NOTE: no devSleep in this test build — hub stays awake (see header note 1),
 // so this is just a plain enableReport(), no sh2_setSensorConfig() dance.
 void enableIdleReports() {
+#if   IDLE_WAKE_SOURCE == IDLE_WAKE_NONE
+  // Arm nothing — baseline to test whether the ~6.4s reboot is systemic.
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+  imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_DETECTOR_INTERVAL_US);
+#else
   imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+#endif
+  idleArmedMs = millis();
 }
 
 void configureBNO_Idle() {
@@ -383,11 +416,16 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    LOGF("IDLE: unexpected BNO reset — re-arming detector");
+    // How long the hub ran before rebooting — the precise per-config reboot
+    // period. Compare this figure across IDLE_WAKE_SOURCE values.
+    uint32_t heldFor = millis() - idleArmedMs;
+    LOGF("IDLE: BNO reset — held %lums since arm (reason=%u) — re-arming",
+         heldFor, (unsigned)imu.getResetReason());
     bnoInRunningMode = false;
     enableIdleReports();
     imu.wasReset();
     imuDataReady = false;
+    return;   // don't sleep this pass — loop again to service post-reset events
   }
 
   waitForIMUData();
@@ -395,6 +433,22 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
+    // IDLE is near-silent, so log every raw report id for on-bench visibility.
+    // If nothing prints here between resets, the wake sensor emits nothing at
+    // rest and the reboot is the only IDLE activity.
+    LOGF("IDLE: BNO event id=0x%02X", id);
+
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+    if (id == SH2_SIGNIFICANT_MOTION) {
+      LOGF("SIGMOTION: fired — moving -> ACTIVE_RECORDING");
+      activeHz         = DEFAULT_ACTIVE_HZ;
+      lastMotionTime   = millis();
+      onTableStartTime = 0;
+      lastActiveSample = 0;
+      requestTransition(STATE_ACTIVE_RECORDING);
+      return;
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
     if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
@@ -412,6 +466,9 @@ void handleIdle() {
         return;
       }
     }
+#endif
+    // IDLE_WAKE_NONE: nothing armed — no motion wake; reset the board to exit
+    // IDLE. This mode exists only to observe the reboot cadence in isolation.
   }
 }
 
