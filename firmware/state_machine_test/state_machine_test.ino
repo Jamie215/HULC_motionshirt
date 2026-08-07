@@ -100,7 +100,7 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // sweep needs the detector
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL   // detector chars done — test streaming
 
 
 // =============================================================================
@@ -130,9 +130,29 @@
 // held time, so ONE flash yields a full table showing whether the reboot period
 // tracks the report interval. Resets shorter than IDLE_SWEEP_SETTLE_MS are
 // treated as post-arm settle noise and not counted.
-#define IDLE_DETECTOR_SWEEP         1
+#define IDLE_DETECTOR_SWEEP         0   // sweep complete — results recorded below
 #define IDLE_SWEEP_RESETS_PER_STEP  3
 #define IDLE_SWEEP_SETTLE_MS        300
+
+// ── SWEEP RESULT (bench, devSleep OFF, hub AWAKE) ───────────────────────────
+//   interval   held       reports-before-reboot
+//   50 ms      ~6480 ms    91
+//   200 ms     ~6420 ms    30
+//   500 ms     ~6484 ms    13
+//   800 ms     ~930 ms      0
+//   1 s        ~930 ms      0
+//   5 s        ~930 ms      0
+// CONCLUSION: the detector reboot (reason=2) is a RACE. The bare hub reboots at
+// a ~930 ms baseline; if a detector report is serviced before then, the hold
+// extends to a ~6.5 s CEILING — and that's a hard cap (50 ms feeds 91 reports
+// and still tops out at ~6.5 s). The first report lands ~one interval after
+// arming, so intervals <=500 ms beat the baseline (long hold) while >=800 ms
+// miss it entirely (0 reports, ~930 ms reboot). Net: ~6.5 s is the best hold
+// the detector allows; NO interval tuning eliminates the reboot. Removing it
+// outright needs a non-detector (streaming) wake source — see IDLE_WAKE_ACCEL.
+// CAVEAT: this is the AWAKE regime. devSleep runs a different governing timer
+// (production saw ~6.6 s at a 10 s interval), so do NOT port these interval
+// numbers to the devSleep path.
 
 
 // =============================================================================
