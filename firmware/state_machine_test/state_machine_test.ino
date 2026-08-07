@@ -56,6 +56,10 @@
 #define BNO_RST_PIN     3
 #define BNO08X_I2C_ADDR 0x4B
 
+// BNO086 supports I2C up to 400kHz. We previously ran at the core default
+// (100kHz). Set 400kHz to test the "slow bus starves the hub" hypothesis.
+#define I2C_CLOCK_HZ    400000
+
 #define PIN_LED_BLUE    LED_BLUE
 #define PIN_LED_RED     LED_RED
 
@@ -629,6 +633,21 @@ void handleIdle() {
     // IDLE_WAKE_NONE: nothing armed — no motion wake; reset the board to exit
     // IDLE. This mode exists only to observe the reboot cadence in isolation.
   }
+
+  // ── Servicing diagnostic (tests the "unhandled packet starves the hub ->
+  // watchdog reset" theory) ──────────────────────────────────────────────────
+  // After draining every event, INT should be HIGH (deasserted). If INT is
+  // still LOW yet getSensorEvent() yields nothing — rechecked 200us later — the
+  // library is failing to consume a packet the BNO is trying to deliver, which
+  // is exactly the "communication starvation" a watchdog reset would need. If
+  // this NEVER prints across many ~6.5s cycles, servicing is clean and the
+  // reset is intrinsic, not a starvation watchdog.
+  if (digitalRead(BNO_INT_PIN) == LOW && !imu.getSensorEvent()) {
+    delayMicroseconds(200);
+    if (digitalRead(BNO_INT_PIN) == LOW && !imu.getSensorEvent()) {
+      LOGF("IDLE: INT stuck LOW, nothing drainable — UNHANDLED PACKET suspected");
+    }
+  }
 }
 
 
@@ -840,7 +859,9 @@ void setup() {
   digitalWrite(BNO_RST_PIN, HIGH);
 
   Wire.begin();
-  LOGF("I2C initialised. Connecting to BNO086 at 0x%02X...", BNO08X_I2C_ADDR);
+  Wire.setClock(I2C_CLOCK_HZ);   // 400kHz — tests the "slow bus starves hub" claim
+  LOGF("I2C initialised @ %luHz. Connecting to BNO086 at 0x%02X...",
+       (unsigned long)I2C_CLOCK_HZ, BNO08X_I2C_ADDR);
 
   if (!imu.begin(BNO08X_I2C_ADDR, Wire, BNO_INT_PIN, BNO_RST_PIN)) {
     LOG("ERROR: BNO086 not detected — check wiring. Halting.");
