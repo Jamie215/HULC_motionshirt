@@ -100,7 +100,7 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // sweep needs the detector
 
 
 // =============================================================================
@@ -121,6 +121,18 @@
 // (SparkFun enableAccelerometer takes ms, unlike enableReport which takes us).
 #define IDLE_ACCEL_INTERVAL_MS      200          // 5Hz — enough for motion onset
 #define IDLE_ACCEL_MOTION_THRESH    2.0f         // m/s^2 deviation from gravity
+
+// ── Detector interval sweep (automatic) ─────────────────────────────────────
+// When IDLE_DETECTOR_SWEEP is 1 AND IDLE_WAKE_SOURCE is DETECTOR, IDLE ignores
+// IDLE_DETECTOR_INTERVAL_US and instead auto-cycles through idleSweepIntervals_us
+// (defined in Section 10), re-arming with the next interval after
+// IDLE_SWEEP_RESETS_PER_STEP genuine reboots. Each reboot prints its interval +
+// held time, so ONE flash yields a full table showing whether the reboot period
+// tracks the report interval. Resets shorter than IDLE_SWEEP_SETTLE_MS are
+// treated as post-arm settle noise and not counted.
+#define IDLE_DETECTOR_SWEEP         1
+#define IDLE_SWEEP_RESETS_PER_STEP  3
+#define IDLE_SWEEP_SETTLE_MS        300
 
 
 // =============================================================================
@@ -234,6 +246,12 @@ bool         bnoInRunningMode    = false;
 // long the hub ran before self-rebooting (the precise per-config reboot period).
 uint32_t     idleArmedMs         = 0;
 
+// ── Detector interval sweep state (see Section 4) ──
+const uint32_t idleSweepIntervals_us[] = { 50000UL, 200000UL, 1000000UL, 5000000UL };
+const uint8_t  idleSweepCount          = 4;
+uint8_t        sweepIdx                = 0;   // which interval is armed now
+uint8_t        sweepResetCount         = 0;   // genuine reboots at this interval
+
 volatile bool imuDataReady = false;
 
 
@@ -298,7 +316,11 @@ void enableIdleReports() {
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
   imu.enableAccelerometer(IDLE_ACCEL_INTERVAL_MS);   // streaming (ms interval)
 #else
-  imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+  uint32_t interval_us = IDLE_DETECTOR_INTERVAL_US;
+  #if IDLE_DETECTOR_SWEEP
+    interval_us = idleSweepIntervals_us[sweepIdx];   // auto-sweep overrides
+  #endif
+  imu.enableReport(SH2_STABILITY_DETECTOR, interval_us);
 #endif
   idleArmedMs = millis();
 }
@@ -434,12 +456,30 @@ void logStabilityIfChanged(uint8_t stability) {
 void handleIdle() {
   if (imu.wasReset()) {
     // How long the hub ran before rebooting — the precise per-config reboot
-    // period. Compare this figure across IDLE_WAKE_SOURCE values.
+    // period. Compare this figure across IDLE_WAKE_SOURCE values / intervals.
     uint32_t heldFor = millis() - idleArmedMs;
+
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && IDLE_DETECTOR_SWEEP
+    uint32_t curIv = idleSweepIntervals_us[sweepIdx];
+    if (heldFor < IDLE_SWEEP_SETTLE_MS) {
+      LOGF("SWEEP: interval=%luus  held=%lums  — SETTLE, not counted", curIv, heldFor);
+    } else {
+      sweepResetCount++;
+      LOGF("SWEEP: interval=%luus  held=%lums  (%u/%u)",
+           curIv, heldFor, sweepResetCount, IDLE_SWEEP_RESETS_PER_STEP);
+      if (sweepResetCount >= IDLE_SWEEP_RESETS_PER_STEP) {
+        sweepResetCount = 0;
+        sweepIdx = (sweepIdx + 1) % idleSweepCount;
+        LOGF("SWEEP: --> advancing to interval=%luus", idleSweepIntervals_us[sweepIdx]);
+      }
+    }
+#else
     LOGF("IDLE: BNO reset — held %lums since arm (reason=%u) — re-arming",
          heldFor, (unsigned)imu.getResetReason());
+#endif
+
     bnoInRunningMode = false;
-    enableIdleReports();
+    enableIdleReports();   // re-arms with the (possibly advanced) sweep interval
     imu.wasReset();
     imuDataReady = false;
     return;   // don't sleep this pass — loop again to service post-reset events
