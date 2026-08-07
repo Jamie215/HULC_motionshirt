@@ -142,6 +142,8 @@
 // (SparkFun enableAccelerometer takes ms, unlike enableReport which takes us).
 #define IDLE_ACCEL_INTERVAL_MS      200          // 5Hz — enough for motion onset
 #define IDLE_ACCEL_MOTION_THRESH    2.0f         // m/s^2 deviation from gravity
+#define IDLE_ACCEL_MOTION_SAMPLES   3            // consecutive above-thresh samples
+                                                 // to confirm (debounce vs noise)
 
 // ── Detector interval sweep (automatic) ─────────────────────────────────────
 // When IDLE_DETECTOR_SWEEP is 1 AND IDLE_WAKE_SOURCE is DETECTOR, IDLE ignores
@@ -301,6 +303,10 @@ uint8_t        sweepResetCount         = 0;   // genuine reboots at this interva
 // the baseline reboot" model: a reboot with reports==0 means no heartbeat
 // arrived before the reset (the long-hold regime was never entered).
 uint16_t       reportsSinceArm         = 0;
+
+// ── IDLE_WAKE_ACCEL detection state ──
+uint8_t        accelMotionRun          = 0;   // consecutive above-threshold samples
+float          accelPeakDev            = 0;   // max |a|-1g deviation since heartbeat
 
 volatile bool imuDataReady = false;
 
@@ -571,16 +577,25 @@ void handleIdle() {
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
     if (id == SENSOR_REPORTID_ACCELEROMETER) {
       float ax = imu.getAccelX(), ay = imu.getAccelY(), az = imu.getAccelZ();
-      float mag = sqrtf(ax * ax + ay * ay + az * az);
-      if (fabsf(mag - 9.81f) > IDLE_ACCEL_MOTION_THRESH) {
-        LOGF("ACCEL: |a|=%d.%02d m/s^2 (dev>%d) — moving -> ACTIVE_RECORDING",
-             (int)mag, (int)(mag * 100) % 100, (int)IDLE_ACCEL_MOTION_THRESH);
-        activeHz         = DEFAULT_ACTIVE_HZ;
-        lastMotionTime   = millis();
-        onTableStartTime = 0;
-        lastActiveSample = 0;
-        requestTransition(STATE_ACTIVE_RECORDING);
-        return;
+      float dev = fabsf(sqrtf(ax * ax + ay * ay + az * az) - 9.81f);
+      if (dev > accelPeakDev) accelPeakDev = dev;   // noise-floor readout (heartbeat)
+
+      if (dev > IDLE_ACCEL_MOTION_THRESH) {
+        // Debounce: require N consecutive above-threshold samples so a single
+        // noise spike can't flip the state.
+        if (++accelMotionRun >= IDLE_ACCEL_MOTION_SAMPLES) {
+          LOGF("ACCEL: motion confirmed (dev=%d.%02d over %d samples) -> ACTIVE_RECORDING",
+               (int)dev, (int)(dev * 100) % 100, IDLE_ACCEL_MOTION_SAMPLES);
+          activeHz         = DEFAULT_ACTIVE_HZ;
+          lastMotionTime   = millis();
+          onTableStartTime = 0;
+          lastActiveSample = 0;
+          accelMotionRun   = 0;
+          requestTransition(STATE_ACTIVE_RECORDING);
+          return;
+        }
+      } else {
+        accelMotionRun = 0;   // any quiet sample breaks the run
       }
     }
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
@@ -768,7 +783,15 @@ void printStatusHeartbeat() {
   last = now;
 
   if (currentState == STATE_IDLE) {
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
+    // Show the noise floor vs threshold so the threshold can be tuned above it.
+    LOGF("STATUS: IDLE (accel) — peak |a|dev %d.%02d m/s^2 (thresh %d.%02d) — move to wake",
+         (int)accelPeakDev, (int)(accelPeakDev * 100) % 100,
+         (int)IDLE_ACCEL_MOTION_THRESH, (int)(IDLE_ACCEL_MOTION_THRESH * 100) % 100);
+    accelPeakDev = 0;
+#else
     LOGF("STATUS: IDLE — waiting for motion (move the sensor to enter ACTIVE)");
+#endif
   } else {
     uint32_t sinceMotion = (lastMotionTime > 0) ? (now - lastMotionTime) : 0;
     LOGF("STATUS: %s — %lums since last motion, samples=%lu",
