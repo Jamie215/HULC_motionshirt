@@ -56,8 +56,10 @@
 #define BNO_RST_PIN     3
 #define BNO08X_I2C_ADDR 0x4B
 
-// BNO086 supports I2C up to 400kHz. We previously ran at the core default
-// (100kHz). Set 400kHz to test the "slow bus starves the hub" hypothesis.
+// BNO086 supports I2C up to 400kHz. ALL earlier experiments ran at the core
+// default (100kHz) — this is the first time we vary it. Reflash with each value
+// to see if the detector's ~6.5s reset period moves with bus speed.
+// nRF52840 TWIM supports: 100000, 250000, 400000. (100k = old default.)
 #define I2C_CLOCK_HZ    400000
 
 #define PIN_LED_BLUE    LED_BLUE
@@ -112,7 +114,7 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL   // detector fully characterized — test streaming
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // retest detector vs I2C bus speed
 
 // ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
 // Tests whether the ~6.5s detector reboot is a MISSED-READ artifact or a real
