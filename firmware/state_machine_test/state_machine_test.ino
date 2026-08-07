@@ -87,11 +87,20 @@
 //   SIGMOTION — arm Significant Motion 0x12. Production notes claim ~1.17s
 //               under devSleep; if it's also ~1.17s here, the reboot period is
 //               set by the armed sensor type and devSleep is irrelevant.
+//   ACCEL     — arm a normal STREAMING sensor (accelerometer) and detect motion
+//               host-side by |a| deviation from gravity. Bench results so far:
+//               NONE/SIGMOTION reset ~0.68s, DETECTOR ~6.4s, all reason=2
+//               "Internal System Reset" — a fixed internal timer, independent of
+//               devSleep AND report interval. Open question this tests: does a
+//               continuously-streaming sensor avoid the internal reset entirely?
+//               If it runs reset-free, it's a viable IDLE wake with host-side
+//               motion thresholding — no reboot to design around.
 #define IDLE_WAKE_DETECTOR   0
 #define IDLE_WAKE_NONE       1
 #define IDLE_WAKE_SIGMOTION  2
+#define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL
 
 
 // =============================================================================
@@ -106,6 +115,12 @@
 // TEST-ONLY: 200ms so motion is caught quickly on the bench.
 // Production firmware.ino uses 10s here for idle power (see header note 2).
 #define IDLE_DETECTOR_INTERVAL_US   200000UL     // 200ms
+
+// IDLE_WAKE_ACCEL tuning: stream the accelerometer and call it "motion" when
+// |a| deviates from 1g by more than the threshold. Interval is in MILLISECONDS
+// (SparkFun enableAccelerometer takes ms, unlike enableReport which takes us).
+#define IDLE_ACCEL_INTERVAL_MS      200          // 5Hz — enough for motion onset
+#define IDLE_ACCEL_MOTION_THRESH    2.0f         // m/s^2 deviation from gravity
 
 
 // =============================================================================
@@ -280,6 +295,8 @@ void enableIdleReports() {
   // Arm nothing — baseline to test whether the ~6.4s reboot is systemic.
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
   imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_DETECTOR_INTERVAL_US);
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
+  imu.enableAccelerometer(IDLE_ACCEL_INTERVAL_MS);   // streaming (ms interval)
 #else
   imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
 #endif
@@ -447,6 +464,21 @@ void handleIdle() {
       lastActiveSample = 0;
       requestTransition(STATE_ACTIVE_RECORDING);
       return;
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
+    if (id == SENSOR_REPORTID_ACCELEROMETER) {
+      float ax = imu.getAccelX(), ay = imu.getAccelY(), az = imu.getAccelZ();
+      float mag = sqrtf(ax * ax + ay * ay + az * az);
+      if (fabsf(mag - 9.81f) > IDLE_ACCEL_MOTION_THRESH) {
+        LOGF("ACCEL: |a|=%d.%02d m/s^2 (dev>%d) — moving -> ACTIVE_RECORDING",
+             (int)mag, (int)(mag * 100) % 100, (int)IDLE_ACCEL_MOTION_THRESH);
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
     }
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
     if (id == SH2_STABILITY_DETECTOR) {
