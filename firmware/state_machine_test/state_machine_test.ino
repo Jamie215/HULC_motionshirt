@@ -100,7 +100,22 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL   // detector chars done — test streaming
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // poll experiment needs detector regime
+
+// ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
+// Tests whether the ~6.5s detector reboot is a MISSED-READ artifact or a real
+// independent reset. In WFE mode the host sleeps between INT pulses (production
+// behaviour); an edge-triggered ISR can miss a level-asserted INT and sleep
+// through a pending report. In POLL mode the host never sleeps — loop() calls
+// getSensorEvent() continuously, so a pending report can NEVER be slept through.
+//   ~6.5s reboot PERSISTS under POLL -> real independent hub reset (not our fault)
+//   ~6.5s reboot DISAPPEARS/stretches -> it was a missed-read artifact (fixable!)
+// Keep IDLE_WAKE_SOURCE = DETECTOR and a short interval (<=500ms) so we're in
+// the ~6.5s regime where the ceiling is visible.
+#define IDLE_SERVICE_WFE     0
+#define IDLE_SERVICE_POLL    1
+
+#define IDLE_SERVICE_MODE    IDLE_SERVICE_POLL
 
 
 // =============================================================================
@@ -312,11 +327,21 @@ void setStateLED(SystemState s) {
   }
 }
 
-// Sleep between BNO INT pulses. Same missed-edge guard as firmware.ino: the INT
-// line is LEVEL-meaningful (LOW = data waiting) but our ISR is edge-triggered,
-// so never sleep while INT is already LOW, and treat LOW as a wake.
-// (No BLE branch here — this test has no central to keep alive.)
+// Wait for the next BNO report. Behaviour depends on IDLE_SERVICE_MODE:
+//
+// POLL: never sleep — return immediately. The caller's getSensorEvent() loop
+//   then reads whatever is pending every loop() pass, so a level-asserted INT
+//   can never be slept through. Guarantees no missed reads (the experiment).
+//
+// WFE (production behaviour): sleep between INT pulses with the same missed-edge
+//   guard as firmware.ino — the INT line is LEVEL-meaningful (LOW = data
+//   waiting) but our ISR is edge-triggered, so never sleep while INT is already
+//   LOW, and treat LOW as a wake. (No BLE branch here — no central to keep alive.)
 void waitForIMUData() {
+#if IDLE_SERVICE_MODE == IDLE_SERVICE_POLL
+  imuDataReady = false;
+  return;                           // tight poll — caller drains getSensorEvent()
+#else
   if (digitalRead(BNO_INT_PIN) == LOW) {
     imuDataReady = false;
     return;                         // data already pending — go read it now
@@ -327,6 +352,7 @@ void waitForIMUData() {
     __WFE();
   }
   imuDataReady = false;
+#endif
 }
 
 
@@ -505,8 +531,8 @@ void handleIdle() {
       }
     }
 #else
-    LOGF("IDLE: BNO reset — held %lums since arm (reason=%u) — re-arming",
-         heldFor, (unsigned)imu.getResetReason());
+    LOGF("IDLE: BNO reset — held %lums  reports=%u  (reason=%u) — re-arming",
+         heldFor, reportsSinceArm, (unsigned)imu.getResetReason());
 #endif
 
     bnoInRunningMode = false;
