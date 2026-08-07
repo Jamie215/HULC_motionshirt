@@ -247,10 +247,19 @@ bool         bnoInRunningMode    = false;
 uint32_t     idleArmedMs         = 0;
 
 // ── Detector interval sweep state (see Section 4) ──
-const uint32_t idleSweepIntervals_us[] = { 50000UL, 200000UL, 1000000UL, 5000000UL };
-const uint8_t  idleSweepCount          = 4;
+// Extra points (500ms, 800ms) bracket the knee seen between 200ms and 1s.
+const uint32_t idleSweepIntervals_us[] = {
+  50000UL, 200000UL, 500000UL, 800000UL, 1000000UL, 5000000UL
+};
+const uint8_t  idleSweepCount =
+  sizeof(idleSweepIntervals_us) / sizeof(idleSweepIntervals_us[0]);
 uint8_t        sweepIdx                = 0;   // which interval is armed now
 uint8_t        sweepResetCount         = 0;   // genuine reboots at this interval
+
+// Detector reports seen since the last arm. Tests the "first report must beat
+// the baseline reboot" model: a reboot with reports==0 means no heartbeat
+// arrived before the reset (the long-hold regime was never entered).
+uint16_t       reportsSinceArm         = 0;
 
 volatile bool imuDataReady = false;
 
@@ -322,7 +331,8 @@ void enableIdleReports() {
   #endif
   imu.enableReport(SH2_STABILITY_DETECTOR, interval_us);
 #endif
-  idleArmedMs = millis();
+  idleArmedMs     = millis();
+  reportsSinceArm = 0;
 }
 
 void configureBNO_Idle() {
@@ -462,11 +472,12 @@ void handleIdle() {
 #if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && IDLE_DETECTOR_SWEEP
     uint32_t curIv = idleSweepIntervals_us[sweepIdx];
     if (heldFor < IDLE_SWEEP_SETTLE_MS) {
-      LOGF("SWEEP: interval=%luus  held=%lums  — SETTLE, not counted", curIv, heldFor);
+      LOGF("SWEEP: interval=%luus  held=%lums  reports=%u  — SETTLE, not counted",
+           curIv, heldFor, reportsSinceArm);
     } else {
       sweepResetCount++;
-      LOGF("SWEEP: interval=%luus  held=%lums  (%u/%u)",
-           curIv, heldFor, sweepResetCount, IDLE_SWEEP_RESETS_PER_STEP);
+      LOGF("SWEEP: interval=%luus  held=%lums  reports=%u  (%u/%u)",
+           curIv, heldFor, reportsSinceArm, sweepResetCount, IDLE_SWEEP_RESETS_PER_STEP);
       if (sweepResetCount >= IDLE_SWEEP_RESETS_PER_STEP) {
         sweepResetCount = 0;
         sweepIdx = (sweepIdx + 1) % idleSweepCount;
@@ -522,6 +533,7 @@ void handleIdle() {
     }
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
     if (id == SH2_STABILITY_DETECTOR) {
+      reportsSinceArm++;
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
 
