@@ -139,11 +139,14 @@
 
 #define IDLE_SERVICE_MODE    IDLE_SERVICE_WFE   // poll experiment done (see RESULT)
 
-// Dig #1: on each IDLE reset, force a FRESH Product-ID read (sh2_getProdIds)
-// to get the reset cause of THIS reset, instead of trusting the possibly
-// boot-cached getResetReason(). Confirms whether every periodic reset is truly
-// an "Internal System Reset" (cause 2), or just the boot value being echoed.
-#define IDLE_PRODID_PROBE    1
+// Dig #1: on each IDLE reset, force a FRESH Product-ID read (sh2_getProdIds).
+// FINDING: this probe is INVASIVE — the direct sh2 call corrupts the SparkFun
+// library's sh2 state, and the library recovers by asserting a hardware reset.
+// With the probe on, the reset collapses to ~146ms with resetCause=4 (External)
+// at BOTH 100kHz and 400kHz — i.e. the probe CAUSES those resets. So its
+// resetCause reading is an artifact, not the cause of the original ~6.5s reset.
+// Disabled: turning it OFF should restore the clean ~6.5s baseline (the test).
+#define IDLE_PRODID_PROBE    0
 
 
 // =============================================================================
