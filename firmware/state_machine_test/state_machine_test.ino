@@ -56,11 +56,13 @@
 #define BNO_RST_PIN     3
 #define BNO08X_I2C_ADDR 0x4B
 
-// BNO086 supports I2C up to 400kHz. ALL earlier experiments ran at the core
-// default (100kHz) — this is the first time we vary it. Reflash with each value
-// to see if the detector's ~6.5s reset period moves with bus speed.
-// nRF52840 TWIM supports: 100000, 250000, 400000. (100k = old default.)
-#define I2C_CLOCK_HZ    400000
+// BNO086 supports I2C up to 400kHz, but on THIS board 400kHz was PATHOLOGICAL:
+// the detector reset every ~130ms with a FRESH resetCause=4 (External Reset)
+// plus constant "INT stuck / unhandled packet" corruption — i.e. 400kHz
+// destabilized the bus (likely weak pull-ups). Back at 100kHz (the condition
+// that gives the steady ~6.5s reset) to isolate the fresh reset-cause probe
+// from bus speed. nRF52840 TWIM supports: 100000, 250000, 400000.
+#define I2C_CLOCK_HZ    100000
 
 #define PIN_LED_BLUE    LED_BLUE
 #define PIN_LED_RED     LED_RED
