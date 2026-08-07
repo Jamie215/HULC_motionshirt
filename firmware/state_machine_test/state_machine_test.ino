@@ -100,7 +100,7 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // poll experiment needs detector regime
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_ACCEL   // detector fully characterized — test streaming
 
 // ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
 // Tests whether the ~6.5s detector reboot is a MISSED-READ artifact or a real
@@ -110,12 +110,18 @@
 // getSensorEvent() continuously, so a pending report can NEVER be slept through.
 //   ~6.5s reboot PERSISTS under POLL -> real independent hub reset (not our fault)
 //   ~6.5s reboot DISAPPEARS/stretches -> it was a missed-read artifact (fixable!)
-// Keep IDLE_WAKE_SOURCE = DETECTOR and a short interval (<=500ms) so we're in
-// the ~6.5s regime where the ceiling is visible.
+//
+// RESULT (bench): POLL reboot = 6433ms, reports=30 — IDENTICAL to WFE (~6420ms,
+// 30 reports). Relentless polling changed NOTHING, so the reboot is NOT a
+// missed-read artifact — it's a genuine independent hub reset. Because it
+// persisted even under continuous polling, the "bus traffic itself pokes it"
+// confound is moot. The detector reboot is intrinsic: independent of devSleep,
+// report interval, AND servicing. Firmware cannot remove it while the detector
+// is the wake source -> next option is a streaming sensor (IDLE_WAKE_ACCEL).
 #define IDLE_SERVICE_WFE     0
 #define IDLE_SERVICE_POLL    1
 
-#define IDLE_SERVICE_MODE    IDLE_SERVICE_POLL
+#define IDLE_SERVICE_MODE    IDLE_SERVICE_WFE   // poll experiment done (see RESULT)
 
 
 // =============================================================================
