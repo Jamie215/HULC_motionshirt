@@ -95,6 +95,14 @@
 //               continuously-streaming sensor avoid the internal reset entirely?
 //               If it runs reset-free, it's a viable IDLE wake with host-side
 //               motion thresholding — no reboot to design around.
+//               RESULT (bench): streaming did NOT help — the accelerometer also
+//               resets at ~6.5s (reason=2), same as the detector. So the reboot
+//               is SYSTEMIC across sensor types, not specific to detector-class
+//               features. FINAL CONCLUSION: no firmware wake configuration
+//               avoids the ~6.5s internal reset. It is independent of devSleep,
+//               report interval, servicing (poll vs sleep), AND sensor type.
+//               Eliminating it requires HARDWARE — power-gate the BNO in IDLE
+//               and wake the nRF from a separate low-power motion source.
 #define IDLE_WAKE_DETECTOR   0
 #define IDLE_WAKE_NONE       1
 #define IDLE_WAKE_SIGMOTION  2
