@@ -137,6 +137,12 @@
 
 #define IDLE_SERVICE_MODE    IDLE_SERVICE_WFE   // poll experiment done (see RESULT)
 
+// Dig #1: on each IDLE reset, force a FRESH Product-ID read (sh2_getProdIds)
+// to get the reset cause of THIS reset, instead of trusting the possibly
+// boot-cached getResetReason(). Confirms whether every periodic reset is truly
+// an "Internal System Reset" (cause 2), or just the boot value being echoed.
+#define IDLE_PRODID_PROBE    1
+
 
 // =============================================================================
 // SECTION 4 — Sampling Rates
@@ -353,6 +359,31 @@ void setStateLED(SystemState s) {
   }
 }
 
+#if IDLE_PRODID_PROBE
+// Force a FRESH Product-ID request over the SH-2 control channel and print the
+// reset cause it reports (byte 1 of the Product-ID response, per datasheet
+// p24). Calls the sh2 layer directly — same pattern the production firmware
+// uses for sh2_setSensorConfig(). Datasheet reset-cause codes (SH-2 ref [1]):
+// 1=Power-On, 2=Internal System Reset, 3=Watchdog, 4=External, 5=Other.
+// If the FRESH cause matches the cached one every cycle, each periodic reset is
+// genuinely that cause (not a stale boot value).
+void logFreshResetCause(unsigned cachedReason) {
+  sh2_ProductIds_t ids;
+  memset(&ids, 0, sizeof(ids));
+  int rc = sh2_getProdIds(&ids);
+  if (rc != SH2_OK || ids.numEntries == 0) {
+    LOGF("PRODID: fresh read FAILED rc=%d entries=%u (cached reason=%u)",
+         rc, ids.numEntries, cachedReason);
+    return;
+  }
+  sh2_ProductId_t* e = &ids.entry[0];
+  LOGF("PRODID fresh: resetCause=%u (cached=%u)  SW %u.%u.%u  part=%lu build=%lu",
+       e->resetCause, cachedReason, e->swVersionMajor, e->swVersionMinor,
+       e->swVersionPatch, (unsigned long)e->swPartNumber,
+       (unsigned long)e->swBuildNumber);
+}
+#endif
+
 // Wait for the next BNO report. Behaviour depends on IDLE_SERVICE_MODE:
 //
 // POLL: never sleep — return immediately. The caller's getSensorEvent() loop
@@ -559,6 +590,10 @@ void handleIdle() {
 #else
     LOGF("IDLE: BNO reset — held %lums  reports=%u  (reason=%u) — re-arming",
          heldFor, reportsSinceArm, (unsigned)imu.getResetReason());
+#endif
+
+#if IDLE_PRODID_PROBE
+    logFreshResetCause((unsigned)imu.getResetReason());
 #endif
 
     bnoInRunningMode = false;
