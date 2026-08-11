@@ -845,7 +845,9 @@ void configureBNO_Running() {
        BNO_RV_INTERVAL_MS, ACTIVE_STABILITY_MS);
 
   imu.enableRotationVector(BNO_RV_INTERVAL_MS);
-  imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);
+  delay(50);   // let the SH-2 firmware ack each config frame before the next —
+  imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);   // avoids the enableReport
+  delay(50);   // command-buffer overload / premature reset (SparkFun issue #2)
   bnoInRunningMode = true;
 }
 
@@ -928,6 +930,17 @@ void checkWatchdog() {
 // =============================================================================
 
 void writeQuaternionSample(float qi, float qj, float qk, float qr) {
+  // ── Drop invalid quaternions ──
+  // A valid orientation quaternion is unit-length (|q|^2 == 1). Mis-parsed
+  // zero-length SHTP packets (SparkFun issue #21, unfixed as of lib v1.0.6) can
+  // surface as garbage values; drop anything far from unit length so corrupt
+  // readings aren't logged as real motion.
+  float qmag2 = qi * qi + qj * qj + qk * qk + qr * qr;
+  if (qmag2 < 0.5f || qmag2 > 1.5f) {
+    LOGF("QUAT: dropped invalid sample (|q|^2=%.3f)", qmag2);
+    return;
+  }
+
   // ── Flash full → force IDLE ──
   if (!logging && qspiReady) {
     LOGF("FLASH: full — forcing IDLE to conserve power");
@@ -1209,6 +1222,47 @@ void handleActiveRecording() {
 
 
 // =============================================================================
+// SECTION 22b — I2C Bus Recovery
+// =============================================================================
+// If the BNO086 resets in the middle of an I2C read (see the periodic idle
+// reset investigated in state_machine_test/FINDINGS.md), it can be left holding
+// SDA low, waiting for clock pulses that never come. The nRF52840 then cannot
+// issue a START (START requires SDA high first), so every transfer fails — a
+// permanent hang until power-cycle, the worst outcome for an unattended logger.
+// Clear it the standard way: bit-bang up to 9 SCL pulses to clock the stuck
+// slave out of its byte, then a manual STOP. Safe to call before Wire.begin();
+// a no-op if the bus is already free. Uses INPUT_PULLUP to release lines high
+// (open-drain) and OUTPUT-LOW to drive them low.
+void i2cBusRecover() {
+  pinMode(SDA, INPUT_PULLUP);
+  pinMode(SCL, INPUT_PULLUP);
+  delayMicroseconds(5);
+
+  if (digitalRead(SDA) == HIGH) return;   // bus already free — nothing to do
+
+  LOG("[I2C] SDA stuck low — clocking bus recovery");
+  for (uint8_t i = 0; i < 9 && digitalRead(SDA) == LOW; i++) {
+    pinMode(SCL, OUTPUT);
+    digitalWrite(SCL, LOW);              // drive clock low
+    delayMicroseconds(5);
+    pinMode(SCL, INPUT_PULLUP);          // release — pull-up brings it high
+    delayMicroseconds(5);
+  }
+
+  // Manual STOP condition: SDA rising while SCL is high.
+  pinMode(SDA, OUTPUT);
+  digitalWrite(SDA, LOW);
+  delayMicroseconds(5);
+  pinMode(SCL, INPUT_PULLUP);            // SCL high
+  delayMicroseconds(5);
+  pinMode(SDA, INPUT_PULLUP);            // SDA released high => STOP
+  delayMicroseconds(5);
+
+  LOG("[I2C] bus recovery complete");
+}
+
+
+// =============================================================================
 // SECTION 23 — setup()
 // =============================================================================
 
@@ -1247,6 +1301,7 @@ void setup() {
   pinMode(BNO_RST_PIN, OUTPUT);
   digitalWrite(BNO_RST_PIN, HIGH);
 
+  i2cBusRecover();   // clear a bus left stuck by a prior mid-transaction reset
   Wire.begin();
   LOGF("I2C initialised. Connecting to BNO086 at 0x%02X...", BNO08X_I2C_ADDR);
 
