@@ -116,6 +116,7 @@
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
 #define IDLE_WAKE_RV         4   // stream Rotation Vector quaternions (like ACTIVE)
+#define IDLE_WAKE_CLASSIFIER 5   // Stability Classifier 0x13 (accel+gyro, MotionEngine)
 
 // IDLE_WAKE_RV question: ACTIVE recording streams quaternions and (apparently)
 // doesn't reset — but we never actually measured it. This arms the Rotation
@@ -123,7 +124,7 @@
 // streaming quaternions ALSO resets ~6.5s (like the detector and accelerometer
 // did) or is genuinely exempt. Sit still to observe; move to confirm the
 // quaternion-change motion trigger is live.
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_RV   // does streaming quaternions also reset?
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_CLASSIFIER   // does accel+gyro classifier reset?
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
   #define WAKE_SOURCE_NAME "Stability Detector (0x1C)"
@@ -135,6 +136,8 @@
   #define WAKE_SOURCE_NAME "Accelerometer (0x01)"
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_RV
   #define WAKE_SOURCE_NAME "Rotation Vector (0x05)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+  #define WAKE_SOURCE_NAME "Stability Classifier (0x13)"
 #endif
 
 // ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
@@ -200,6 +203,10 @@
 // beyond a per-sample delta.
 #define IDLE_RV_INTERVAL_MS         65           // 15Hz — matches ACTIVE recording
 #define IDLE_RV_MOTION_DELTA        0.10f        // sum of |dq components| = motion
+
+// IDLE_WAKE_CLASSIFIER: arm the Stability Classifier (accel+gyro, runs through
+// the MotionEngine — datasheet 2.4.1). Motion = classifier value == MOTION.
+#define IDLE_CLASSIFIER_INTERVAL_MS 200          // 5Hz
 
 // ── Detector interval sweep (automatic) ─────────────────────────────────────
 // When IDLE_DETECTOR_SWEEP is 1 AND IDLE_WAKE_SOURCE is DETECTOR, IDLE ignores
@@ -479,6 +486,8 @@ void enableIdleReports() {
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_RV
   imu.enableRotationVector(IDLE_RV_INTERVAL_MS);      // streaming quaternions
   rvHavePrev = false;
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+  imu.enableStabilityClassifier(IDLE_CLASSIFIER_INTERVAL_MS);   // accel+gyro
 #else
   uint32_t interval_us = IDLE_DETECTOR_INTERVAL_US;
   #if IDLE_DETECTOR_SWEEP
@@ -742,6 +751,21 @@ void handleIdle() {
       }
       rvPrevI = qi; rvPrevJ = qj; rvPrevK = qk; rvPrevR = qr;
       rvHavePrev = true;
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+      reportsSinceArm++;
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
+      if (isMotion(s)) {
+        LOGF("CLASSIFIER: MOTION -> ACTIVE_RECORDING");
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
     }
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
     if (id == SH2_STABILITY_DETECTOR) {
