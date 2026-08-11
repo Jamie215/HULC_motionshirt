@@ -137,7 +137,13 @@
 #define IDLE_SERVICE_WFE     0
 #define IDLE_SERVICE_POLL    1
 
-#define IDLE_SERVICE_MODE    IDLE_SERVICE_POLL   // re-armed to re-observe the poll behaviour
+#define IDLE_SERVICE_MODE    IDLE_SERVICE_POLL   // CLEAN A/B: flip to IDLE_SERVICE_WFE, reflash
+
+#if IDLE_SERVICE_MODE == IDLE_SERVICE_POLL
+  #define SERVICE_MODE_NAME "POLL"
+#else
+  #define SERVICE_MODE_NAME "WFE"
+#endif
 
 // Dig #1: on each IDLE reset, force a FRESH Product-ID read (sh2_getProdIds).
 // FINDING: this probe is INVASIVE — the direct sh2 call corrupts the SparkFun
@@ -328,6 +334,15 @@ uint8_t        sweepResetCount         = 0;   // genuine reboots at this interva
 // the baseline reboot" model: a reboot with reports==0 means no heartbeat
 // arrived before the reset (the long-hold regime was never entered).
 uint16_t       reportsSinceArm         = 0;
+
+// ── A/B reset statistics (clean same-build POLL vs WFE comparison) ──
+// Running mean/min/max of held-before-reset, so each mode yields one comparable
+// number instead of eyeballing individual resets. Sub-1s resets are excluded
+// (post-boot settle / anomalies).
+uint32_t       abResetCount            = 0;
+uint32_t       abHeldSum               = 0;
+uint32_t       abHeldMin               = 0xFFFFFFFFUL;
+uint32_t       abHeldMax               = 0;
 
 // ── IDLE_WAKE_ACCEL detection state ──
 uint8_t        accelMotionRun          = 0;   // consecutive above-threshold samples
@@ -596,6 +611,17 @@ void handleIdle() {
     LOGF("IDLE: BNO reset — held %lums  reports=%u  (reason=%u) — re-arming",
          heldFor, reportsSinceArm, (unsigned)imu.getResetReason());
 #endif
+
+    // Running A/B stats — skip the post-boot settle / any sub-1s anomaly.
+    if (heldFor > 1000) {
+      abResetCount++;
+      abHeldSum += heldFor;
+      if (heldFor < abHeldMin) abHeldMin = heldFor;
+      if (heldFor > abHeldMax) abHeldMax = heldFor;
+      LOGF("A/B[%s]: n=%lu  mean=%lums  min=%lums  max=%lums",
+           SERVICE_MODE_NAME, abResetCount, abHeldSum / abResetCount,
+           abHeldMin, abHeldMax);
+    }
 
 #if IDLE_PRODID_PROBE
     logFreshResetCause((unsigned)imu.getResetReason());
@@ -882,6 +908,7 @@ void setup() {
   }
 
   LOG("=== HULC Motion Shirt — STATE MACHINE TEST (no BLE, no flash) ===");
+  LOG("SERVICE MODE: " SERVICE_MODE_NAME "  (clean A/B: flip IDLE_SERVICE_MODE, reflash)");
   LOG("Transition rules:");
   LOG("  IDLE   -> ACTIVE : move the sensor");
   LOG("  ACTIVE -> STATIC : still 10s, or lay flat 3s");
