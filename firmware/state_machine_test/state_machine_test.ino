@@ -125,6 +125,18 @@
 // quaternion-change motion trigger is live.
 #define IDLE_WAKE_SOURCE     IDLE_WAKE_RV   // does streaming quaternions also reset?
 
+#if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
+  #define WAKE_SOURCE_NAME "Stability Detector (0x1C)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_NONE
+  #define WAKE_SOURCE_NAME "NONE"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+  #define WAKE_SOURCE_NAME "Significant Motion (0x12)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
+  #define WAKE_SOURCE_NAME "Accelerometer (0x01)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_RV
+  #define WAKE_SOURCE_NAME "Rotation Vector (0x05)"
+#endif
+
 // ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
 // Tests whether the ~6.5s detector reboot is a MISSED-READ artifact or a real
 // independent reset. In WFE mode the host sleeps between INT pulses (production
@@ -479,7 +491,7 @@ void enableIdleReports() {
 }
 
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset -> IDLE mode (Stability Detector 0x1C wake, hub AWAKE)");
+  LOGF("BNO: soft reset -> IDLE mode (%s wake, hub AWAKE)", WAKE_SOURCE_NAME);
   imu.softReset();
   delay(150);
 
@@ -488,7 +500,7 @@ void configureBNO_Idle() {
 
   imu.wasReset();
 
-  LOGF("BNO: IDLE Stability Detector (0x1C) armed as wake source");
+  LOGF("BNO: IDLE %s armed as wake source", WAKE_SOURCE_NAME);
 }
 
 void configureBNO_Running() {

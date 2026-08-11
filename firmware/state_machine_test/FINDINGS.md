@@ -10,18 +10,23 @@ When the motion shirt sits still in IDLE (low-power, waiting for movement), the
 BNO086 sensor **restarts itself about every ~6.5 seconds**. We wanted to know
 **why**, and whether we could stop it or make it happen less often.
 
-## The short answer
+## The short answer (updated — see "Best explanation")
 
 - The restart is **real and repeatable** — the sensor genuinely reboots.
-- We **could not eliminate it from firmware.** Nothing we changed in software
-  stopped it.
-- It is **almost certainly NOT a fundamental property of the chip** — if it
-  were, every BNO086 project would report it, and they don't.
-- Best evidence points to an **I²C communication / driver issue specific to
-  this BNO086 + nRF52840 setup**, not the sensor itself. This is **strongly
-  suspected but unconfirmed** (see "What we didn't test").
-- **Practically it's harmless:** in IDLE nothing is being recorded, the firmware
-  re-arms the sensor automatically, and no motion data is lost.
+- It is **NOT a fundamental flaw of the chip**, and **NOT a generic I²C bug**
+  (an earlier draft of this doc guessed I²C transport — that was wrong).
+- **The deciding factor is the FUSION ENGINE.** Sensors that don't run the
+  BNO's fusion pipeline (the Stability Detector and the raw Accelerometer)
+  restart every ~6.5 s. The **Rotation Vector — a fused output — does NOT
+  restart** (streamed 300+ reports with zero resets). Running fusion keeps the
+  hub fully active, so it never enters the idle state that self-resets.
+- **Why nobody else reports it:** almost everyone streams a fused output (like
+  Rotation Vector) continuously, so their hub never idles. We only hit it
+  because IDLE deliberately uses a lightweight detector to save power.
+- **Practically it's harmless:** IDLE records nothing, the firmware re-arms
+  automatically, and ACTIVE recording (which streams Rotation Vector) does
+  **not** restart at all. The restart is the *price of the low-power IDLE wake
+  sensor* — a power-vs-restart tradeoff, not a bug.
 
 ## How we investigated
 
@@ -36,6 +41,7 @@ when it happened. Then we changed one thing at a time.
 | Polled the sensor constantly vs. sleeping between reports | **Identical** ~6.5s | It's not the host being too slow or asleep |
 | Used a plain accelerometer instead of the motion detector | Still ~6.5s | It's not about misusing the detector as a wake source |
 | Raised I²C speed to 400 kHz | **Much worse** — reset every ~130 ms + corruption | This board's I²C is unstable at 400 kHz (weak pull-ups); 100 kHz is the sane setting |
+| Streamed the **Rotation Vector** (fused quaternions) instead of the detector | **NO reset** — 300+ reports, ran clean | THE key result: fused output doesn't restart; the reset is specific to non-fusion sensors |
 
 ### The one interesting mechanism we found (the "race")
 
@@ -70,44 +76,62 @@ an **artifact, not the real cause.** We removed the probe.
   its I²C/SHTP communication gets confused** — which supports the "driver /
   transport reset loop" explanation below.
 
-## Most likely explanation
+## Best explanation (revised after the Rotation Vector test)
 
-An **I²C transport / driver-level reset**, specific to BNO086-on-nRF52840 —
-things like I²C clock-stretching quirks, SHTP (the sensor's packet protocol)
-framing, or the driver's own reset logic. This fits all the evidence:
+**The restart is an idle-state behaviour of the BNO086, gated by whether the
+fusion engine (MotionEngine) is running.**
 
-- Not reported elsewhere → specific to this combination, not the chip.
-- Hit **both** the detector and the plain accelerometer → transport-level, not
-  sensor-specific.
-- Polling perfectly didn't fix it → not about servicing speed.
-- We independently watched the driver hard-reset the chip when communication got
-  confused (the probe accident).
+- Lightweight sensors that don't run fusion — the **Stability Detector** and the
+  **raw Accelerometer** — leave the hub in a low-activity state, and it
+  self-restarts every ~6.5 s.
+- The **Rotation Vector** is a *fused* output; enabling it runs the fusion
+  pipeline continuously, keeping the hub fully active. Streamed 300+ reports
+  with **zero restarts**.
 
-## What we didn't test (the honest gap)
+This fits every result with no contradictions:
 
-- **SPI instead of I²C.** This is the one experiment that would confirm-or-kill
-  the transport theory: SPI avoids I²C's clock stretching and framing quirks
-  entirely. It was **not pursued** (requires rewiring the board). So the
-  transport explanation stays *strongly suspected but unproven*.
-- **Library update** is not an option: we're already on the latest SparkFun
-  BNO08x library (v1.0.6), and its changelog has no relevant I²C/reset fix.
+- Detector restarts, accelerometer restarts → neither runs fusion.
+- Rotation Vector doesn't restart → fusion running.
+- It's **not** the report rate — the detector restarted even at 20 Hz, faster
+  than the Rotation Vector's 15 Hz. So it's the sensor *type* (fusion vs. not),
+  not how often it reports.
+- Not reported elsewhere → everyone streams a fused output continuously, so
+  their hub never idles.
+
+NOTE — an earlier version of this doc concluded "I²C transport / driver-level
+reset." **That was wrong**: a transport-level reset would hit the Rotation
+Vector too, and it doesn't. The I²C angle was a dead end; the fusion-engine
+state is the real differentiator. (The 400 kHz instability and the probe's
+self-inflicted resets were separate, real I²C effects — but not the cause of
+the ~6.5 s idle restart.)
+
+## Loose ends (minor)
+
+- **Duration of RV immunity:** the Rotation Vector ran reset-free for ~20 s
+  (300+ reports) — enough to break the 6.5 s pattern decisively, but a multi-
+  minute run would confirm it's truly indefinite, not just a longer interval.
+- **SPI:** no longer relevant. It was proposed to test an I²C-transport theory
+  that the Rotation Vector result has since disproved.
 
 ## Does it matter, and what to do
 
-- **In normal use: no.** IDLE logs nothing, the firmware auto-recovers, no motion
-  data is lost. The restart was only ever a concern for idle power and log noise,
-  both minor.
-- **One real risk worth guarding against:** if a restart ever lands in the middle
-  of an I²C transaction, it can leave the bus stuck (SDA held low) and **freeze
-  the device until power-cycle** — the worst outcome for an unattended wearable.
-  We haven't observed this (restarts kept auto-recovering), but it's a
-  probabilistic edge case worth insuring against with an **I²C bus-recovery
-  routine** (detect a stuck bus, pulse the clock 9× to free it, re-init).
+- **In normal use: no.** ACTIVE recording streams the Rotation Vector, which does
+  **not** restart. IDLE (the detector) restarts, but logs nothing and
+  auto-recovers, so no motion data is lost.
+- **The restart is a power-vs-restart tradeoff, not a bug.** IDLE uses the
+  lightweight detector to save power; the restart is the cost of that. Running
+  the fusion engine in IDLE (e.g. Rotation Vector + software motion detection)
+  would eliminate the restart, but keeps fusion powered continuously — defeating
+  the point of a low-power IDLE.
+- **One real risk worth guarding against:** if a restart ever lands mid-I²C
+  transaction, it can leave the bus stuck (SDA held low) and **freeze the device
+  until power-cycle**. Not observed (restarts kept auto-recovering), but a cheap
+  **I²C bus-recovery routine** insures against it.
 
 ## Recommendation
 
-Accept the ~6.5 s IDLE restart as a **benign, handled event** (it already is —
-the state machine re-arms on reset). Add **I²C deadlock recovery** to the
-production firmware as cheap insurance for unattended reliability. Revisit **SPI**
-only if the restart ever proves to cause real data loss or if idle power becomes
-critical.
+Accept the ~6.5 s IDLE restart as a **benign, understood tradeoff** (low-power
+detector wake in exchange for a harmless periodic re-arm). Keep the **I²C
+bus-recovery** insurance in the production firmware. Only move IDLE to a
+fusion-based wake (no restarts, higher power) if the restart ever proves to
+cause real problems.
