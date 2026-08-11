@@ -137,7 +137,7 @@
 #define IDLE_SERVICE_WFE     0
 #define IDLE_SERVICE_POLL    1
 
-#define IDLE_SERVICE_MODE    IDLE_SERVICE_WFE   // poll experiment done (see RESULT)
+#define IDLE_SERVICE_MODE    IDLE_SERVICE_POLL   // re-armed to re-observe the poll behaviour
 
 // Dig #1: on each IDLE reset, force a FRESH Product-ID read (sh2_getProdIds).
 // FINDING: this probe is INVASIVE — the direct sh2 call corrupts the SparkFun
