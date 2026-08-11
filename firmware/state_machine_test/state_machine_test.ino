@@ -115,8 +115,15 @@
 #define IDLE_WAKE_NONE       1
 #define IDLE_WAKE_SIGMOTION  2
 #define IDLE_WAKE_ACCEL      3
+#define IDLE_WAKE_RV         4   // stream Rotation Vector quaternions (like ACTIVE)
 
-#define IDLE_WAKE_SOURCE     IDLE_WAKE_DETECTOR   // retest detector vs I2C bus speed
+// IDLE_WAKE_RV question: ACTIVE recording streams quaternions and (apparently)
+// doesn't reset — but we never actually measured it. This arms the Rotation
+// Vector as the IDLE report and logs resets the same way, so we can see whether
+// streaming quaternions ALSO resets ~6.5s (like the detector and accelerometer
+// did) or is genuinely exempt. Sit still to observe; move to confirm the
+// quaternion-change motion trigger is live.
+#define IDLE_WAKE_SOURCE     IDLE_WAKE_RV   // does streaming quaternions also reset?
 
 // ── IDLE servicing mode (poll vs sleep) experiment ──────────────────────────
 // Tests whether the ~6.5s detector reboot is a MISSED-READ artifact or a real
@@ -175,6 +182,12 @@
 #define IDLE_ACCEL_MOTION_THRESH    2.0f         // m/s^2 deviation from gravity
 #define IDLE_ACCEL_MOTION_SAMPLES   3            // consecutive above-thresh samples
                                                  // to confirm (debounce vs noise)
+
+// IDLE_WAKE_RV tuning: stream the Rotation Vector (quaternions) at the same rate
+// production ACTIVE recording uses, and call it motion when the quaternion moves
+// beyond a per-sample delta.
+#define IDLE_RV_INTERVAL_MS         65           // 15Hz — matches ACTIVE recording
+#define IDLE_RV_MOTION_DELTA        0.10f        // sum of |dq components| = motion
 
 // ── Detector interval sweep (automatic) ─────────────────────────────────────
 // When IDLE_DETECTOR_SWEEP is 1 AND IDLE_WAKE_SOURCE is DETECTOR, IDLE ignores
@@ -348,6 +361,10 @@ uint32_t       abHeldMax               = 0;
 uint8_t        accelMotionRun          = 0;   // consecutive above-threshold samples
 float          accelPeakDev            = 0;   // max |a|-1g deviation since heartbeat
 
+// ── IDLE_WAKE_RV detection state (previous quaternion, for change detection) ──
+float          rvPrevI = 0, rvPrevJ = 0, rvPrevK = 0, rvPrevR = 0;
+bool           rvHavePrev              = false;
+
 volatile bool imuDataReady = false;
 
 
@@ -447,6 +464,9 @@ void enableIdleReports() {
   imu.enableReport(SH2_SIGNIFICANT_MOTION, IDLE_DETECTOR_INTERVAL_US);
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_ACCEL
   imu.enableAccelerometer(IDLE_ACCEL_INTERVAL_MS);   // streaming (ms interval)
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_RV
+  imu.enableRotationVector(IDLE_RV_INTERVAL_MS);      // streaming quaternions
+  rvHavePrev = false;
 #else
   uint32_t interval_us = IDLE_DETECTOR_INTERVAL_US;
   #if IDLE_DETECTOR_SWEEP
@@ -642,7 +662,11 @@ void handleIdle() {
     // IDLE is near-silent, so log every raw report id for on-bench visibility.
     // If nothing prints here between resets, the wake sensor emits nothing at
     // rest and the reboot is the only IDLE activity.
+#if IDLE_WAKE_SOURCE != IDLE_WAKE_RV
     LOGF("IDLE: BNO event id=0x%02X", id);
+#endif
+    // (RV streams at 15Hz — too noisy to log per-event; the RV branch prints a
+    // rate-limited streaming line instead.)
 
 #if IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
     if (id == SH2_SIGNIFICANT_MOTION) {
@@ -677,6 +701,35 @@ void handleIdle() {
       } else {
         accelMotionRun = 0;   // any quiet sample breaks the run
       }
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_RV
+    if (id == SENSOR_REPORTID_ROTATION_VECTOR) {
+      reportsSinceArm++;
+      float qi = imu.getQuatI(), qj = imu.getQuatJ(),
+            qk = imu.getQuatK(), qr = imu.getQuatReal();
+
+      // Rate-limited proof that quaternions really are streaming (~1/s).
+      static uint32_t lastRvLog = 0;
+      if (millis() - lastRvLog > 1000) {
+        lastRvLog = millis();
+        LOGF("RV: streaming q=(%.3f,%.3f,%.3f,%.3f)  reports=%u",
+             qr, qi, qj, qk, reportsSinceArm);
+      }
+
+      // Motion = total change in quaternion components since the last sample.
+      float dq = fabsf(qi - rvPrevI) + fabsf(qj - rvPrevJ)
+               + fabsf(qk - rvPrevK) + fabsf(qr - rvPrevR);
+      if (rvHavePrev && dq > IDLE_RV_MOTION_DELTA) {
+        LOGF("RV: motion (dq=%.3f) -> ACTIVE_RECORDING", dq);
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
+      rvPrevI = qi; rvPrevJ = qj; rvPrevK = qk; rvPrevR = qr;
+      rvHavePrev = true;
     }
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
     if (id == SH2_STABILITY_DETECTOR) {
