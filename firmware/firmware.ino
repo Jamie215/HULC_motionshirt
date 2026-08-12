@@ -99,6 +99,18 @@
 #define BNO_RST_PIN     3
 #define BNO08X_I2C_ADDR 0x4B
 
+// The Seeed XIAO nRF52840 mbed core does not define the SDA/SCL convenience
+// macros (unlike the AVR/ESP cores), so i2cBusRecover() won't compile against
+// them bare. Alias to the canonical Wire pin defines, which this core does
+// provide (it's what Wire.begin() itself uses). Guarded so cores that DO define
+// SDA/SCL keep their own values.
+#ifndef SDA
+  #define SDA PIN_WIRE_SDA
+#endif
+#ifndef SCL
+  #define SCL PIN_WIRE_SCL
+#endif
+
 #define PIN_LED_BLUE    LED_BLUE
 #define PIN_LED_RED     LED_RED
 
