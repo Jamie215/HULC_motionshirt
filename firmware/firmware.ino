@@ -201,7 +201,18 @@
 // CLASSIFIER runs the MotionEngine, which keeps the hub active and (per
 // FINDINGS.md) cannot hold a host-commanded devSleep, so it is forced 0 there —
 // the classifier's higher idle current is the known price of its reset-free idle.
-#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
+//
+// DIAGNOSTIC — DETECTOR_DIAG_NO_DEVSLEEP: set to 1 to run the DETECTOR build with
+// the hub AWAKE (devSleep off). Purpose: test whether devSleep is what suppresses
+// the detector's EXITED motion-wake. With devSleep the hub may deliver only the
+// periodic heartbeat and coalesce the wake-channel change-event; running awake
+// lets the detector emit change-events continuously. Shake in both settings and
+// watch the per-event "DETECTOR: 0x1C val=" log (added in handleIdle): if it
+// wakes awake but not asleep, devSleep is the blocker. No effect on the
+// classifier build (never uses devSleep). Leave 0 for normal operation.
+#define DETECTOR_DIAG_NO_DEVSLEEP  0
+
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && !DETECTOR_DIAG_NO_DEVSLEEP
   #define IDLE_USE_DEVSLEEP  1
 #else
   #define IDLE_USE_DEVSLEEP  0
@@ -1188,6 +1199,15 @@ void handleIdle() {
       // value through getStabilityClassifier(). EXITED = stability broken =
       // motion started → wake into ACTIVE_RECORDING. (ENTERED is ignored.)
       uint8_t val = imu.getStabilityClassifier();
+
+      // DIAGNOSTIC: print the raw value on EVERY 0x1C event (not just EXITED),
+      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If
+      // the heartbeats stream a steady non-2 value even while shaking, the
+      // detector isn't delivering the EXITED edge on the channel we read —
+      // independent of devSleep. Compare with DETECTOR_DIAG_NO_DEVSLEEP flipped.
+      LOGF("DETECTOR: 0x1C val=%u (ENTERED=1 EXITED=2)  devSleep=%d",
+           val, IDLE_USE_DEVSLEEP);
+
       if (val == DETECTOR_EXITED) {
         LOGF("DETECTOR: EXITED — patient moving → ACTIVE_RECORDING");
 #if IDLE_USE_DEVSLEEP
