@@ -252,10 +252,19 @@
 // the reboot period never fires (the reboot pre-empts it), and the ~5s reboot
 // becomes the wakeup floor. Past ~10s, raising this does nothing for idle power.
 //
-// TRADEOFF TO VERIFY: if the detector only evaluates at the heartbeat (poll),
-// a long interval also slows motion-onset detection. Watch the move→EXITED
-// latency on the bench. 10s is chosen to sit just above the reboot interval.
-#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
+// BENCH RESULT — 10s was WRONG. At a 10s interval the detector's first heartbeat
+// is 10s away, but the baseline devSleep reboot fires at ~840ms, so the detector
+// almost never reports before rebooting: it churns at the ~840ms floor (only
+// rarely surviving to ~10s to emit a single report), which pins idle at ~12mA
+// instead of the ~7mA the long interval was meant to buy. A report must land
+// within the first ~800ms of an arm to stretch the hold to the ~6.5s ceiling
+// (see the sweep table in state_machine_test/FINDINGS.md), so the interval has
+// to be SHORTER than the baseline reboot. 500ms puts the first report well
+// inside that window: the detector reaches the ~6.5s ceiling and reports every
+// ~430ms — necessary for the motion-wake diagnostic (frequent reports so a shake
+// can produce a readable EXITED). Only affects the DETECTOR build; the classifier
+// (production) path ignores this entirely.
+#define IDLE_DETECTOR_INTERVAL_US   500000UL   // 500ms — was 10s (see result above)
 
 // IDLE Stability Classifier report interval (used when IDLE_WAKE_SOURCE ==
 // IDLE_WAKE_CLASSIFIER). The classifier streams its current classification at
