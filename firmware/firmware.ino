@@ -125,23 +125,13 @@
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
 
-// Significant Motion (0x12) — NO LONGER the IDLE wake source (kept for
-// reference / easy re-test). Bench result: under devSleep, 0x12 self-rebooted
-// every ~1.17s regardless of report interval, and dropping alwaysOn only made
-// it collapse to a ~2ms hold with no motion wake. The Stability Detector holds
-// devSleep ~6x longer (~6.6s) and is the proven 7mA / wakes-on-motion config,
-// so IDLE now arms the DETECTOR (0x1C, defined above) instead.
-#ifndef SH2_SIGNIFICANT_MOTION
-#define SH2_SIGNIFICANT_MOTION 0x12
-#endif
-
 // ── BNO hub deep sleep (sh2_devSleep) ──────────────────────────────────────
 // devSleep is REQUIRED for low power: without it the hub stays awake at ~22mA
 // no matter which sensor is armed; with it the system drops to ~7mA. The cost
 // is a periodic self-reboot while asleep (the BNO will not hold host-commanded
 // devSleep with a wake sensor armed — it reboots on a config-dependent
-// timeout). The armed sensor sets that timeout: Stability Detector ~6.6s,
-// SigMotion ~1.17s. This reboot is INHERENT, not a bug we can code away; each
+// timeout). The armed sensor sets that timeout (Stability Detector ~6.6s).
+// This reboot is INHERENT, not a bug we can code away; each
 // one is a brief re-arm (no data is logged in IDLE), and it is already priced
 // into the ~7mA average. Set to 0 only to fall back to the 22mA no-sleep path.
 #define IDLE_USE_DEVSLEEP  1
@@ -184,10 +174,6 @@
 // a long interval also slows motion-onset detection. Watch the move→EXITED
 // latency on the bench. 10s is chosen to sit just above the reboot interval.
 #define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
-
-// Retained: previously the IDLE Stability Classifier report interval. No
-// longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
-#define IDLE_STABILITY_MS           1000
 
 
 // =============================================================================
@@ -344,11 +330,6 @@ uint8_t      consecutiveResets   = 0;
 // ── BNO config guard ──
 bool         bnoInRunningMode    = false;
 
-// ── devSleep instrumentation ──
-// millis() captured right after each successful modeSleep(), so the reset
-// handler can report exactly how long the hub held devSleep before rebooting.
-uint32_t     lastDevSleepMs      = 0;
-
 volatile bool imuDataReady = false;
 
 
@@ -502,8 +483,7 @@ bool loadHeader() {
 
 // ---------------------------------------------------------------------------
 // eraseLog() — wipes entire flash and resets write pointer.
-// Not called in this firmware (no BLE yet), but included for completeness.
-// Will be wired to BLE control command 0x03 in Step 2.
+// Wired to BLE control command 0x03 (see handleControl).
 // ---------------------------------------------------------------------------
 void eraseLog() {
   Serial.println("[QSPI] Erasing log — this takes ~30s...");
@@ -824,7 +804,6 @@ void configureBNO_Idle() {
   // the hub sleeps. Let the feature config settle, then drop the hub.
   delay(20);
   if (imu.modeSleep()) {
-    lastDevSleepMs = millis();
     LOGF("BNO: devSleep engaged (wakeup=%d alwaysOn=%d) — hub asleep, 0x1C armed",
          IDLE_WAKE_WAKEUP_EN, IDLE_WAKE_ALWAYSON_EN);
   } else {
@@ -1005,25 +984,14 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    // How long the hub actually held devSleep before rebooting — the precise
-    // per-config timeout (getResetReason() is boot-cached and useless here, so
-    // we don't print it). If this ~matches across flag combos the reboot is a
-    // fixed internal timeout; if it stretches when alwaysOn is dropped, the
-    // flag is the driver.
-    uint32_t sleptFor = millis() - lastDevSleepMs;
-
+    // Periodic devSleep self-reboot (inherent — see Section 3). Re-arm the
+    // detector and drain the post-reset advertisement the hub emits on boot.
+    LOGF("IDLE: BNO reset — re-arming detector");
     bnoInRunningMode = false;
     enableIdleReports();
 
-    // Drain + log what the BNO emits around the reboot. We expect only the
-    // post-reset advertisement here (nothing serviced during sleep) — confirm.
     delay(50);
-    uint16_t drained = 0;
-    uint8_t  lastId  = 0;
-    while (imu.getSensorEvent()) { lastId = imu.getSensorEventID(); drained++; }
-    LOGF("IDLE reset: held devSleep %lums — drained %u post-reset events "
-         "(lastId=0x%02X), INT=%d", sleptFor, drained, lastId,
-         digitalRead(BNO_INT_PIN));
+    while (imu.getSensorEvent()) { }   // drain post-reset advertisement
 
     imu.wasReset();
     imuDataReady = false;
@@ -1032,7 +1000,7 @@ void handleIdle() {
     // Reboot leaves the hub awake — re-enter devSleep so a rare idle reset
     // doesn't silently fall back to the higher-power (awake) detector path.
     delay(20);
-    if (imu.modeSleep()) lastDevSleepMs = millis();
+    imu.modeSleep();
 #endif
   }
 
@@ -1040,10 +1008,6 @@ void handleIdle() {
 
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
-
-    // IDLE is near-silent (only the periodic devSleep reboot + the detector's
-    // EXITED event), so log every raw report ID for on-bench visibility.
-    LOGF("IDLE: BNO event id=0x%02X", id);
 
     if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
