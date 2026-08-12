@@ -88,15 +88,30 @@ fusion engine (MotionEngine) is running.**
   pipeline continuously, keeping the hub fully active. Streamed 300+ reports
   with **zero restarts**.
 
+Confirmed across all four sensors we could arm in IDLE:
+
+| Sensor | Uses | Runs MotionEngine? | Restarts? |
+|---|---|---|---|
+| Stability Detector (0x1C) | accelerometer only | No | **Yes, ~6.5 s** |
+| Raw Accelerometer (0x01)  | accelerometer only | No | **Yes, ~6.5 s** |
+| Stability Classifier (0x13)| accelerometer + gyro | **Yes** | **No** |
+| Rotation Vector (0x05)    | accel + gyro + mag | **Yes** | **No** |
+
+Clean rule: **accelerometer-only sensors restart; anything that runs the
+MotionEngine (gyro involved) does not.** Datasheet 2.4.1 confirms the detector
+is accelerometer-only and "lower power than the stability classifier."
+
 This fits every result with no contradictions:
 
-- Detector restarts, accelerometer restarts → neither runs fusion.
-- Rotation Vector doesn't restart → fusion running.
+- Detector and raw accelerometer restart → neither runs the MotionEngine.
+- Stability Classifier and Rotation Vector don't restart → both run it.
 - It's **not** the report rate — the detector restarted even at 20 Hz, faster
-  than the Rotation Vector's 15 Hz. So it's the sensor *type* (fusion vs. not),
-  not how often it reports.
-- Not reported elsewhere → everyone streams a fused output continuously, so
-  their hub never idles.
+  than the Rotation Vector's 15 Hz. So it's the sensor *type* (MotionEngine vs.
+  not), not how often it reports. The classifier confirms this: it's mostly
+  quiet on the wire while still, yet doesn't restart — because the *engine* is
+  running, not because it's streaming reports.
+- Not reported elsewhere → everyone streams a MotionEngine output continuously,
+  so their hub never idles.
 
 NOTE — an earlier version of this doc concluded "I²C transport / driver-level
 reset." **That was wrong**: a transport-level reset would hit the Rotation
@@ -118,11 +133,19 @@ the ~6.5 s idle restart.)
 - **In normal use: no.** ACTIVE recording streams the Rotation Vector, which does
   **not** restart. IDLE (the detector) restarts, but logs nothing and
   auto-recovers, so no motion data is lost.
-- **The restart is a power-vs-restart tradeoff, not a bug.** IDLE uses the
-  lightweight detector to save power; the restart is the cost of that. Running
-  the fusion engine in IDLE (e.g. Rotation Vector + software motion detection)
-  would eliminate the restart, but keeps fusion powered continuously — defeating
-  the point of a low-power IDLE.
+- **The restart is a power-vs-restart tradeoff, not a bug.** The IDLE wake source
+  is a knob, not a right/wrong choice:
+
+  | IDLE wake option | Restarts? | Idle power | Notes |
+  |---|---|---|---|
+  | Stability Detector (current) | Yes ~6.5 s | Lowest (accel-only, devSleep-friendly) | Restart is harmless in IDLE |
+  | Stability Classifier | **No** | Higher (gyro on, MotionEngine — likely can't devSleep) | Still stability-based; quiet on the wire while stationary |
+  | Rotation Vector | **No** | Highest (full fusion) | Overkill for a wake source |
+
+  The detector was chosen for lowest power, and its restart is the price. The
+  **Stability Classifier is the reset-free middle ground** if the restart ever
+  becomes a problem — but it runs the gyro/MotionEngine, so idle current rises
+  and it likely can't be combined with the hub's devSleep.
 - **One real risk worth guarding against:** if a restart ever lands mid-I²C
   transaction, it can leave the bus stuck (SDA held low) and **freeze the device
   until power-cycle**. Not observed (restarts kept auto-recovering), but a cheap
