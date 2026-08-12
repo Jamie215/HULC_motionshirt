@@ -299,11 +299,19 @@
 // =============================================================================
 // SECTION 7 — BNO086 Stability Classifier Values
 // =============================================================================
-
-#define STABILITY_ON_TABLE    0
-#define STABILITY_STATIONARY  1
-#define STABILITY_STABLE      2
-#define STABILITY_MOTION      3
+// These MUST match the sh2 library's raw classification values, returned by
+// getStabilityClassifier() (un.stabilityClassifier.classification): the BNO086
+// reports 0=Unknown, 1=OnTable, 2=Stationary, 3=Stable, 4=Motion. An earlier
+// version of these defines was shifted down by one (ON_TABLE=0…MOTION=3), which
+// bench-confirmed as the raw value 4 printing as "UNKNOWN(motion assumed)":
+// real Motion(4) still tripped isMotion (>=3), but real Stable(3) was wrongly
+// counted as motion and the ON_TABLE checks matched Unknown(0) instead of a real
+// on-table. Aligned to the datasheet so all three states classify correctly.
+#define STABILITY_UNKNOWN     0
+#define STABILITY_ON_TABLE    1
+#define STABILITY_STATIONARY  2
+#define STABILITY_STABLE      3
+#define STABILITY_MOTION      4
 
 
 // =============================================================================
@@ -353,6 +361,7 @@ const char* stateName(SystemState s) {
 
 const char* stabilityName(uint8_t s) {
   switch (s) {
+    case STABILITY_UNKNOWN:    return "UNKNOWN";
     case STABILITY_ON_TABLE:   return "ON_TABLE";
     case STABILITY_STATIONARY: return "STATIONARY";
     case STABILITY_STABLE:     return "STABLE";
@@ -807,6 +816,11 @@ void onBNOInterrupt() {
 // SECTION 14 — Utility Helpers
 // =============================================================================
 
+// Motion = the classifier's genuine MOTION(4) value (>= keeps it robust if the
+// library ever returns a higher code). Deliberately does NOT count UNKNOWN(0):
+// the classifier emits Unknown right after it's enabled — i.e. on IDLE entry —
+// so treating it as motion would bounce IDLE straight back to ACTIVE and it
+// could never rest. Real motion onset reports MOTION(4), so it's still caught.
 bool isMotion(uint8_t s) {
   return s >= STABILITY_MOTION;
 }
