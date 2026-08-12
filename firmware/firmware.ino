@@ -264,7 +264,7 @@
 // ~430ms — necessary for the motion-wake diagnostic (frequent reports so a shake
 // can produce a readable EXITED). Only affects the DETECTOR build; the classifier
 // (production) path ignores this entirely.
-#define IDLE_DETECTOR_INTERVAL_US   500000UL   // 500ms — was 10s (see result above)
+#define IDLE_DETECTOR_INTERVAL_US   1000UL
 
 // IDLE Stability Classifier report interval (used when IDLE_WAKE_SOURCE ==
 // IDLE_WAKE_CLASSIFIER). The classifier streams its current classification at
