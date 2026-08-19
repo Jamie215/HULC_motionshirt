@@ -65,10 +65,15 @@
 //   [12–15] float   quat_y  (j)
 //   [16–19] float   quat_z  (k)
 //
-// States (unchanged from Phase 3):
-//   IDLE             — Stability Detector (0x1C) wake + hub devSleep (~7mA).
-//                      Reboots ~6.6s while asleep (inherent) — see Section 3
-//                      and IDLE_USE_DEVSLEEP.
+// States:
+//   IDLE             — Selectable wake source (see Section 3, IDLE_WAKE_SOURCE):
+//                      • CLASSIFIER (default) — Stability Classifier (0x13),
+//                        accel+gyro / MotionEngine. Reset-FREE idle (fusion keeps
+//                        the hub active) at the cost of higher idle current (gyro
+//                        on, cannot hold devSleep). Motion = classifier == MOTION.
+//                      • DETECTOR — Stability Detector (0x1C) wake + hub devSleep
+//                        (~7mA). Lowest power but reboots ~6.6s while asleep
+//                        (inherent) — see Section 3 and IDLE_USE_DEVSLEEP.
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
@@ -93,6 +98,18 @@
 #define BNO_INT_PIN     2
 #define BNO_RST_PIN     3
 #define BNO08X_I2C_ADDR 0x4B
+
+// The Seeed XIAO nRF52840 mbed core does not define the SDA/SCL convenience
+// macros (unlike the AVR/ESP cores), so i2cBusRecover() won't compile against
+// them bare. Alias to the canonical Wire pin defines, which this core does
+// provide (it's what Wire.begin() itself uses). Guarded so cores that DO define
+// SDA/SCL keep their own values.
+#ifndef SDA
+  #define SDA PIN_WIRE_SDA
+#endif
+#ifndef SCL
+  #define SCL PIN_WIRE_SCL
+#endif
 
 #define PIN_LED_BLUE    LED_BLUE
 #define PIN_LED_RED     LED_RED
@@ -125,6 +142,41 @@
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
 
+// ── IDLE wake-source selector ───────────────────────────────────────────────
+// Which sensor arms IDLE and drives the IDLE→ACTIVE state change. The reset
+// investigation (state_machine_test/FINDINGS.md) established that the reboot is
+// gated by the fusion engine (MotionEngine): accel-only sensors self-reboot
+// ~6.6s in idle; anything that runs fusion (gyro involved) does not.
+//
+//   DETECTOR   — Stability Detector (0x1C). Accel-only. Lowest idle power
+//                (~7mA, devSleep-friendly) but self-reboots ~6.6s (harmless in
+//                IDLE but clutters logs and risks a mid-I2C-transaction stall).
+//                Trigger: detector EXITED report = stability broken = motion.
+//                This is the ORIGINAL Phase 3 wake source, kept as the baseline.
+//
+//   CLASSIFIER — Stability Classifier (0x13). Accel+gyro, runs the MotionEngine,
+//                so the hub never enters the self-rebooting idle state → IDLE is
+//                RESET-FREE. Cost: the running gyro raises idle current and the
+//                hub cannot hold devSleep, so IDLE_USE_DEVSLEEP is forced 0 for
+//                this source. Trigger: classifier value == MOTION — the SAME
+//                signal STATIC_POSTURE and ACTIVE_RECORDING already act on, so
+//                IDLE now shares one motion definition with the running states.
+//
+// Flip IDLE_WAKE_SOURCE and reflash to A/B compare; the idle-reset stats printed
+// by handleIdle() (count + mean/min/max hold) make the difference measurable:
+// DETECTOR prints a steady stream of ~6.6s resets, CLASSIFIER prints none.
+#define IDLE_WAKE_DETECTOR    0
+#define IDLE_WAKE_CLASSIFIER  1
+#define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER
+
+#if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
+  #define IDLE_WAKE_NAME "Stability Detector (0x1C)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+  #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
+#else
+  #error "IDLE_WAKE_SOURCE must be IDLE_WAKE_DETECTOR or IDLE_WAKE_CLASSIFIER"
+#endif
+
 // Significant Motion (0x12) — NO LONGER the IDLE wake source (kept for
 // reference / easy re-test). Bench result: under devSleep, 0x12 self-rebooted
 // every ~1.17s regardless of report interval, and dropping alwaysOn only made
@@ -144,7 +196,27 @@
 // SigMotion ~1.17s. This reboot is INHERENT, not a bug we can code away; each
 // one is a brief re-arm (no data is logged in IDLE), and it is already priced
 // into the ~7mA average. Set to 0 only to fall back to the 22mA no-sleep path.
-#define IDLE_USE_DEVSLEEP  1
+//
+// AUTOMATIC per wake source: devSleep only applies to the DETECTOR. The
+// CLASSIFIER runs the MotionEngine, which keeps the hub active and (per
+// FINDINGS.md) cannot hold a host-commanded devSleep, so it is forced 0 there —
+// the classifier's higher idle current is the known price of its reset-free idle.
+//
+// DIAGNOSTIC — DETECTOR_DIAG_NO_DEVSLEEP: set to 1 to run the DETECTOR build with
+// the hub AWAKE (devSleep off). Purpose: test whether devSleep is what suppresses
+// the detector's EXITED motion-wake. With devSleep the hub may deliver only the
+// periodic heartbeat and coalesce the wake-channel change-event; running awake
+// lets the detector emit change-events continuously. Shake in both settings and
+// watch the per-event "DETECTOR: 0x1C val=" log (added in handleIdle): if it
+// wakes awake but not asleep, devSleep is the blocker. No effect on the
+// classifier build (never uses devSleep). Leave 0 for normal operation.
+#define DETECTOR_DIAG_NO_DEVSLEEP  0
+
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && !DETECTOR_DIAG_NO_DEVSLEEP
+  #define IDLE_USE_DEVSLEEP  1
+#else
+  #define IDLE_USE_DEVSLEEP  0
+#endif
 
 // Wake-sensor config flags for the devSleep path. Bench-established:
 //   • alwaysOnEnabled MUST be 1 — "Sensor remains on in sleep state". With it 0
@@ -180,13 +252,27 @@
 // the reboot period never fires (the reboot pre-empts it), and the ~5s reboot
 // becomes the wakeup floor. Past ~10s, raising this does nothing for idle power.
 //
-// TRADEOFF TO VERIFY: if the detector only evaluates at the heartbeat (poll),
-// a long interval also slows motion-onset detection. Watch the move→EXITED
-// latency on the bench. 10s is chosen to sit just above the reboot interval.
-#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
+// BENCH RESULT — 10s was WRONG. At a 10s interval the detector's first heartbeat
+// is 10s away, but the baseline devSleep reboot fires at ~840ms, so the detector
+// almost never reports before rebooting: it churns at the ~840ms floor (only
+// rarely surviving to ~10s to emit a single report), which pins idle at ~12mA
+// instead of the ~7mA the long interval was meant to buy. A report must land
+// within the first ~800ms of an arm to stretch the hold to the ~6.5s ceiling
+// (see the sweep table in state_machine_test/FINDINGS.md), so the interval has
+// to be SHORTER than the baseline reboot. 500ms puts the first report well
+// inside that window: the detector reaches the ~6.5s ceiling and reports every
+// ~430ms — necessary for the motion-wake diagnostic (frequent reports so a shake
+// can produce a readable EXITED). Only affects the DETECTOR build; the classifier
+// (production) path ignores this entirely.
+#define IDLE_DETECTOR_INTERVAL_US   1000UL
 
-// Retained: previously the IDLE Stability Classifier report interval. No
-// longer used for IDLE, kept for reference / easy rollback to the 0x13 path.
+// IDLE Stability Classifier report interval (used when IDLE_WAKE_SOURCE ==
+// IDLE_WAKE_CLASSIFIER). The classifier streams its current classification at
+// this rate; each report wakes the nRF, so this trades idle current against
+// motion-onset latency. 1s is a balance — the classifier reaches MOTION within
+// one interval of movement, and the hub is reset-free so (unlike the detector's
+// interval) nothing pre-empts a longer setting. Enable-time interval is in ms
+// (SparkFun enableStabilityClassifier takes ms, not the us enableReport wants).
 #define IDLE_STABILITY_MS           1000
 
 
@@ -233,11 +319,19 @@
 // =============================================================================
 // SECTION 7 — BNO086 Stability Classifier Values
 // =============================================================================
-
-#define STABILITY_ON_TABLE    0
-#define STABILITY_STATIONARY  1
-#define STABILITY_STABLE      2
-#define STABILITY_MOTION      3
+// These MUST match the sh2 library's raw classification values, returned by
+// getStabilityClassifier() (un.stabilityClassifier.classification): the BNO086
+// reports 0=Unknown, 1=OnTable, 2=Stationary, 3=Stable, 4=Motion. An earlier
+// version of these defines was shifted down by one (ON_TABLE=0…MOTION=3), which
+// bench-confirmed as the raw value 4 printing as "UNKNOWN(motion assumed)":
+// real Motion(4) still tripped isMotion (>=3), but real Stable(3) was wrongly
+// counted as motion and the ON_TABLE checks matched Unknown(0) instead of a real
+// on-table. Aligned to the datasheet so all three states classify correctly.
+#define STABILITY_UNKNOWN     0
+#define STABILITY_ON_TABLE    1
+#define STABILITY_STATIONARY  2
+#define STABILITY_STABLE      3
+#define STABILITY_MOTION      4
 
 
 // =============================================================================
@@ -287,6 +381,7 @@ const char* stateName(SystemState s) {
 
 const char* stabilityName(uint8_t s) {
   switch (s) {
+    case STABILITY_UNKNOWN:    return "UNKNOWN";
     case STABILITY_ON_TABLE:   return "ON_TABLE";
     case STABILITY_STATIONARY: return "STATIONARY";
     case STABILITY_STABLE:     return "STABLE";
@@ -348,6 +443,17 @@ bool         bnoInRunningMode    = false;
 // millis() captured right after each successful modeSleep(), so the reset
 // handler can report exactly how long the hub held devSleep before rebooting.
 uint32_t     lastDevSleepMs      = 0;
+
+// ── IDLE wake-source instrumentation (detector-vs-classifier comparison) ──
+// millis() captured on every IDLE (re-)arm, plus running stats on how long each
+// arm survives before the hub self-resets. This is the head-to-head metric:
+// DETECTOR racks up periodic ~6.6s resets here, CLASSIFIER should log none.
+// (Sub-1s holds are excluded as post-arm settle noise.)
+uint32_t     idleArmedMs         = 0;
+uint32_t     idleResetCount      = 0;
+uint32_t     idleHeldSum         = 0;
+uint32_t     idleHeldMin         = 0xFFFFFFFFUL;
+uint32_t     idleHeldMax         = 0;
 
 volatile bool imuDataReady = false;
 
@@ -730,6 +836,11 @@ void onBNOInterrupt() {
 // SECTION 14 — Utility Helpers
 // =============================================================================
 
+// Motion = the classifier's genuine MOTION(4) value (>= keeps it robust if the
+// library ever returns a higher code). Deliberately does NOT count UNKNOWN(0):
+// the classifier emits Unknown right after it's enabled — i.e. on IDLE entry —
+// so treating it as motion would bounce IDLE straight back to ACTIVE and it
+// could never rest. Real motion onset reports MOTION(4), so it's still caught.
 bool isMotion(uint8_t s) {
   return s >= STABILITY_MOTION;
 }
@@ -785,15 +896,23 @@ void waitForIMUData() {
 
 // Enables the report that drives IDLE. Kept in one place so configureBNO_Idle()
 // and handleIdle()'s reset-recovery path stay in sync; re-armed on every IDLE
-// entry. See Section 3 for why IDLE arms the Stability Detector (0x1C) and what
-// IDLE_USE_DEVSLEEP changes.
+// entry. See Section 3 (IDLE_WAKE_SOURCE) for the detector-vs-classifier choice
+// and what IDLE_USE_DEVSLEEP changes.
 void enableIdleReports() {
-#if IDLE_USE_DEVSLEEP
-  // Deep-sleep path: arm 0x1C as a WAKE + ALWAYS-ON sensor so it keeps running
-  // while the hub is in devSleep and can pull INT to wake the host. SparkFun's
-  // enableReport() forces both flags false, so configure the sh2 layer directly
-  // (sh2_setSensorConfig / sh2_SensorConfig_t come from sh2.h, included by the
-  // library header). Falls back to the plain report if the config is rejected.
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+  // Reset-free path: the Stability Classifier (0x13) runs the MotionEngine
+  // (accel+gyro), which keeps the hub active so it never enters the ~6.6s
+  // self-rebooting idle state. It streams its classification (ON_TABLE /
+  // STATIONARY / STABLE / MOTION) at IDLE_STABILITY_MS; handleIdle() wakes into
+  // ACTIVE on MOTION. IDLE_USE_DEVSLEEP is forced 0 for this source (the running
+  // MotionEngine can't hold devSleep), so no sh2 wake/always-on dance is needed.
+  imu.enableStabilityClassifier(IDLE_STABILITY_MS);
+#elif IDLE_USE_DEVSLEEP
+  // Deep-sleep detector path: arm 0x1C as a WAKE + ALWAYS-ON sensor so it keeps
+  // running while the hub is in devSleep and can pull INT to wake the host.
+  // SparkFun's enableReport() forces both flags false, so configure the sh2
+  // layer directly (sh2_setSensorConfig / sh2_SensorConfig_t come from sh2.h,
+  // included by the library header). Falls back to the plain report if rejected.
   sh2_SensorConfig_t cfg = {};          // value-init: all fields zero/false
   cfg.wakeupEnabled     = IDLE_WAKE_WAKEUP_EN;    // "Wake host on event"
   cfg.alwaysOnEnabled   = IDLE_WAKE_ALWAYSON_EN;  // "Sensor remains on in sleep state"
@@ -804,13 +923,14 @@ void enableIdleReports() {
     imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
   }
 #else
-  // Option A: host stays in System-ON (__WFE) sleep reading INT; hub not slept.
+  // Detector without devSleep: host stays in System-ON (__WFE) sleep reading INT.
   imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
 #endif
+  idleArmedMs = millis();   // start-of-arm marker for the reset-hold stats
 }
 
 void configureBNO_Idle() {
-  LOGF("BNO: soft reset → IDLE mode (Stability Detector 0x1C wake)");
+  LOGF("BNO: soft reset → IDLE mode (%s wake)", IDLE_WAKE_NAME);
   imu.softReset();
   delay(150);
 
@@ -825,6 +945,7 @@ void configureBNO_Idle() {
   delay(20);
   if (imu.modeSleep()) {
     lastDevSleepMs = millis();
+    idleArmedMs    = millis();   // re-mark: devSleep is the real start of the hold
     LOGF("BNO: devSleep engaged (wakeup=%d alwaysOn=%d) — hub asleep, 0x1C armed",
          IDLE_WAKE_WAKEUP_EN, IDLE_WAKE_ALWAYSON_EN);
   } else {
@@ -832,7 +953,7 @@ void configureBNO_Idle() {
   }
 #endif
 
-  LOGF("BNO: IDLE Stability Detector (0x1C) armed as wake source");
+  LOGF("BNO: IDLE %s armed as wake source", IDLE_WAKE_NAME);
 }
 
 void configureBNO_Running() {
@@ -1005,12 +1126,21 @@ void logStabilityIfChanged(uint8_t stability) {
 
 void handleIdle() {
   if (imu.wasReset()) {
-    // How long the hub actually held devSleep before rebooting — the precise
-    // per-config timeout (getResetReason() is boot-cached and useless here, so
-    // we don't print it). If this ~matches across flag combos the reboot is a
-    // fixed internal timeout; if it stretches when alwaysOn is dropped, the
-    // flag is the driver.
-    uint32_t sleptFor = millis() - lastDevSleepMs;
+    // How long the current arm survived before the hub self-rebooted. This is
+    // the head-to-head metric between wake sources: the DETECTOR racks these up
+    // every ~6.6s, the CLASSIFIER should essentially never land here (the
+    // MotionEngine keeps the hub out of the self-rebooting idle state).
+    // (getResetReason() is boot-cached and useless per-reset, so we don't print it.)
+    uint32_t heldFor = millis() - idleArmedMs;
+
+    // Running stats — exclude sub-1s holds as post-arm settle noise, matching
+    // the test-harness A/B convention so the two builds print comparable numbers.
+    if (heldFor > 1000) {
+      idleResetCount++;
+      idleHeldSum += heldFor;
+      if (heldFor < idleHeldMin) idleHeldMin = heldFor;
+      if (heldFor > idleHeldMax) idleHeldMax = heldFor;
+    }
 
     bnoInRunningMode = false;
     enableIdleReports();
@@ -1021,9 +1151,13 @@ void handleIdle() {
     uint16_t drained = 0;
     uint8_t  lastId  = 0;
     while (imu.getSensorEvent()) { lastId = imu.getSensorEventID(); drained++; }
-    LOGF("IDLE reset: held devSleep %lums — drained %u post-reset events "
-         "(lastId=0x%02X), INT=%d", sleptFor, drained, lastId,
+    LOGF("IDLE reset [%s]: held %lums — drained %u post-reset events "
+         "(lastId=0x%02X), INT=%d", IDLE_WAKE_NAME, heldFor, drained, lastId,
          digitalRead(BNO_INT_PIN));
+    if (idleResetCount > 0) {
+      LOGF("IDLE reset stats: n=%lu  mean=%lums  min=%lums  max=%lums",
+           idleResetCount, idleHeldSum / idleResetCount, idleHeldMin, idleHeldMax);
+    }
 
     imu.wasReset();
     imuDataReady = false;
@@ -1032,7 +1166,7 @@ void handleIdle() {
     // Reboot leaves the hub awake — re-enter devSleep so a rare idle reset
     // doesn't silently fall back to the higher-power (awake) detector path.
     delay(20);
-    if (imu.modeSleep()) lastDevSleepMs = millis();
+    if (imu.modeSleep()) { lastDevSleepMs = millis(); idleArmedMs = millis(); }
 #endif
   }
 
@@ -1041,10 +1175,31 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
-    // IDLE is near-silent (only the periodic devSleep reboot + the detector's
-    // EXITED event), so log every raw report ID for on-bench visibility.
+    // IDLE is near-silent (the wake sensor's periodic report + any reboot), so
+    // log every raw report ID for on-bench visibility.
     LOGF("IDLE: BNO event id=0x%02X", id);
 
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+    // Stability Classifier drives IDLE: it streams ON_TABLE / STATIONARY /
+    // STABLE / MOTION. MOTION = patient moving → wake into ACTIVE_RECORDING.
+    // This is the SAME motion test STATIC_POSTURE / ACTIVE_RECORDING use.
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+      lastStabilityEvent = millis();
+      consecutiveResets  = 0;
+
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
+      if (isMotion(s)) {
+        LOGF("CLASSIFIER: MOTION — patient moving → ACTIVE_RECORDING");
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
+    }
+#else
     if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
@@ -1053,6 +1208,15 @@ void handleIdle() {
       // value through getStabilityClassifier(). EXITED = stability broken =
       // motion started → wake into ACTIVE_RECORDING. (ENTERED is ignored.)
       uint8_t val = imu.getStabilityClassifier();
+
+      // DIAGNOSTIC: print the raw value on EVERY 0x1C event (not just EXITED),
+      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If
+      // the heartbeats stream a steady non-2 value even while shaking, the
+      // detector isn't delivering the EXITED edge on the channel we read —
+      // independent of devSleep. Compare with DETECTOR_DIAG_NO_DEVSLEEP flipped.
+      LOGF("DETECTOR: 0x1C val=%u (ENTERED=1 EXITED=2)  devSleep=%d",
+           val, IDLE_USE_DEVSLEEP);
+
       if (val == DETECTOR_EXITED) {
         LOGF("DETECTOR: EXITED — patient moving → ACTIVE_RECORDING");
 #if IDLE_USE_DEVSLEEP
@@ -1069,6 +1233,7 @@ void handleIdle() {
         return;
       }
     }
+#endif
   }
 }
 
