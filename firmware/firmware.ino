@@ -167,6 +167,29 @@
 // classifier build (never uses devSleep). Leave 0 for normal operation.
 #define DETECTOR_DIAG_NO_DEVSLEEP  0
 
+// ── IDLE wake source (compile-time A/B switch) ─────────────────────────────
+// DETECTOR   — Stability Detector (0x1C), accelerometer only. Holds host
+//              devSleep (~7mA idle) but self-reboots every ~6.6s (inherent —
+//              a benign re-arm; IDLE logs nothing). Lowest power.
+// CLASSIFIER — Stability Classifier (0x13), accel+gyro through the MotionEngine.
+//              No idle reboot, but the running engine can't hold devSleep, so
+//              idle current is higher. Reset-free middle ground; wakes IDLE on
+//              the same MOTION classification STATIC_POSTURE/ACTIVE act on.
+//
+// See firmware/IDLE_WAKE_SOURCE.md and state_machine_test/FINDINGS.md for the
+// full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
+#define IDLE_WAKE_DETECTOR    0
+#define IDLE_WAKE_CLASSIFIER  1
+#define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
+
+#if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
+  #define IDLE_WAKE_NAME "Stability Detector (0x1C)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+  #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
+#else
+  #error "IDLE_WAKE_SOURCE must be IDLE_WAKE_DETECTOR or IDLE_WAKE_CLASSIFIER"
+#endif
+
 #if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && !DETECTOR_DIAG_NO_DEVSLEEP
   #define IDLE_USE_DEVSLEEP  1
 #else
@@ -194,6 +217,10 @@
 #define BNO_RV_INTERVAL_MS          65
 #define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
+// Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
+// Also the worst-case IDLE->ACTIVE motion-onset latency for that build (the
+// classifier reaches MOTION within one interval). Unused by the detector build.
+#define IDLE_STABILITY_MS           1000
 
 // IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
 // Bench finding: the detector STREAMS a heartbeat report at this interval, and
