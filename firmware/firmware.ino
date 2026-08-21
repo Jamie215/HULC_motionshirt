@@ -17,13 +17,15 @@
 //   Service  : IMU Motion Service         (UUID A0010000-...)
 //   Char A001: Quaternion stream          NOTIFY  20 bytes   (debug only)
 //   Char A002: Control                    WRITE    5 bytes
-//   Char A003: Status                     READ     4 bytes
+//   Char A003: Status                     READ     5 bytes
 //   Char A004: Log offload                NOTIFY  200 bytes
 //
 // Status characteristic (A003) layout:
 //   Byte 0  : Device state (0=IDLE, 1=STATIC_POSTURE, 2=ACTIVE_RECORDING)
 //   Byte 1  : Flags (bit 0 = streaming, bit 1 = time synced)
 //   Byte 2-3: Log size in KB (little-endian uint16)
+//   Byte 4  : Node ID (this board's NODE_ID, see Section 2b) — lets the phone
+//             tag which sensor it connected to when building a multi-node dataset
 //
 // Control commands:
 //   0x00  stop BLE streaming (debug)
@@ -54,7 +56,9 @@
 //   Header sector (4KB):
 //     Byte 0–3   : Magic number 0xC0DE0001 — confirms flash is initialized
 //     Byte 4–7   : Write pointer (byte offset of next write)
-//     Byte 8–19  : Reserved header padding
+//     Byte 8      : Node ID (this board's NODE_ID) — makes each offloaded log
+//                   self-identifying so N logs can be merged without ambiguity
+//     Byte 9–19  : Reserved header padding
 //   Data region (byte 4096 onward):
 //     20-byte quaternion records, sequentially appended
 //
@@ -77,7 +81,13 @@
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
-// Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
+// Phase 3 complete. Phase 4 (multi-node capture, topology A): each board runs
+// this same firmware with a unique NODE_ID (Section 2b) and stays an independent
+// BLE peripheral + flash logger. The phone connects to each in turn, syncs them
+// to one epoch, offloads every log, and merges them offline on the shared time
+// base. Node identity (this step) is the foundation: the ID rides in the BLE
+// name, the status characteristic, and the flash header so a merged dataset can
+// always tell the sensors apart. Next: Phase 4 mobile app, Phase 5 data pipeline.
 // =============================================================================
 
 
@@ -119,7 +129,18 @@
 // SECTION 2b — BLE Configuration (from Phase 2b)
 // =============================================================================
 
-#define DEVICE_NAME    "HULC-IMU-01"
+// ── Node identity (Phase 4, topology A) ───────────────────────────────────
+// One physical board per NODE_ID. Set this uniquely on each board before
+// flashing (1, 2, 3, … — 5–6 planned). The ID rides in three places so a
+// merged multi-node dataset can always tell the sensors apart:
+//   • the BLE advertised name  ("HULC-IMU-01", "-02", …)  — scan-time identity
+//   • the status characteristic (A003, byte 4)            — connect-time identity
+//   • the flash log header      (byte 8, see saveHeader)  — offload-time identity
+// The full device name is built from NODE_ID at boot into deviceName[].
+// Range is 1..255 (uint8); 0 is reserved as "unset".
+#define NODE_ID            1
+#define DEVICE_NAME_PREFIX "HULC-IMU"
+
 #define UUID_SERVICE   "A0010000-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_QUAT      "A0010001-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_CONTROL   "A0010002-B0CE-4A4A-8F0B-0011223344FF"
@@ -366,10 +387,11 @@ BNO08x       imu;
 BLEService        imuService(UUID_SERVICE);
 BLECharacteristic quatChar(UUID_QUAT,       BLENotify,  20);
 BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    5);  // 1 cmd + 4 epoch
-BLECharacteristic statChar(UUID_STATUS,     BLERead,     4);
+BLECharacteristic statChar(UUID_STATUS,     BLERead,     5);  // +node ID byte
 BLECharacteristic offloadChar(UUID_OFFLOAD, BLENotify,  OFFLOAD_CHUNK_SIZE);
 bool              bleConnected     = false;
 bool              streaming        = false;
+char              deviceName[20]   = DEVICE_NAME_PREFIX;  // final name built in setup()
 
 // ── Time Sync ──
 uint32_t          syncEpoch        = 0;     // Unix epoch from phone
@@ -509,6 +531,7 @@ void saveHeader() {
   uint32_t magic       = LOG_MAGIC;
   memcpy(header,     &magic,     4);
   memcpy(header + 4, &writeAddr, 4);
+  header[8] = (uint8_t)NODE_ID;   // byte 8 — makes this log self-identifying
   qspiWrite(LOG_HEADER_ADDR, header, 20);
 
   // Read-back verify
@@ -631,13 +654,14 @@ void updateStatus() {
   if (streaming)  flags |= 0x01;
   if (timeSynced) flags |= 0x02;
 
-  uint8_t status[4] = {
+  uint8_t status[5] = {
     (uint8_t)currentState,
     flags,
     (uint8_t)(logKB & 0xFF),
-    (uint8_t)((logKB >> 8) & 0xFF)
+    (uint8_t)((logKB >> 8) & 0xFF),
+    (uint8_t)NODE_ID          // byte 4 — this board's identity for the phone
   };
-  statChar.writeValue(status, 4);
+  statChar.writeValue(status, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,6 +1361,9 @@ void setup() {
   }
 
   LOG("=== HULC Motion Shirt — Phase 3 + Flash ===");
+  // Build this board's identity from NODE_ID: "HULC-IMU-01", "-02", …
+  snprintf(deviceName, sizeof(deviceName), "%s-%02u", DEVICE_NAME_PREFIX, (unsigned)NODE_ID);
+  LOGF("Node ID %u — device name %s", (unsigned)NODE_ID, deviceName);
   LOG("Initialising...");
 
   pinMode(PIN_LED_BLUE, OUTPUT);
@@ -1394,8 +1421,8 @@ void setup() {
   if (!BLE.begin()) {
     Serial.println("FAILED — BLE disabled, state machine runs without sync");
   } else {
-    BLE.setLocalName(DEVICE_NAME);
-    BLE.setDeviceName(DEVICE_NAME);
+    BLE.setLocalName(deviceName);
+    BLE.setDeviceName(deviceName);
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);
@@ -1408,7 +1435,7 @@ void setup() {
 
     Serial.println("OK");
     Serial.print("[BLE] Advertising as ");
-    Serial.println(DEVICE_NAME);
+    Serial.println(deviceName);
   }
 
   LOG("Setup complete. State machine running — waiting for movement...\n");
