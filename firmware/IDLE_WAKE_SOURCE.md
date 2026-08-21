@@ -1,69 +1,66 @@
-# IDLE Wake Source — Detector vs Classifier
+# IDLE Wake Source — why the Stability Detector
 
 Follow-up to `state_machine_test/FINDINGS.md`. The investigation proved the
 periodic ~6.6 s IDLE reset is gated by the BNO086's **fusion engine**
 (MotionEngine): accelerometer-only sensors self-reboot in idle; anything that
-runs fusion (gyro involved) does not. The **Stability Classifier (0x13)** runs
-accel+gyro through the MotionEngine and did **not** reset in the test harness.
+runs fusion (gyro involved) does not.
 
-This change carries that finding into the production firmware (`firmware.ino`):
-the Stability Classifier can now be the IDLE state-changing flag, and the two
-wake sources are a compile-time A/B switch with matching instrumentation.
+This doc records **which wake source the production firmware uses and why**. The
+short version: `firmware.ino` uses the **Stability Detector (0x1C)** for IDLE and
+accepts the ~6.6 s reset as a benign, understood tradeoff.
 
-## The switch
+## The decision
 
-`firmware.ino`, Section 3:
+IDLE arms the **Stability Detector (0x1C)** — accelerometer-only — and puts the
+BNO hub in devSleep (`IDLE_USE_DEVSLEEP = 1`). This is the lowest-power idle at
+~7 mA. Its cost is the inherent ~6.6 s self-reboot while asleep, which is
+harmless: IDLE logs nothing, and the firmware re-arms the detector automatically
+on each reset (see `handleIdle()`).
 
-```c
-#define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER   // or IDLE_WAKE_DETECTOR
-```
+The one real risk of the reset — that it lands mid-I²C transaction and leaves the
+bus stuck (SDA held low) — is insured against by `i2cBusRecover()` in `setup()`,
+which stays valuable regardless of wake source.
 
-| | `IDLE_WAKE_DETECTOR` (original) | `IDLE_WAKE_CLASSIFIER` (new default) |
+### The alternative we considered and did not adopt
+
+The **Stability Classifier (0x13)** — accel + gyro through the MotionEngine — does
+**not** self-reset in idle, because the running fusion engine keeps the hub
+active. It was the reset-free alternative. We did not adopt it because:
+
+| | Stability Detector `0x1C` (adopted) | Stability Classifier `0x13` (not adopted) |
 |---|---|---|
-| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
 | Sensing | accelerometer only | accel + gyro (MotionEngine) |
-| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active |
-| `IDLE_USE_DEVSLEEP` | `1` (auto) — hub sleeps ~7 mA | `0` (auto) — MotionEngine can't hold devSleep |
-| Idle current | Lowest | Higher (gyro running, no devSleep) |
+| Idle reset | ~6.6 s (inherent, benign) | none — fusion keeps the hub active |
+| devSleep | holds it → ~7 mA idle | running MotionEngine can't hold it |
+| Idle current | lowest | higher (gyro on, no devSleep) |
 | Motion trigger | detector `EXITED` report | classifier value `== MOTION` |
 
-`IDLE_USE_DEVSLEEP` is now derived from the wake source automatically — you only
-set `IDLE_WAKE_SOURCE`. Selecting the classifier also unifies the motion
-definition: IDLE now wakes on the **same** `MOTION` classification that
-`STATIC_POSTURE` and `ACTIVE_RECORDING` already act on.
+The detector's lower idle current won out, since the reset it costs is benign.
+See `FINDINGS.md` for the full four-sensor comparison (detector, raw
+accelerometer, classifier, Rotation Vector) behind this table.
 
-## What "compare the performance" measures
+## History: this used to be a compile-time A/B switch
 
-`handleIdle()` records every self-reset and prints a running summary on each one:
+Earlier revisions of `firmware.ino` exposed both sources through an
+`IDLE_WAKE_SOURCE` compile-time switch so the two could be A/B compared on the
+bench. That switch — along with its diagnostic instrumentation — has been
+**removed**: the detector is the settled choice, and keeping a second, rarely
+built path (whose `handleIdle()` motion-wake logic had drifted out of sync) was
+more liability than flexibility.
 
-```
-IDLE reset [<source>]: held <ms> — drained <n> post-reset events ...
-IDLE reset stats: n=<count>  mean=<ms>  min=<ms>  max=<ms>
-```
+## If the reset ever does become a problem
 
-- **Detector build** — expect a steady stream of these, `mean` ≈ 6600 ms,
-  one every ~6.6 s the device sits idle.
-- **Classifier build** — expect the `IDLE reset` line to essentially never
-  print while idle (`n` stays 0). That absence *is* the result.
+If a future requirement makes the ~6.6 s reset unacceptable (e.g. it starts
+causing real bus stalls the recovery routine can't absorb, or the idle-current
+budget grows enough to afford the gyro), moving IDLE to the classifier is a
+deliberate, well-understood change:
 
-Sub-1 s holds are excluded from the stats as post-arm settle noise, matching the
-test-harness A/B convention.
+1. In `enableIdleReports()`, arm `imu.enableStabilityClassifier(interval)` instead
+   of the `sh2_setSensorConfig(0x1C)` detector path, and set
+   `IDLE_USE_DEVSLEEP = 0` (the MotionEngine can't hold devSleep).
+2. In `handleIdle()`, wake on the classifier's `MOTION` value (reuse `isMotion()`,
+   as `STATIC_POSTURE`/`ACTIVE_RECORDING` already do) instead of the detector's
+   `EXITED` report.
 
-## Bench procedure
-
-1. Build with `IDLE_WAKE_SOURCE = IDLE_WAKE_DETECTOR`, flash, leave the device
-   still in IDLE for a few minutes, capture serial. Note the reset `n`/`mean`
-   and (with a meter) idle current.
-2. Rebuild with `IDLE_WAKE_SOURCE = IDLE_WAKE_CLASSIFIER`, repeat.
-3. Compare: classifier should show **zero idle resets** at the cost of **higher
-   idle current**. Confirm motion still wakes IDLE→ACTIVE promptly (the
-   classifier reaches `MOTION` within one `IDLE_STABILITY_MS` interval, default
-   1 s) — tune `IDLE_STABILITY_MS` for the latency/power balance you want.
-
-## Recommendation
-
-Use the classifier when a reset-free, robust idle matters more than the last few
-mA — it removes the periodic reboot (and with it the small risk of a
-reset landing mid-I²C transaction and stalling the bus). Keep the detector build
-for the lowest-power idle where the harmless periodic re-arm is acceptable. The
-`i2cBusRecover()` insurance in `setup()` stays valuable either way.
+That unifies the motion definition across all three states and removes the idle
+reset, at the cost of higher idle current.
