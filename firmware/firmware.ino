@@ -13,24 +13,46 @@
 //   + Phase 3d (control commands: stream, erase, offload)
 //   + Phase 3e (time sync, fast offload, IDLE-only sync enforcement)
 //
+// MULTI-NODE:
+//   A motion shirt uses several IMU nodes (e.g. one per body segment). Each
+//   node advertises a UNIQUE name — DEVICE_NAME_PREFIX + "-" + a 4-hex suffix
+//   derived from the nRF FICR DEVICEID (stable per board, no per-board reflash).
+//   A central (laptop harness / phone) connects to N nodes at once. For the
+//   nodes' quaternion streams to be fusable they must share a common time base
+//   to within a few ms, so this build adds a millisecond-resolution sync
+//   (command 0x05) and a read-only Time Info characteristic (A005) the central
+//   reads from each node to measure cross-node clock offset. See
+//   firmware/MULTINODE_TESTING.md and tools/multinode_test.py.
+//
 // BLE GATT layout:
 //   Service  : IMU Motion Service         (UUID A0010000-...)
 //   Char A001: Quaternion stream          NOTIFY  20 bytes   (debug only)
-//   Char A002: Control                    WRITE    5 bytes
+//   Char A002: Control                    WRITE    9 bytes
 //   Char A003: Status                     READ     4 bytes
 //   Char A004: Log offload                NOTIFY  200 bytes
+//   Char A005: Time Info                  READ    16 bytes
 //
 // Status characteristic (A003) layout:
 //   Byte 0  : Device state (0=IDLE, 1=STATIC_POSTURE, 2=ACTIVE_RECORDING)
 //   Byte 1  : Flags (bit 0 = streaming, bit 1 = time synced)
 //   Byte 2-3: Log size in KB (little-endian uint16)
 //
+// Time Info characteristic (A005) layout (little-endian) — for skew measurement:
+//   Byte 0-3   : node millis() at the moment of the read (live)
+//   Byte 4-11  : sync epoch in ms (uint64, 0 if never synced)
+//   Byte 12-15 : node millis() captured at the last sync
+//   The central computes each node's epoch-now as
+//     sync_epoch_ms + (node_millis_now - sync_millis)
+//   and compares two nodes to get their clock offset.
+//
 // Control commands:
 //   0x00  stop BLE streaming (debug)
 //   0x01  start BLE streaming (debug)
-//   0x02  time sync — payload: [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
+//   0x02  time sync (seconds) — payload: [0x02, epoch_b0..b3]  (legacy)
 //         Firmware stores mapping between millis() and Unix epoch.
 //         Records continue using raw millis(); phone applies correction.
+//   0x05  time sync (ms) — payload: [0x05, epoch_ms_b0..b7]  (uint64 LE)
+//         Millisecond-resolution variant used for multi-node alignment.
 //   0x03  erase flash log
 //   0x04  begin log offload over A004 (IDLE only — rejected in other states)
 //
@@ -119,12 +141,16 @@
 // SECTION 2b — BLE Configuration (from Phase 2b)
 // =============================================================================
 
-#define DEVICE_NAME    "HULC-IMU-01"
+// Base advertised name. Each node appends a unique "-XXXX" suffix (from the
+// nRF FICR DEVICEID) at boot so multiple nodes never collide on the air.
+// See makeDeviceName(). The full name is held in g_deviceName.
+#define DEVICE_NAME_PREFIX "HULC-IMU"
 #define UUID_SERVICE   "A0010000-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_QUAT      "A0010001-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_CONTROL   "A0010002-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_STATUS    "A0010003-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_OFFLOAD   "A0010004-B0CE-4A4A-8F0B-0011223344FF"
+#define UUID_SYNCINFO  "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 // Offload transfer tuning
 #define OFFLOAD_CHUNK_SIZE    200    // bytes per BLE notification (up from 20)
@@ -365,14 +391,21 @@ BNO08x       imu;
 // ── BLE (from Phase 2b) ──
 BLEService        imuService(UUID_SERVICE);
 BLECharacteristic quatChar(UUID_QUAT,       BLENotify,  20);
-BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    5);  // 1 cmd + 4 epoch
+BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    9);  // 1 cmd + up to 8-byte payload
 BLECharacteristic statChar(UUID_STATUS,     BLERead,     4);
 BLECharacteristic offloadChar(UUID_OFFLOAD, BLENotify,  OFFLOAD_CHUNK_SIZE);
+BLECharacteristic syncInfoChar(UUID_SYNCINFO, BLERead,  16);  // clock info for skew measurement
 bool              bleConnected     = false;
 bool              streaming        = false;
 
+// ── Node identity ──
+// Full advertised name: DEVICE_NAME_PREFIX + "-" + 4 hex chars from FICR.
+// Filled once in makeDeviceName(); unique per physical board.
+char              g_deviceName[24] = DEVICE_NAME_PREFIX;
+
 // ── Time Sync ──
-uint32_t          syncEpoch        = 0;     // Unix epoch from phone
+uint32_t          syncEpoch        = 0;     // Unix epoch (seconds) from central
+uint64_t          syncEpochMs      = 0;     // Unix epoch (ms) — multi-node alignment
 uint32_t          syncMillis       = 0;     // millis() at time of sync
 bool              timeSynced       = false;
 
@@ -641,6 +674,46 @@ void updateStatus() {
 }
 
 // ---------------------------------------------------------------------------
+// makeDeviceName() — builds a per-board unique advertised name into
+// g_deviceName by appending a 4-hex suffix from the nRF FICR DEVICEID.
+// FICR is factory-programmed and read-only, so the suffix is stable across
+// reboots and unique per physical board — no per-board reflash needed.
+// ---------------------------------------------------------------------------
+void makeDeviceName() {
+  uint32_t id = NRF_FICR->DEVICEID[1];          // lower word varies per die
+  uint16_t suffix = (uint16_t)(id & 0xFFFF);
+  snprintf(g_deviceName, sizeof(g_deviceName),
+           "%s-%04X", DEVICE_NAME_PREFIX, suffix);
+}
+
+// ---------------------------------------------------------------------------
+// updateSyncInfo() — packs the node's current clock state into the Time Info
+// characteristic (A005). The central reads this from each node and computes
+//   epoch_now_ms = sync_epoch_ms + (node_millis_now - sync_millis)
+// then compares nodes to measure cross-node clock offset. Refreshed lazily
+// on every read via the BLERead handler so byte 0-3 is always live.
+//
+// Layout (little-endian):
+//   [0-3]   uint32 node millis() now
+//   [4-11]  uint64 sync epoch ms (0 if never synced)
+//   [12-15] uint32 node millis() captured at last sync
+// ---------------------------------------------------------------------------
+void updateSyncInfo() {
+  uint8_t  buf[16];
+  uint32_t nowMs = millis();
+  memcpy(buf + 0,  &nowMs,       4);
+  memcpy(buf + 4,  &syncEpochMs, 8);
+  memcpy(buf + 12, &syncMillis,  4);
+  syncInfoChar.writeValue(buf, 16);
+}
+
+// BLERead handler: refresh the live millis() field just before the value is
+// served, so the central always reads a fresh timestamp.
+void onSyncInfoRead(BLEDevice /*central*/, BLECharacteristic /*chr*/) {
+  updateSyncInfo();
+}
+
+// ---------------------------------------------------------------------------
 // offloadLog(central) — streams all logged records to phone via A004.
 //
 // Uses 200-byte chunks at 3ms pacing (~20s for 888KB vs ~7min at 20B/10ms).
@@ -728,13 +801,15 @@ void handleControl(BLEDevice& central) {
       break;
 
     case 0x02: {
-      // Time sync: [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
+      // Time sync (seconds, legacy): [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
       if (ctrlChar.valueLength() >= 5) {
         const uint8_t* val = ctrlChar.value();
         memcpy(&syncEpoch, val + 1, 4);
-        syncMillis = millis();
-        timeSynced = true;
-        Serial.print("[CTRL] Time sync — epoch: ");
+        syncMillis  = millis();
+        syncEpochMs = (uint64_t)syncEpoch * 1000ULL;   // keep ms mapping consistent
+        timeSynced  = true;
+        updateSyncInfo();
+        Serial.print("[CTRL] Time sync (s) — epoch: ");
         Serial.print(syncEpoch);
         Serial.print("  millis: ");
         Serial.println(syncMillis);
@@ -744,10 +819,34 @@ void handleControl(BLEDevice& central) {
       break;
     }
 
+    case 0x05: {
+      // Time sync (ms): [0x05, epoch_ms_b0 .. epoch_ms_b7]  (uint64 LE)
+      // Millisecond resolution for multi-node alignment. syncMillis is
+      // captured as close to receipt as possible; the central pairs this with
+      // the send time to bound the residual sync error.
+      if (ctrlChar.valueLength() >= 9) {
+        const uint8_t* val = ctrlChar.value();
+        syncMillis = millis();
+        memcpy(&syncEpochMs, val + 1, 8);
+        syncEpoch  = (uint32_t)(syncEpochMs / 1000ULL);
+        timeSynced = true;
+        updateSyncInfo();
+        Serial.print("[CTRL] Time sync (ms) — epoch_ms: ");
+        Serial.print((uint32_t)(syncEpochMs / 1000ULL));   // seconds part (printable)
+        Serial.print("  millis: ");
+        Serial.println(syncMillis);
+      } else {
+        Serial.println("[CTRL] Time sync (ms) — missing payload (need 9 bytes)");
+      }
+      break;
+    }
+
     case 0x03:
       if (qspiReady) {
         eraseLog();
-        timeSynced = false;   // Sync epoch meaningless after log erase
+        timeSynced  = false;   // Sync epoch meaningless after log erase
+        syncEpochMs = 0;
+        updateSyncInfo();
       }
       break;
 
@@ -1394,21 +1493,26 @@ void setup() {
   if (!BLE.begin()) {
     Serial.println("FAILED — BLE disabled, state machine runs without sync");
   } else {
-    BLE.setLocalName(DEVICE_NAME);
-    BLE.setDeviceName(DEVICE_NAME);
+    makeDeviceName();                    // unique per-board name (multi-node)
+    BLE.setLocalName(g_deviceName);
+    BLE.setDeviceName(g_deviceName);
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);
     imuService.addCharacteristic(statChar);
     imuService.addCharacteristic(offloadChar);
+    imuService.addCharacteristic(syncInfoChar);
     BLE.addService(imuService);
 
+    syncInfoChar.setEventHandler(BLERead, onSyncInfoRead);
+
     updateStatus();
+    updateSyncInfo();
     BLE.advertise();
 
     Serial.println("OK");
     Serial.print("[BLE] Advertising as ");
-    Serial.println(DEVICE_NAME);
+    Serial.println(g_deviceName);
   }
 
   LOG("Setup complete. State machine running — waiting for movement...\n");

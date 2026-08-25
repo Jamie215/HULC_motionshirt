@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+HULC Motion Shirt — multi-node BLE sync test harness.
+
+Acts as the *central* for testing the synced connection across multiple IMU
+nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
+
+  1. Scans for nodes advertising as "HULC-IMU-XXXX" (unique per board).
+  2. Connects to N nodes simultaneously.
+  3. Time-syncs each node with millisecond resolution (control cmd 0x05).
+  4. Reads each node's Time Info characteristic (A005) repeatedly and computes
+     the cross-node clock offset and its drift over time.
+
+This is a laptop-side test tool — no phone app required. It needs `bleak`:
+
+    pip install bleak
+
+Typical use (two boards on the bench):
+
+    python tools/multinode_test.py --count 2 --duration 60
+
+What to look for
+----------------
+* CONNECT: both nodes should connect and stay connected.
+* OFFSET (initial): right after sync, pairwise offset should be a few ms
+  (bounded by BLE write latency + the firmware's millis() capture).
+* DRIFT (per minute): the offset should grow slowly and linearly — that is
+  the relative crystal drift between the two nRF52840s (tens of ppm → a few
+  ms/min is expected). A large or jumpy offset means the sync path, not the
+  crystals, is the problem.
+
+BLE GATT (see firmware.ino header for the authoritative layout):
+  Service A0010000-...   Control A0010002 (write)   Time Info A0010005 (read)
+"""
+
+import argparse
+import asyncio
+import statistics
+import struct
+import time
+from dataclasses import dataclass, field
+
+try:
+    from bleak import BleakClient, BleakScanner
+except ImportError:  # pragma: no cover - dependency hint
+    raise SystemExit("This harness needs bleak:  pip install bleak")
+
+NAME_PREFIX = "HULC-IMU"
+UUID_CONTROL = "A0010002-B0CE-4A4A-8F0B-0011223344FF"
+UUID_STATUS = "A0010003-B0CE-4A4A-8F0B-0011223344FF"
+UUID_SYNCINFO = "A0010005-B0CE-4A4A-8F0B-0011223344FF"
+
+CMD_SYNC_MS = 0x05
+
+
+def host_epoch_ms() -> int:
+    """Host wall-clock in Unix epoch milliseconds."""
+    return int(time.time() * 1000)
+
+
+@dataclass
+class NodeSample:
+    """One read of a node's Time Info, paired with host time around the read."""
+
+    host_before_ms: int
+    host_after_ms: int
+    node_millis_now: int
+    sync_epoch_ms: int
+    sync_millis: int
+
+    @property
+    def host_mid_ms(self) -> float:
+        return (self.host_before_ms + self.host_after_ms) / 2.0
+
+    @property
+    def read_span_ms(self) -> int:
+        """Round-trip window of the read — bounds the per-sample uncertainty."""
+        return self.host_after_ms - self.host_before_ms
+
+    @property
+    def node_epoch_now_ms(self) -> int:
+        """Node's own idea of the current epoch time, reconstructed from A005."""
+        return self.sync_epoch_ms + (self.node_millis_now - self.sync_millis)
+
+    @property
+    def offset_vs_host_ms(self) -> float:
+        """node_epoch_now - host_mid. Signed: +ve means the node clock is ahead."""
+        return self.node_epoch_now_ms - self.host_mid_ms
+
+
+@dataclass
+class Node:
+    name: str
+    address: str
+    client: BleakClient
+    samples: list = field(default_factory=list)
+
+
+def parse_syncinfo(data: bytes) -> tuple:
+    """Unpack A005: uint32 millis_now, uint64 sync_epoch_ms, uint32 sync_millis."""
+    if len(data) < 16:
+        raise ValueError(f"Time Info too short: {len(data)} bytes (need 16)")
+    node_millis_now, sync_epoch_ms, sync_millis = struct.unpack_from("<IQI", data, 0)
+    return node_millis_now, sync_epoch_ms, sync_millis
+
+
+async def scan(count: int, timeout: float) -> list:
+    print(f"[SCAN] Looking for {count} '{NAME_PREFIX}-*' node(s) "
+          f"({timeout:.0f}s)...")
+    devices = await BleakScanner.discover(timeout=timeout)
+    found = []
+    for d in devices:
+        name = d.name or ""
+        if name.startswith(NAME_PREFIX):
+            found.append(d)
+            print(f"[SCAN]   found {name}  ({d.address})")
+    if not found:
+        raise SystemExit("[SCAN] No HULC nodes found. Are they powered and "
+                         "advertising? (a connected node stops advertising)")
+    if len(found) < count:
+        print(f"[SCAN] WARNING: wanted {count}, found {len(found)}. "
+              f"Continuing with what is available.")
+    # Deterministic order so pairwise labels are stable across runs.
+    found.sort(key=lambda d: d.name or d.address)
+    return found[:count]
+
+
+async def sync_node(node: Node) -> None:
+    """Send a millisecond time-sync to one node (control cmd 0x05)."""
+    epoch_ms = host_epoch_ms()
+    payload = bytes([CMD_SYNC_MS]) + struct.pack("<Q", epoch_ms)
+    await node.client.write_gatt_char(UUID_CONTROL, payload, response=True)
+    print(f"[SYNC] {node.name}: sent epoch_ms={epoch_ms}")
+
+
+async def read_syncinfo(node: Node) -> NodeSample:
+    before = host_epoch_ms()
+    data = await node.client.read_gatt_char(UUID_SYNCINFO)
+    after = host_epoch_ms()
+    millis_now, sync_epoch_ms, sync_millis = parse_syncinfo(bytes(data))
+    return NodeSample(before, after, millis_now, sync_epoch_ms, sync_millis)
+
+
+async def read_status(node: Node) -> None:
+    try:
+        data = bytes(await node.client.read_gatt_char(UUID_STATUS))
+    except Exception as exc:  # noqa: BLE001 - status is informational only
+        print(f"[STATUS] {node.name}: read failed ({exc})")
+        return
+    state = data[0] if len(data) > 0 else 255
+    flags = data[1] if len(data) > 1 else 0
+    log_kb = struct.unpack_from("<H", data, 2)[0] if len(data) >= 4 else 0
+    state_name = {0: "IDLE", 1: "STATIC", 2: "ACTIVE"}.get(state, f"?{state}")
+    print(f"[STATUS] {node.name}: state={state_name} "
+          f"synced={bool(flags & 0x02)} streaming={bool(flags & 0x01)} "
+          f"log={log_kb}KB")
+
+
+def report_offsets(nodes: list) -> None:
+    """Report pairwise cross-node offset from the collected samples."""
+    print("\n===== CROSS-NODE OFFSET REPORT =====")
+    for node in nodes:
+        if not node.samples:
+            continue
+        spans = [s.read_span_ms for s in node.samples]
+        print(f"[{node.name}] samples={len(node.samples)}  "
+              f"read window: median {statistics.median(spans):.0f}ms, "
+              f"max {max(spans)}ms")
+
+    if len(nodes) < 2:
+        print("Only one node — no pairwise offset to compute.")
+        return
+
+    # Pairwise: align each node's samples by index (reads are round-robin, so
+    # sample i across nodes is close in time). Offset = A.offset_vs_host -
+    # B.offset_vs_host, which cancels the host clock and leaves the true
+    # cross-node clock difference.
+    ref = nodes[0]
+    for other in nodes[1:]:
+        n = min(len(ref.samples), len(other.samples))
+        if n < 2:
+            print(f"{ref.name} vs {other.name}: not enough samples.")
+            continue
+        diffs = [ref.samples[i].offset_vs_host_ms - other.samples[i].offset_vs_host_ms
+                 for i in range(n)]
+        first, last = diffs[0], diffs[-1]
+        span_s = (ref.samples[n - 1].host_mid_ms - ref.samples[0].host_mid_ms) / 1000.0
+        drift_per_min = ((last - first) / span_s * 60.0) if span_s > 0 else 0.0
+        print(f"\n{ref.name}  vs  {other.name}:")
+        print(f"  offset initial : {first:+.1f} ms")
+        print(f"  offset final   : {last:+.1f} ms   (after {span_s:.0f}s)")
+        print(f"  offset mean    : {statistics.mean(diffs):+.1f} ms  "
+              f"(stdev {statistics.pstdev(diffs):.1f} ms)")
+        print(f"  drift          : {drift_per_min:+.2f} ms/min  "
+              f"(relative crystal drift)")
+    print("====================================\n")
+
+
+async def run(count: int, duration: float, interval: float,
+              scan_timeout: float) -> None:
+    devices = await scan(count, scan_timeout)
+
+    nodes = []
+    try:
+        for d in devices:
+            client = BleakClient(d)
+            print(f"[CONNECT] {d.name} ...", end=" ", flush=True)
+            await client.connect()
+            print("OK" if client.is_connected else "FAILED")
+            nodes.append(Node(d.name or d.address, d.address, client))
+
+        connected = [n for n in nodes if n.client.is_connected]
+        if len(connected) < 1:
+            raise SystemExit("[CONNECT] No nodes connected.")
+        print(f"[CONNECT] {len(connected)}/{len(nodes)} node(s) connected "
+              f"simultaneously.\n")
+
+        for node in connected:
+            await read_status(node)
+        print()
+
+        # Sync all nodes as close together as we can.
+        for node in connected:
+            await sync_node(node)
+        print()
+
+        # Sample loop: round-robin reads of A005 across all nodes.
+        deadline = time.time() + duration
+        round_idx = 0
+        while time.time() < deadline:
+            for node in connected:
+                if not node.client.is_connected:
+                    continue
+                try:
+                    node.samples.append(await read_syncinfo(node))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[READ] {node.name}: {exc}")
+            round_idx += 1
+            if round_idx % 10 == 0:
+                print(f"[SAMPLE] round {round_idx} "
+                      f"({int(deadline - time.time())}s left)")
+            await asyncio.sleep(interval)
+
+        report_offsets(connected)
+
+    finally:
+        for node in nodes:
+            try:
+                if node.client.is_connected:
+                    await node.client.disconnect()
+                    print(f"[DISCONNECT] {node.name}")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--count", type=int, default=2,
+                    help="number of nodes to connect (default 2)")
+    ap.add_argument("--duration", type=float, default=60.0,
+                    help="offset-sampling duration in seconds (default 60)")
+    ap.add_argument("--interval", type=float, default=0.5,
+                    help="delay between sampling rounds in seconds (default 0.5)")
+    ap.add_argument("--scan-timeout", type=float, default=8.0,
+                    help="BLE scan timeout in seconds (default 8)")
+    args = ap.parse_args()
+
+    try:
+        asyncio.run(run(args.count, args.duration, args.interval,
+                        args.scan_timeout))
+    except KeyboardInterrupt:
+        print("\n[ABORT] Interrupted.")
+
+
+if __name__ == "__main__":
+    main()
