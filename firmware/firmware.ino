@@ -66,9 +66,9 @@
 //   between BNO086 INT pulses (low power). When a central connects,
 //   waitForIMUData() switches to BLE.poll() loop to keep the BLE stack
 //   alive. State machine runs identically in both modes. The firmware also
-//   requests a fast connection interval (7.5–15 ms, see setup()) so a
-//   connected central gets low-latency GATT reads/notifies — required for
-//   multi-node time-offset measurement and real-time streaming.
+//   requests a fast connection interval (15–30 ms, iOS-compliant, see
+//   setup()) so a connected central gets low-latency GATT reads/notifies and
+//   usable offload throughput — the central still has final say.
 //
 // FLASH APPROACH: nrfx_qspi direct driver
 //   Targets EXTERNAL 2MB QSPI chip (P25Q16H). Bootloader lives on
@@ -1526,15 +1526,18 @@ void setup() {
     BLE.setLocalName(g_deviceName);
     BLE.setDeviceName(g_deviceName);
 
-    // Request a FAST connection interval (7.5–15 ms). Units are 1.25 ms, so
-    // 6 = 7.5 ms and 12 = 15 ms. Without this the central often negotiates a
-    // slow interval (tens to hundreds of ms), which floored the multi-node
-    // A005 read latency at 300–800 ms and made cross-node offset unmeasurable.
-    // A tight interval also matters for real-time quaternion streaming later.
-    // The central may clamp this to its own limits; it is a request, not a
-    // guarantee. Must be set before advertise() so it is the advertised
-    // preferred connection parameters.
-    BLE.setConnectionInterval(6, 12);
+    // Request a FAST connection interval (15–30 ms). Units are 1.25 ms, so
+    // 12 = 15 ms and 24 = 30 ms. Without this the central often negotiates a
+    // slow interval (hundreds of ms), which floored A005 read latency at
+    // ~850 ms on a Windows host and throttles log offload throughput.
+    //
+    // 15 ms is the floor deliberately: Apple's Bluetooth Design Guidelines
+    // require a requested Interval Min >= 15 ms (and a multiple of 15 ms), or
+    // iOS rejects the connection-parameter update and falls back to its slow
+    // default. 15 ms keeps this request honorable by iOS, Android, and BlueZ
+    // alike. The central still has final say — this is a request, not a
+    // guarantee. Must be set before advertise().
+    BLE.setConnectionInterval(12, 24);
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);

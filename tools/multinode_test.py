@@ -48,9 +48,11 @@ except ImportError:  # pragma: no cover - dependency hint
 NAME_PREFIX = "HULC-IMU"
 UUID_CONTROL = "A0010002-B0CE-4A4A-8F0B-0011223344FF"
 UUID_STATUS = "A0010003-B0CE-4A4A-8F0B-0011223344FF"
+UUID_OFFLOAD = "A0010004-B0CE-4A4A-8F0B-0011223344FF"
 UUID_SYNCINFO = "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 CMD_SYNC_MS = 0x05
+CMD_OFFLOAD = 0x04
 
 
 def host_epoch_ms() -> int:
@@ -242,8 +244,69 @@ def report_offsets(nodes: list) -> None:
     print("====================================\n")
 
 
+async def measure_offload(node: Node, quiet_s: float = 3.0,
+                          max_s: float = 300.0) -> None:
+    """Measure log-offload throughput (Req 2) on one node.
+
+    Subscribes to A004, sends control 0x04 (begin offload — IDLE only, does NOT
+    erase), counts bytes until notifications go quiet, and reports KB/s. This
+    is the hard number the flash-offload use case depends on; at a slow
+    connection interval it will be painfully low.
+    """
+    state = {"bytes": 0, "chunks": 0, "first": None, "last": None}
+
+    def on_chunk(_char, data: bytearray) -> None:
+        now = time.monotonic()
+        if state["first"] is None:
+            state["first"] = now
+        state["last"] = now
+        state["bytes"] += len(data)
+        state["chunks"] += 1
+
+    await read_status(node)  # prints log size / IDLE state for context
+    print(f"[OFFLOAD] {node.name}: starting — subscribing to A004...")
+    await node.client.start_notify(UUID_OFFLOAD, on_chunk)
+    await node.client.write_gatt_char(UUID_CONTROL, bytes([CMD_OFFLOAD]),
+                                      response=True)
+
+    t0 = time.monotonic()
+    # Wait until the stream has been quiet for `quiet_s` after the last chunk,
+    # or we hit max_s. (Firmware streams until all flash data is sent.)
+    while True:
+        await asyncio.sleep(0.5)
+        elapsed = time.monotonic() - t0
+        last = state["last"]
+        if last is not None and (time.monotonic() - last) > quiet_s:
+            break
+        if elapsed > max_s:
+            print(f"[OFFLOAD] {node.name}: hit max {max_s:.0f}s cap.")
+            break
+        if state["chunks"] and int(elapsed) % 5 == 0:
+            print(f"[OFFLOAD] {node.name}: {state['bytes']/1024:.1f} KB "
+                  f"in {elapsed:.0f}s...")
+
+    try:
+        await node.client.stop_notify(UUID_OFFLOAD)
+    except Exception:  # noqa: BLE001
+        pass
+
+    print("\n===== OFFLOAD THROUGHPUT =====")
+    if state["first"] is None or state["bytes"] == 0:
+        print(f"[{node.name}] no data received. Is there a log to offload "
+              f"(status log>0KB) and is the node in IDLE?")
+    else:
+        dur = max(1e-3, state["last"] - state["first"])
+        kb = state["bytes"] / 1024
+        print(f"[{node.name}] received {kb:.1f} KB in {dur:.1f}s "
+              f"({state['chunks']} chunks)")
+        print(f"           throughput: {kb / dur:.2f} KB/s")
+        print(f"           => a full 2 MB flash would take "
+              f"~{(2048 / (kb / dur)) / 60:.1f} min at this rate")
+    print("==============================\n")
+
+
 async def run(count: int, duration: float, interval: float,
-              scan_timeout: float) -> None:
+              scan_timeout: float, offload: bool = False) -> None:
     devices = await scan(count, scan_timeout)
 
     nodes = []
@@ -260,6 +323,11 @@ async def run(count: int, duration: float, interval: float,
             raise SystemExit("[CONNECT] No nodes connected.")
         print(f"[CONNECT] {len(connected)}/{len(nodes)} node(s) connected "
               f"simultaneously.\n")
+
+        if offload:
+            # Throughput mode: measure log offload on the first node, then stop.
+            await measure_offload(connected[0])
+            return
 
         # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
         # each node's prior session (timeSynced is not persisted and resets on
@@ -326,11 +394,14 @@ def main() -> None:
                     help="delay between sampling rounds in seconds (default 0.5)")
     ap.add_argument("--scan-timeout", type=float, default=8.0,
                     help="BLE scan timeout in seconds (default 8)")
+    ap.add_argument("--offload", action="store_true",
+                    help="measure log-offload throughput on one node (Req 2) "
+                         "instead of the sync-offset test")
     args = ap.parse_args()
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout))
+                        args.scan_timeout, args.offload))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 

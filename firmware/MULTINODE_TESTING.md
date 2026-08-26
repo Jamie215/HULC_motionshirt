@@ -49,6 +49,19 @@ The harness scans, connects to both nodes simultaneously, syncs each with an
 ms-resolution timestamp, then reads `A005` from both in a round-robin for the
 duration and reports the cross-node offset and its drift.
 
+Other modes:
+* `--count 1` — single-node latency diagnostic (isolates per-link latency from
+  multi-connection scheduling).
+* `--offload` — measure log-offload throughput (KB/s) on one node, the number
+  the flash-offload use case depends on.
+
+**Central platform matters.** A slow negotiated connection interval floors both
+read latency and offload throughput. Desktop Windows (via `bleak`) tends to
+impose a slow interval; iOS/BlueZ honor the firmware's 15–30 ms request. To test
+from an **iPhone**, use *nRF Connect for Mobile* and read the negotiated
+connection interval on the connected node. See `MULTINODE_SYNC_DESIGN.md` for
+the full rationale.
+
 ## How to read the results
 
 * **CONNECT** — both nodes should report connected and *stay* connected. A node
