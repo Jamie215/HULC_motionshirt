@@ -78,9 +78,14 @@ parameters.**
   15 ms**, or iOS rejects the request and uses its slow default. 15 ms is
   honored by iOS, Android, and BlueZ alike.
 - **Test central = iPhone** (nRF Connect for Mobile). iOS is a well-behaved BLE
-  central and is close to the eventual companion app. If the negotiated
-  interval drops to ~15–30 ms there, Windows was the whole problem and the
-  wireless design is sound.
+  central and is close to the eventual companion app. Note: **iOS does not
+  expose the negotiated connection interval to apps** (CoreBluetooth hides it),
+  so you can't read the number directly — infer it from *behavior*: trigger an
+  offload and see whether the data streams fast (interval honored) or crawls
+  (slow interval). If a real number is needed, either run the `--offload`
+  harness on a **Mac** (`bleak` works over CoreBluetooth, same commands as the
+  Windows run) or use **Android** nRF Connect, which *does* display the
+  negotiated interval.
 
 ## Coordinated trigger (Req 1, the non-alignment half)
 
@@ -103,9 +108,11 @@ target. Not on the critical path.
 
 ## Open risks / next steps
 
-1. **[blocking] Central-platform test** — connect the iPhone (nRF Connect),
-   read the negotiated connection interval. Expect ~15–30 ms. Decides whether
-   Windows was the bottleneck.
+1. **[blocking] Central-platform test** — connect a non-Windows central and see
+   if latency/throughput improve. iPhone (nRF Connect): trigger an offload and
+   judge streaming speed (iOS hides the interval). Mac: run
+   `multinode_test.py --offload` for a hard KB/s number. Decides whether Windows
+   was the bottleneck.
 2. **Offload throughput number** — `python tools/multinode_test.py --offload`
    gives a hard KB/s baseline (currently from the Windows host; re-run from a
    good central once available).

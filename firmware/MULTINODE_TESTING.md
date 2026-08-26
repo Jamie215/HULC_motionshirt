@@ -57,10 +57,16 @@ Other modes:
 
 **Central platform matters.** A slow negotiated connection interval floors both
 read latency and offload throughput. Desktop Windows (via `bleak`) tends to
-impose a slow interval; iOS/BlueZ honor the firmware's 15–30 ms request. To test
-from an **iPhone**, use *nRF Connect for Mobile* and read the negotiated
-connection interval on the connected node. See `MULTINODE_SYNC_DESIGN.md` for
-the full rationale.
+impose a slow interval; iOS/BlueZ honor the firmware's 15–30 ms request.
+Testing from a non-Windows central:
+* **iPhone** (*nRF Connect for Mobile*) — iOS hides the connection interval from
+  apps, so judge it by *behavior*: enable notifications on `A004`, write `04` to
+  the Control char `A002`, and watch how fast the offload streams.
+* **Mac** — run `multinode_test.py --offload` (`bleak` works over CoreBluetooth)
+  for a hard KB/s number, directly comparable to the Windows run.
+* **Android** nRF Connect *does* display the negotiated interval directly.
+
+See `MULTINODE_SYNC_DESIGN.md` for the full rationale.
 
 ## How to read the results
 
