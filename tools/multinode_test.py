@@ -141,19 +141,22 @@ async def read_syncinfo(node: Node) -> NodeSample:
     return NodeSample(before, after, millis_now, sync_epoch_ms, sync_millis)
 
 
-async def read_status(node: Node) -> None:
+async def read_status(node: Node):
+    """Read + print the status char. Returns the 'time synced' flag (or None)."""
     try:
         data = bytes(await node.client.read_gatt_char(UUID_STATUS))
     except Exception as exc:  # noqa: BLE001 - status is informational only
         print(f"[STATUS] {node.name}: read failed ({exc})")
-        return
+        return None
     state = data[0] if len(data) > 0 else 255
     flags = data[1] if len(data) > 1 else 0
     log_kb = struct.unpack_from("<H", data, 2)[0] if len(data) >= 4 else 0
     state_name = {0: "IDLE", 1: "STATIC", 2: "ACTIVE"}.get(state, f"?{state}")
+    synced = bool(flags & 0x02)
     print(f"[STATUS] {node.name}: state={state_name} "
-          f"synced={bool(flags & 0x02)} streaming={bool(flags & 0x01)} "
+          f"synced={synced} streaming={bool(flags & 0x01)} "
           f"log={log_kb}KB")
+    return synced
 
 
 def report_offsets(nodes: list) -> None:
@@ -252,6 +255,10 @@ async def run(count: int, duration: float, interval: float,
         print(f"[CONNECT] {len(connected)}/{len(nodes)} node(s) connected "
               f"simultaneously.\n")
 
+        # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
+        # each node's prior session (timeSynced is not persisted and resets on
+        # every boot), NOT the result of this run. Expect it to be inconsistent.
+        print("[STATUS] before sync (stale — pre-sync snapshot):")
         for node in connected:
             await read_status(node)
         print()
@@ -259,6 +266,18 @@ async def run(count: int, duration: float, interval: float,
         # Sync all nodes as close together as we can.
         for node in connected:
             await sync_node(node)
+        print()
+
+        # Status AFTER sync — every connected node should now report synced=True.
+        # This is the authoritative check that the sync command took on each one.
+        print("[STATUS] after sync (every node should read synced=True):")
+        all_synced = True
+        for node in connected:
+            synced = await read_status(node)
+            if synced is False:
+                all_synced = False
+        print("[SYNC] all nodes confirmed synced." if all_synced
+              else "[SYNC] WARNING: a node did NOT report synced=True after sync.")
         print()
 
         # Sample loop: round-robin reads of A005 across all nodes.
