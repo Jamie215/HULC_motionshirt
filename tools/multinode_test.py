@@ -178,21 +178,58 @@ def report_offsets(nodes: list) -> None:
     ref = nodes[0]
     for other in nodes[1:]:
         n = min(len(ref.samples), len(other.samples))
-        if n < 2:
+        if n < 3:
             print(f"{ref.name} vs {other.name}: not enough samples.")
             continue
-        diffs = [ref.samples[i].offset_vs_host_ms - other.samples[i].offset_vs_host_ms
-                 for i in range(n)]
-        first, last = diffs[0], diffs[-1]
-        span_s = (ref.samples[n - 1].host_mid_ms - ref.samples[0].host_mid_ms) / 1000.0
-        drift_per_min = ((last - first) / span_s * 60.0) if span_s > 0 else 0.0
+
+        # Each paired sample carries an uncertainty set by how long the two
+        # reads took: the node timestamps are only known to within their read
+        # windows. Combined per-sample uncertainty ~ half the summed windows.
+        rows = []
+        for i in range(n):
+            diff = (ref.samples[i].offset_vs_host_ms
+                    - other.samples[i].offset_vs_host_ms)
+            unc = (ref.samples[i].read_span_ms + other.samples[i].read_span_ms) / 2.0
+            t = ref.samples[i].host_mid_ms
+            rows.append((t, diff, unc))
+
+        best_unc = min(u for _, _, u in rows)          # tightest single sample
+        # Use the lowest-uncertainty third (min 5) for the offset estimate.
+        clean = sorted(rows, key=lambda r: r[2])[:max(5, n // 3)]
+        clean_diffs = [d for _, d, _ in clean]
+        offset = statistics.mean(clean_diffs)
+        spread = statistics.pstdev(clean_diffs) if len(clean_diffs) > 1 else 0.0
+
+        # Drift = least-squares slope of diff vs time over ALL samples.
+        t0 = rows[0][0]
+        xs = [(t - t0) / 1000.0 for t, _, _ in rows]     # seconds
+        ys = [d for _, d, _ in rows]
+        mx, my = statistics.mean(xs), statistics.mean(ys)
+        denom = sum((x - mx) ** 2 for x in xs)
+        slope_per_min = (sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+                         / denom * 60.0) if denom > 0 else 0.0
+        span_s = xs[-1] - xs[0]
+        # A slope is only real if the offset moved further across the run than
+        # the measurement noise. Floor: median per-sample uncertainty / run.
+        med_unc = statistics.median(u for _, _, u in rows)
+        drift_floor_per_min = (med_unc / span_s * 60.0) if span_s > 0 else float("inf")
+
         print(f"\n{ref.name}  vs  {other.name}:")
-        print(f"  offset initial : {first:+.1f} ms")
-        print(f"  offset final   : {last:+.1f} ms   (after {span_s:.0f}s)")
-        print(f"  offset mean    : {statistics.mean(diffs):+.1f} ms  "
-              f"(stdev {statistics.pstdev(diffs):.1f} ms)")
-        print(f"  drift          : {drift_per_min:+.2f} ms/min  "
-              f"(relative crystal drift)")
+        print(f"  offset     : {offset:+.0f} ms   "
+              f"(+/- {max(spread, best_unc):.0f} ms; best read window {best_unc:.0f} ms)")
+        print(f"  spread     : {spread:.0f} ms across the clean subset "
+              f"({len(clean)}/{n} tightest samples)")
+        if abs(slope_per_min) < drift_floor_per_min:
+            print(f"  drift      : NOT RESOLVABLE at this read latency "
+                  f"(measured {slope_per_min:+.1f} ms/min < noise floor "
+                  f"{drift_floor_per_min:.0f} ms/min)")
+        else:
+            print(f"  drift      : {slope_per_min:+.1f} ms/min "
+                  f"(above the {drift_floor_per_min:.0f} ms/min noise floor)")
+        print(f"\n  NOTE: read windows of ~{best_unc:.0f}-{med_unc:.0f} ms floor this")
+        print(f"  measurement. Treat the offset as an upper bound, not a")
+        print(f"  calibrated value. For true ms-level validation use a shared")
+        print(f"  physical event (see MULTINODE_TESTING.md).")
     print("====================================\n")
 
 

@@ -53,12 +53,26 @@ duration and reports the cross-node offset and its drift.
 * **CONNECT** — both nodes should report connected and *stay* connected. A node
   that is connected no longer advertises; if the harness can't find the second
   node, make sure it isn't already connected to something else (e.g. a phone).
-* **offset initial** — a few ms right after sync. This is bounded by BLE write
-  latency plus the firmware's `millis()` capture at command receipt.
-* **drift (ms/min)** — should be small and roughly linear: this is the relative
-  crystal drift between the two nRF52840s (tens of ppm → single-digit ms/min is
-  normal). A large, jumpy, or non-linear offset points at the sync path (write
-  latency, missed command) rather than the crystals.
+* **read window** (per node) — how long each `A005` read took round-trip. This
+  is the **measurement floor**: the node's clock is only known to within its
+  read window. Bench observation is ~300–800 ms with two simultaneous
+  connections, because the firmware services BLE in ~100 ms bursts in IDLE
+  (`waitForIMUData`) and does not request a fast connection interval. Until this
+  drops, offset cannot be measured to better than a few hundred ms.
+* **offset** — reported as a value **± the read-window bound**. Treat it as an
+  *upper bound* on the true offset, not a calibrated number. A result like
+  "±300 ms" means only that the nodes are aligned to within a few hundred ms —
+  it does **not** confirm ms-level sync.
+* **drift** — the harness prints `NOT RESOLVABLE` whenever the measured slope is
+  below the read-latency noise floor. Real relative crystal drift between two
+  nRF52840s is tens of ppm → single-digit ms/min, which is far below that floor,
+  so a large or negative "drift" from a noisy run is a **measurement artifact**,
+  not physical clock behavior.
+
+**Bottom line:** this method validates *connectivity and the sync path*, but the
+BLE read latency makes it unable to confirm ms-level alignment. For that, reduce
+the read latency (firmware: fast connection interval + continuous BLE servicing
+when connected) and/or use a shared physical event (below).
 
 ## Known limitations / next steps
 
