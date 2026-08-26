@@ -15,8 +15,8 @@
 //
 // MULTI-NODE:
 //   A motion shirt uses several IMU nodes (e.g. one per body segment). Each
-//   node advertises a UNIQUE name — DEVICE_NAME_PREFIX + "-" + a 4-hex suffix
-//   derived from the nRF FICR DEVICEID (stable per board, no per-board reflash).
+//   node advertises a UNIQUE name — DEVICE_NAME_PREFIX + "-" + the last 4 hex
+//   chars of its BLE MAC (stable per board, no per-board reflash).
 //   A central (laptop harness / phone) connects to N nodes at once. For the
 //   nodes' quaternion streams to be fusable they must share a common time base
 //   to within a few ms, so this build adds a millisecond-resolution sync
@@ -142,8 +142,8 @@
 // =============================================================================
 
 // Base advertised name. Each node appends a unique "-XXXX" suffix (from the
-// nRF FICR DEVICEID) at boot so multiple nodes never collide on the air.
-// See makeDeviceName(). The full name is held in g_deviceName.
+// last 4 hex chars of its BLE MAC) at boot so multiple nodes never collide on
+// the air. See makeDeviceName(). The full name is held in g_deviceName.
 #define DEVICE_NAME_PREFIX "HULC-IMU"
 #define UUID_SERVICE   "A0010000-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_QUAT      "A0010001-B0CE-4A4A-8F0B-0011223344FF"
@@ -399,7 +399,7 @@ bool              bleConnected     = false;
 bool              streaming        = false;
 
 // ── Node identity ──
-// Full advertised name: DEVICE_NAME_PREFIX + "-" + 4 hex chars from FICR.
+// Full advertised name: DEVICE_NAME_PREFIX + "-" + last 4 hex of BLE MAC.
 // Filled once in makeDeviceName(); unique per physical board.
 char              g_deviceName[24] = DEVICE_NAME_PREFIX;
 
@@ -675,15 +675,21 @@ void updateStatus() {
 
 // ---------------------------------------------------------------------------
 // makeDeviceName() — builds a per-board unique advertised name into
-// g_deviceName by appending a 4-hex suffix from the nRF FICR DEVICEID.
-// FICR is factory-programmed and read-only, so the suffix is stable across
-// reboots and unique per physical board — no per-board reflash needed.
+// g_deviceName by appending the last 4 hex chars of the BLE MAC address.
+// The MAC is fixed per board, so the suffix is stable across reboots and
+// unique per physical board — no per-board reflash needed.
+//
+// MUST be called after BLE.begin() (BLE.address() is only valid once the
+// stack is up). Uses only ArduinoBLE, so it needs no nRF MDK headers.
 // ---------------------------------------------------------------------------
 void makeDeviceName() {
-  uint32_t id = NRF_FICR->DEVICEID[1];          // lower word varies per die
-  uint16_t suffix = (uint16_t)(id & 0xFFFF);
+  String addr = BLE.address();     // "xx:xx:xx:xx:xx:xx"
+  addr.replace(":", "");           // "xxxxxxxxxxxx"
+  addr.toUpperCase();
+  String suffix = (addr.length() >= 4) ? addr.substring(addr.length() - 4)
+                                       : addr;
   snprintf(g_deviceName, sizeof(g_deviceName),
-           "%s-%04X", DEVICE_NAME_PREFIX, suffix);
+           "%s-%s", DEVICE_NAME_PREFIX, suffix.c_str());
 }
 
 // ---------------------------------------------------------------------------
