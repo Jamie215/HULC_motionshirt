@@ -165,13 +165,19 @@ def report_offsets(nodes: list) -> None:
     for node in nodes:
         if not node.samples:
             continue
-        spans = [s.read_span_ms for s in node.samples]
-        print(f"[{node.name}] samples={len(node.samples)}  "
-              f"read window: median {statistics.median(spans):.0f}ms, "
-              f"max {max(spans)}ms")
+        spans = sorted(s.read_span_ms for s in node.samples)
+        p90 = spans[min(len(spans) - 1, int(0.9 * len(spans)))]
+        print(f"[{node.name}] samples={len(spans)}  read window (ms): "
+              f"min {spans[0]}  median {statistics.median(spans):.0f}  "
+              f"p90 {p90}  max {spans[-1]}")
 
     if len(nodes) < 2:
-        print("Only one node — no pairwise offset to compute.")
+        print("\nSingle-node latency diagnostic — no pairwise offset.")
+        print("Compare the read-window numbers above against a 2-node run:")
+        print("  * similar (single-node also 100s of ms) -> the firmware/host")
+        print("    link is slow even for one connection (interval not honored).")
+        print("  * much smaller than 2-node -> the host's 2-connection")
+        print("    scheduling is the bottleneck, not the firmware.")
         return
 
     # Pairwise: align each node's samples by index (reads are round-robin, so
