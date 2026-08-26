@@ -65,7 +65,10 @@
 //   When no BLE central is connected, state handlers sleep via __WFE()
 //   between BNO086 INT pulses (low power). When a central connects,
 //   waitForIMUData() switches to BLE.poll() loop to keep the BLE stack
-//   alive. State machine runs identically in both modes.
+//   alive. State machine runs identically in both modes. The firmware also
+//   requests a fast connection interval (7.5–15 ms, see setup()) so a
+//   connected central gets low-latency GATT reads/notifies — required for
+//   multi-node time-offset measurement and real-time streaming.
 //
 // FLASH APPROACH: nrfx_qspi direct driver
 //   Targets EXTERNAL 2MB QSPI chip (P25Q16H). Bootloader lives on
@@ -1522,6 +1525,16 @@ void setup() {
     makeDeviceName();                    // unique per-board name (multi-node)
     BLE.setLocalName(g_deviceName);
     BLE.setDeviceName(g_deviceName);
+
+    // Request a FAST connection interval (7.5–15 ms). Units are 1.25 ms, so
+    // 6 = 7.5 ms and 12 = 15 ms. Without this the central often negotiates a
+    // slow interval (tens to hundreds of ms), which floored the multi-node
+    // A005 read latency at 300–800 ms and made cross-node offset unmeasurable.
+    // A tight interval also matters for real-time quaternion streaming later.
+    // The central may clamp this to its own limits; it is a request, not a
+    // guarantee. Must be set before advertise() so it is the advertised
+    // preferred connection parameters.
+    BLE.setConnectionInterval(6, 12);
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);

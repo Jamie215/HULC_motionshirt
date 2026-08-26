@@ -12,6 +12,7 @@ if all nodes share a common time base to within a few milliseconds.
 | **Unique per-board name** `HULC-IMU-XXXX` | `makeDeviceName()` | All boards used to advertise `HULC-IMU-01` and collide. The suffix is the last 4 hex chars of the board's BLE MAC, so it is stable per board with no per-board reflash (and needs no nRF MDK headers). |
 | **Millisecond time sync** (control cmd `0x05`) | `handleControl()` | The legacy sync (`0x02`) carried a whole-**second** epoch — far too coarse to align nodes. `0x05` carries a `uint64` epoch in **ms**. |
 | **Time Info characteristic** `A005` (read, 16 B) | `updateSyncInfo()` / `onSyncInfoRead()` | Lets the central read each node's live clock and reconstruct its epoch-now, so cross-node offset can be measured. Refreshed on every read. |
+| **Fast connection interval** (7.5–15 ms) | `setup()` `BLE.setConnectionInterval(6,12)` | The first 2-node run showed A005 reads taking 300–800 ms, which floored offset measurement. Requesting a tight interval drops GATT read latency so the offset becomes meaningful. The central may clamp it — it is a request, not a guarantee. |
 
 The legacy `0x02` (seconds) command still works and now also populates the ms
 mapping, so nothing downstream breaks.
