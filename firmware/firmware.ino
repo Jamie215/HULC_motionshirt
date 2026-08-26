@@ -978,7 +978,6 @@ void enableIdleReports() {
   // Detector without devSleep: host stays in System-ON (__WFE) sleep reading INT.
   imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
 #endif
-  idleArmedMs = millis();   // start-of-arm marker for the reset-hold stats
 }
 
 void configureBNO_Idle() {
