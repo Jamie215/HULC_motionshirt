@@ -1201,6 +1201,27 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+    // Stability Classifier drives IDLE: it streams ON_TABLE / STATIONARY /
+    // STABLE / MOTION. MOTION = patient moving → wake into ACTIVE_RECORDING.
+    // This is the SAME motion test STATIC_POSTURE / ACTIVE_RECORDING use.
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+      lastStabilityEvent = millis();
+      consecutiveResets  = 0;
+
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
+      if (isMotion(s)) {
+        LOGF("CLASSIFIER: MOTION — patient moving → ACTIVE_RECORDING");
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
+    }
+#else
     if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
