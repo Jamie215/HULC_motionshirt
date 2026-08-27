@@ -62,14 +62,24 @@ A slow negotiated connection interval hurts in exactly two ways:
 Fix the interval and both requirements fall into place. There is no wire to
 fall back on, so this is the crux.
 
-### Finding: the slow interval is the *host*, not the firmware
+### Finding: the slow interval is the *host*, not the firmware — CONFIRMED
 
 The single-node read latency (~850 ms) was the same as the two-node case, so it
 is **not** multi-connection scheduling — it is the connection interval itself.
 The firmware requests a fast interval (`BLE.setConnectionInterval`), so the
-prime suspect is the **central**: desktop **Windows' BLE stack (WinRT, used by
+prime suspect was the **central**: desktop **Windows' BLE stack (WinRT, used by
 `bleak`) imposes slow intervals and does not let apps set connection
 parameters.**
+
+**Confirmed on iPhone (2026-08):** offloading a 48 KB log took **2.46 s → ~20
+KB/s, ~10 ms/chunk** (vs ~850 ms per single read on Windows). The iPhone
+honored the fast interval; Windows was the whole bottleneck. Consequences:
+- **Offload (Req 2) is viable** — a full 2 MB flash offloads in ~1.7 min; real
+  logs go in seconds.
+- **Sync (Req 1) is on track** — the same fast interval makes iOS clock-offset
+  reads ~tens of ms, well within the 25–50 ms alignment target.
+- **Central platform for the product should be iOS/Android/BlueZ, not a Windows
+  desktop.** `bleak`-on-Windows is a bench artifact, not a target.
 
 ### Decision: validate on a good central before touching firmware further
 
@@ -108,17 +118,19 @@ target. Not on the critical path.
 
 ## Open risks / next steps
 
-1. **[blocking] Central-platform test** — connect a non-Windows central and see
-   if latency/throughput improve. iPhone (nRF Connect): trigger an offload and
-   judge streaming speed (iOS hides the interval). Mac: run
-   `multinode_test.py --offload` for a hard KB/s number. Decides whether Windows
-   was the bottleneck.
-2. **Offload throughput number** — `python tools/multinode_test.py --offload`
-   gives a hard KB/s baseline (currently from the Windows host; re-run from a
-   good central once available).
-3. **Offline reconciliation** — implement offset+drift capture (bracket each
-   recording) and a post-processing aligner for the offloaded logs.
-4. **Shared trigger + pre-roll** — add the coordinated-record path and buffer.
-5. **Sample rate check** — confirm 10 Hz is enough for the intended movement
+1. ~~**[blocking] Central-platform test**~~ — **DONE.** iPhone honored the fast
+   interval (~20 KB/s offload). Windows was the bottleneck; use a mobile/BlueZ
+   central going forward.
+2. **Offline reconciliation** — implement offset+drift capture (bracket each
+   recording) and a post-processing aligner for the offloaded logs. *(Now the
+   main open work for Req 1.)*
+3. **Shared trigger + pre-roll** — add the coordinated-record path and buffer.
+4. **Confirm sync latency on iOS** — measure clock-offset read latency from a
+   mobile/BlueZ central (should be ~tens of ms) to verify the 25–50 ms target
+   is reachable.
+5. **Offload pacing** — ~30% of the measured offload time was the fixed 3 ms
+   `OFFLOAD_PACING_MS` delay. If faster offload is ever needed, reduce/remove it
+   (writeValue() already backpressures) — headroom to ~28+ KB/s.
+6. **Sample rate check** — confirm 10 Hz is enough for the intended movement
    analysis; if faster motion matters, raise `activeHz` and re-check the
    alignment target.
