@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import statistics
 import struct
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -305,6 +306,57 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
     print("==============================\n")
 
 
+# Keep WinRT connection-parameter request objects alive for the whole session:
+# Windows withdraws the preferred-parameters request the moment its request
+# object is garbage-collected.
+_CONN_PARAM_HOLDERS = []
+
+
+async def request_fast_connection_windows(client, name: str) -> bool:
+    """On Windows, ask the OS BLE stack for a ThroughputOptimized connection
+    interval (~15 ms) via WinRT RequestPreferredConnectionParameters.
+
+    Windows (bleak/WinRT) otherwise imposes a slow, variable interval no matter
+    what the peripheral requests — this is the app-side lever. No-op off Windows.
+    Best-effort: any failure is logged and the run continues at the default
+    interval. Returns True if the request was issued.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        # Reach the underlying WinRT BluetoothLEDevice that bleak connected with.
+        backend = getattr(client, "_backend", client)
+        device = None
+        for attr in ("_requester", "_device", "_bleak_device"):
+            cand = getattr(backend, attr, None)
+            if cand is not None and hasattr(
+                    cand, "request_preferred_connection_parameters"):
+                device = cand
+                break
+        if device is None:
+            print(f"[WIN] {name}: couldn't reach the WinRT device object "
+                  f"(bleak internals differ?) — skipping fast-connection request.")
+            return False
+
+        from winrt.windows.devices.bluetooth import (
+            BluetoothLEPreferredConnectionParameters as Prefs,
+        )
+        req = device.request_preferred_connection_parameters(
+            Prefs.throughput_optimized)
+        _CONN_PARAM_HOLDERS.append(req)   # keep alive or Windows reverts
+        print(f"[WIN] {name}: requested ThroughputOptimized "
+              f"(status={getattr(req, 'status', '?')}).")
+        return True
+    except ImportError:
+        print(f"[WIN] {name}: winrt Bluetooth projection missing — "
+              f"`pip install winrt-Windows.Devices.Bluetooth` (or update bleak). "
+              f"Skipping fast-connection request.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WIN] {name}: fast-connection request failed ({exc}). "
+              f"Continuing at the default interval.")
+    return False
+
+
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False) -> None:
     devices = await scan(count, scan_timeout)
@@ -323,6 +375,15 @@ async def run(count: int, duration: float, interval: float,
             raise SystemExit("[CONNECT] No nodes connected.")
         print(f"[CONNECT] {len(connected)}/{len(nodes)} node(s) connected "
               f"simultaneously.\n")
+
+        # Windows only: demand a fast connection interval from the OS stack.
+        issued = False
+        for node in connected:
+            issued |= await request_fast_connection_windows(node.client,
+                                                            node.name)
+        if issued:
+            await asyncio.sleep(1.5)   # let Windows renegotiate before sampling
+            print()
 
         if offload:
             # Throughput mode: measure log offload on the first node, then stop.
