@@ -42,6 +42,27 @@ affects two narrower things: offload throughput, and how precisely we can
    recording, fit a line, and map every `millis` timestamp onto the common
    timeline. Then align and analyze the quaternion streams.
 
+### Clock alignment: primary vs refinement
+
+Aligning the nodes' timestamps has two mechanisms, used together:
+
+- **Primary — BLE clock-offset read + a start-of-session sync gesture.** On a
+  fast central (phone) each node's clock offset is read directly (A005) at
+  connect. A deliberate shared whole-body move at the start (jumping jack, torso
+  twist, both arms up) anchors all nodes to one instant; the offset holds for
+  the session (drift negligible over minutes). This needs no correlated activity.
+- **Refinement — motion cross-correlation** (`reconcile_nodes.py`). When the
+  nodes *do* share motion, cross-correlating their angular speed tightens the
+  offset with no BLE dependency.
+
+**Limitation of cross-correlation (important):** it needs shared motion to lock
+onto. Two nodes on *independently* moving limbs (one arm swings, the other is
+still) share nothing to correlate — the offset would be noise. The tool
+therefore reports a **confidence** (correlation at the best lag) and flags
+low-confidence results as unreliable, so the pipeline falls back to the BLE
+offset / sync gesture rather than trusting a bad number. This is why the sync
+gesture (a guaranteed shared event) is the primary anchor, not the activity.
+
 ### Precision target
 
 Quaternions at 10 Hz = 100 ms/sample. For movement analysis, cross-node

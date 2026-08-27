@@ -145,6 +145,44 @@ def best_lag_seconds(ya: np.ndarray, yb: np.ndarray, fs: float) -> float:
     return (lags[k] + delta) / fs
 
 
+# Below this correlation at the best lag, the two nodes did not share enough
+# motion to trust the recovered offset — the tool should say so and the caller
+# should fall back to the BLE clock-offset read and/or a sync gesture.
+CONFIDENCE_MIN = 0.40
+
+
+def _pearson_at_lag(a: np.ndarray, b: np.ndarray, lag: int) -> float:
+    """Pearson correlation of a and b overlapped at integer lag (a[n]~b[n-lag])."""
+    if lag >= 0:
+        aa, bb = a[lag:], b[:len(a) - lag]
+    else:
+        bb, aa = b[-lag:], a[:len(b) + lag]
+    m = min(len(aa), len(bb))
+    if m < 4:
+        return 0.0
+    aa, bb = aa[:m], bb[:m]
+    if aa.std() == 0 or bb.std() == 0:
+        return 0.0
+    return float(np.corrcoef(aa, bb)[0, 1])
+
+
+def lag_and_confidence(ya: np.ndarray, yb: np.ndarray, fs: float):
+    """Best lag (seconds) plus a confidence in [~0,1]: the correlation of the
+    two motion signals at that lag. Low confidence = little shared motion."""
+    a = ya - ya.mean()
+    b = yb - yb.mean()
+    corr = np.correlate(a, b, mode="full")
+    lags = np.arange(-len(b) + 1, len(a))
+    k = int(np.argmax(corr))
+    delta = 0.0
+    if 0 < k < len(corr) - 1:
+        y0, y1, y2 = corr[k - 1], corr[k], corr[k + 1]
+        denom = y0 - 2.0 * y1 + y2
+        if denom != 0.0:
+            delta = 0.5 * (y0 - y2) / denom
+    return (lags[k] + delta) / fs, _pearson_at_lag(ya, yb, int(lags[k]))
+
+
 # A drift estimate is only trustworthy when the lag actually moves across the
 # recording by more than the cross-correlation noise. Below this, drift is
 # unresolved — and, importantly, negligible (a few ms over minutes), so we
@@ -169,10 +207,13 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
     A0, _, uA = resample_uniform(tsA, spA, fs)
     B0, _, uB = resample_uniform(tsB, spB, fs)
 
-    # Global lag over the full overlap.
-    L = best_lag_seconds(uA, uB, fs) * 1000.0      # ms, A delayed vs B
+    # Global lag over the full overlap, with a confidence (how much shared
+    # motion the two nodes had). Low confidence = unreliable offset.
+    L_s, confidence = lag_and_confidence(uA, uB, fs)
+    L = L_s * 1000.0                               # ms, A delayed vs B
     # Clock offset that maps B's timestamps onto A's clock.
     offset_ms = (A0 - B0) + L
+    offset_reliable = confidence >= CONFIDENCE_MIN
 
     # Drift: measure the lag in several windows across the record and linear-fit
     # lag-vs-time. Accept the slope as real drift only if it is statistically
@@ -198,7 +239,8 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
 
     diag.update(global_lag_ms=L, A0=A0, B0=B0, fs=fs)
     return {"offset_ms": offset_ms, "drift_ppm": drift_ppm,
-            "drift_resolved": drift_resolved, "diag": diag}
+            "drift_resolved": drift_resolved, "confidence": confidence,
+            "offset_reliable": offset_reliable, "diag": diag}
 
 
 def _windowed_lags(uA, uB, fs, k=6, frac=0.3):
@@ -294,8 +336,15 @@ def align_and_emit(paths, out_csv, fs=None):
         systematic, trend = residual_alignment_ms(tA, qA, tB_on_a, qB)
         trend_note = (f", residual trend {trend:+.1f} ms across record"
                       if abs(trend) > DRIFT_RESOLVE_MS else "")
-        print(f"[reconcile] {p} -> {ref_name}: offset {est['offset_ms']:+.1f} ms, "
+        print(f"[reconcile] {p} -> {ref_name}: offset {est['offset_ms']:+.1f} ms "
+              f"(confidence {est['confidence']:.2f}), "
               f"{drift_note}; residual alignment {systematic:+.1f} ms{trend_note}")
+        if not est["offset_reliable"]:
+            print(f"  [!] LOW CONFIDENCE ({est['confidence']:.2f} < "
+                  f"{CONFIDENCE_MIN:.2f}) — the nodes shared little motion, so "
+                  f"this offset is unreliable. Add a start-of-session sync "
+                  f"gesture (a shared whole-body move), or seed the offset from "
+                  f"the BLE clock read.")
         mapped.append((tB_on_a, qB))
 
     # Common grid over the mutual overlap on node-0's clock.
@@ -422,13 +471,30 @@ def selftest() -> int:
     print(f"[selftest] drift {drift_line}")
     print(f"[selftest] ground-truth alignment error: "
           f"mean {mean_err:.1f} ms, max {max_err:.1f} ms")
+    print(f"[selftest] confidence (shared motion): {est['confidence']:.2f} "
+          f"-> reliable={est['offset_reliable']}")
+
+    # Negative case: a node moving INDEPENDENTLY (e.g. the still/other arm) has
+    # no shared motion, so the offset must be flagged LOW CONFIDENCE.
+    n = int(dur_s * fs_hz)
+    rng2 = np.random.default_rng(99)
+    sp_ind = np.clip(1.0 + np.sin(2 * np.pi * 0.33 * np.arange(n) / fs_hz)
+                     + rng2.standard_normal(n).cumsum() / np.sqrt(n), 0.05, None)
+    ax_ind = np.tile(np.array([0.0, 1.0, 0.0]), (n, 1))
+    q_ind = _integrate_quats(ax_ind, sp_ind, 1.0 / fs_hz)[:n]
+    t_ind = np.arange(n) / fs_hz * 1000.0 + 500.0
+    est_ind = estimate_offset_drift(tA, qA, t_ind, q_ind)
+    print(f"[selftest] confidence (independent motion): "
+          f"{est_ind['confidence']:.2f} -> reliable={est_ind['offset_reliable']}")
 
     # Deliverable: recovered offset matches truth AND every aligned sample lands
-    # within the design target (25-50 ms) of its true time.
+    # within the design target (25-50 ms); AND shared motion reads reliable while
+    # independent motion is correctly flagged unreliable.
     tol_ms = 30.0
-    ok = off_err < tol_ms and mean_err < tol_ms
+    ok = (off_err < tol_ms and mean_err < tol_ms
+          and est["offset_reliable"] and not est_ind["offset_reliable"])
     print(f"[selftest] {'PASS' if ok else 'FAIL'} "
-          f"(offset error & mean alignment < {tol_ms:.0f} ms)")
+          f"(alignment < {tol_ms:.0f} ms; confidence gate correct)")
     return 0 if ok else 1
 
 
