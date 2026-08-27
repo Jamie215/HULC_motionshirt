@@ -751,8 +751,15 @@ void offloadLog(BLEDevice& central) {
 
   uint32_t readAddr     = LOG_DATA_START;
   uint32_t bytesSent    = 0;
+  uint32_t chunkCount   = 0;
   uint32_t lastProgress = 0;
   uint8_t  chunk[OFFLOAD_CHUNK_SIZE];
+
+  // Real wall-clock timing. offloadChar.writeValue() applies backpressure when
+  // the BLE TX buffer is full, so the loop is paced by the actual connection
+  // interval — measuring elapsed here captures the TRUE transfer time (unlike
+  // the old estimate, which just multiplied chunk count by the 3ms pacing).
+  uint32_t tStart = millis();
 
   while (central.connected() && readAddr < writeAddr) {
     size_t remaining = writeAddr - readAddr;
@@ -761,8 +768,9 @@ void offloadLog(BLEDevice& central) {
     if (!qspiRead(readAddr, chunk, chunkSize)) break;
     offloadChar.writeValue(chunk, chunkSize);
 
-    readAddr  += chunkSize;
-    bytesSent += chunkSize;
+    readAddr   += chunkSize;
+    bytesSent  += chunkSize;
+    chunkCount += 1;
 
     // Progress logging
     uint32_t sentKB = bytesSent / 1024;
@@ -778,14 +786,29 @@ void offloadLog(BLEDevice& central) {
     delay(OFFLOAD_PACING_MS);
   }
 
+  uint32_t elapsedMs = millis() - tStart;
+  if (elapsedMs == 0) elapsedMs = 1;   // guard divide-by-zero on tiny transfers
+
   // Restore logging state
   logging = wasLogging;
 
+  // Real throughput + per-chunk pace. Per-chunk ms ≈ the effective connection
+  // interval (one notification is delivered per connection event), so this line
+  // is also a live readout of what interval the central actually negotiated.
+  uint32_t kbps_x100 = (uint32_t)(((uint64_t)bytesSent * 100000ULL) / elapsedMs / 1024);
   Serial.print("[OFFLOAD] Done — ");
   Serial.print(bytesSent);
-  Serial.print(" bytes sent in ");
-  Serial.print((bytesSent / OFFLOAD_CHUNK_SIZE) * OFFLOAD_PACING_MS / 1000);
-  Serial.println("s");
+  Serial.print(" bytes / ");
+  Serial.print(chunkCount);
+  Serial.print(" chunks in ");
+  Serial.print(elapsedMs);
+  Serial.print(" ms  (");
+  Serial.print(kbps_x100 / 100); Serial.print('.'); Serial.print(kbps_x100 % 100);
+  Serial.print(" KB/s, ");
+  Serial.print((float)elapsedMs / (chunkCount ? chunkCount : 1), 1);
+  Serial.print(" ms/chunk — pacing floor ");
+  Serial.print(OFFLOAD_PACING_MS);
+  Serial.println(" ms)");
 }
 
 // ---------------------------------------------------------------------------

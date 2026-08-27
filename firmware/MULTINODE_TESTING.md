@@ -61,7 +61,13 @@ impose a slow interval; iOS/BlueZ honor the firmware's 15–30 ms request.
 Testing from a non-Windows central:
 * **iPhone** (*nRF Connect for Mobile*) — iOS hides the connection interval from
   apps, so judge it by *behavior*: enable notifications on `A004`, write `04` to
-  the Control char `A002`, and watch how fast the offload streams.
+  the Control char `A002` to start the offload, then **read the node's USB
+  serial monitor** for the `[OFFLOAD] Done` line. The firmware measures the real
+  wall-clock transfer time and prints throughput (KB/s) and **ms/chunk** — and
+  because one notification goes out per connection event, ms/chunk ≈ the
+  effective connection interval the central negotiated (the number iOS won't
+  tell you directly). This is the most reliable way to measure offload speed on
+  any central.
 * **Mac** — run `multinode_test.py --offload` (`bleak` works over CoreBluetooth)
   for a hard KB/s number, directly comparable to the Windows run.
 * **Android** nRF Connect *does* display the negotiated interval directly.
