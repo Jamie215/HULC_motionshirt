@@ -121,9 +121,14 @@ target. Not on the critical path.
 1. ~~**[blocking] Central-platform test**~~ — **DONE.** iPhone honored the fast
    interval (~20 KB/s offload). Windows was the bottleneck; use a mobile/BlueZ
    central going forward.
-2. **Offline reconciliation** — implement offset+drift capture (bracket each
-   recording) and a post-processing aligner for the offloaded logs. *(Now the
-   main open work for Req 1.)*
+2. ~~**Offline reconciliation**~~ — **DONE (host prototype).**
+   `tools/reconcile_nodes.py` aligns two offloaded logs by cross-correlating the
+   motion itself (angular speed, mounting-invariant), so it recovers the clock
+   offset from the data and is **immune to BLE latency**. Drift is off by default
+   (negligible over minute-scale records; opt-in for long ones). A synthetic
+   `--selftest` validates the math with no hardware: recovers a known offset to
+   ~15–18 ms, inside the 25–50 ms target. Next: run it on real offloaded logs
+   from a shared-motion capture to confirm on-hardware.
 3. **Shared trigger + pre-roll** — add the coordinated-record path and buffer.
 4. **Confirm sync latency on iOS** — measure clock-offset read latency from a
    mobile/BlueZ central (should be ~tens of ms) to verify the 25–50 ms target

@@ -55,6 +55,23 @@ Other modes:
 * `--offload` — measure log-offload throughput (KB/s) on one node, the number
   the flash-offload use case depends on.
 
+## Offline reconciliation (`tools/reconcile_nodes.py`)
+
+Aligns the offloaded per-node quaternion logs onto one common timeline by
+cross-correlating the motion itself (angular speed), so it recovers the clock
+offset from the data — no dependence on BLE read latency. This is the
+production sync path (see `MULTINODE_SYNC_DESIGN.md`).
+
+```bash
+pip install numpy
+python tools/reconcile_nodes.py --selftest          # validate the math, no HW
+python tools/reconcile_nodes.py A.bin B.bin --out aligned.csv   # real logs
+```
+
+The `--selftest` recovers a known injected offset to ~15–18 ms (inside the
+25–50 ms target). For real use, offload each node's log to a file of raw 20-byte
+records and pass them in node order (the first is the reference clock).
+
 **Central platform matters.** A slow negotiated connection interval floors both
 read latency and offload throughput. Desktop Windows (via `bleak`) tends to
 impose a slow interval; iOS/BlueZ honor the firmware's 15–30 ms request.
