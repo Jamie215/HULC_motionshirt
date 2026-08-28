@@ -15,8 +15,28 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 `firmware.ino`, Section 3:
 
 ```c
-#define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER   // or IDLE_WAKE_DETECTOR
+#define IDLE_WAKE_SOURCE   IDLE_WAKE_CLASSIFIER   // DETECTOR | CLASSIFIER | SIGMOTION
 ```
+
+## Third option: Significant Motion (0x12)
+
+Added after bench testing found the **Stability Detector did not wake on a
+shake** (state never left IDLE, nothing logged) — while the Classifier worked.
+`IDLE_WAKE_SIGMOTION` arms the **Significant Motion** sensor (`0x12`), the
+BNO08x's purpose-built, low-power, **one-shot** wake-on-motion event: its mere
+arrival means motion started (no value to decode), and it auto-disables after
+firing, so `enableIdleReports()` re-arms it on each IDLE entry / reset.
+
+Like the Detector it is **accel-based**, so per this doc's rule the hub still
+self-reboots ~6.6 s in idle and re-arms — SigMotion is a bet that the *wake
+event* is delivered more reliably than the Detector's ENTERED/EXITED transition,
+not a fix for the reboot. It reuses `IDLE_USE_DEVSLEEP` (devSleep on by default;
+`DETECTOR_DIAG_NO_DEVSLEEP=1` runs it hub-awake to isolate devSleep effects).
+
+To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
+`IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
+reliably transitions IDLE → ACTIVE_RECORDING (watch for the
+`SIGMOTION:` / `DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
 
 | | `IDLE_WAKE_DETECTOR` (original) | `IDLE_WAKE_CLASSIFIER` (new default) |
 |---|---|---|

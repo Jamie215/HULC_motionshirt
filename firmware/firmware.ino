@@ -168,6 +168,9 @@
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
 #endif
+#ifndef SH2_SIG_MOTION
+#define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
+#endif
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
 
@@ -209,22 +212,36 @@
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
+#define IDLE_WAKE_SIGMOTION   2
 // CLASSIFIER (accel+gyro) so IDLE wakes on ROTATION too. The DETECTOR is
 // accelerometer-only and can miss pure rotation of a rigid body (little linear
 // accel), leaving the node stuck in IDLE with nothing logged. CLASSIFIER costs
 // higher idle current (no devSleep) — revisit for power once capture works;
 // flip back to IDLE_WAKE_DETECTOR if you specifically want the low-power path.
+//
+// SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
+// low-power, one-shot wake-on-motion event. It is accel-based (so, per
+// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms), but the
+// wake event may fire more reliably than the Stability Detector's ENTERED/
+// EXITED transition. Use it to A/B against the detector for low-power wake.
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
   #define IDLE_WAKE_NAME "Stability Detector (0x1C)"
+  #define IDLE_WAKE_SENSOR_ID SH2_STABILITY_DETECTOR
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
   #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+  #define IDLE_WAKE_NAME "Significant Motion (0x12)"
+  #define IDLE_WAKE_SENSOR_ID SH2_SIG_MOTION
 #else
-  #error "IDLE_WAKE_SOURCE must be IDLE_WAKE_DETECTOR or IDLE_WAKE_CLASSIFIER"
+  #error "IDLE_WAKE_SOURCE must be DETECTOR, CLASSIFIER, or SIGMOTION"
 #endif
 
-#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && !DETECTOR_DIAG_NO_DEVSLEEP
+// DETECTOR and SIGMOTION are both accel-only wake sensors that can run while the
+// hub is in devSleep; the CLASSIFIER (MotionEngine) cannot. DETECTOR_DIAG_NO_DEVSLEEP
+// forces the hub awake for either accel-only source (isolates devSleep effects).
+#if (IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR || IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION) && !DETECTOR_DIAG_NO_DEVSLEEP
   #define IDLE_USE_DEVSLEEP  1
 #else
   #define IDLE_USE_DEVSLEEP  0
@@ -1000,14 +1017,15 @@ void enableIdleReports() {
   cfg.wakeupEnabled     = IDLE_WAKE_WAKEUP_EN;    // "Wake host on event"
   cfg.alwaysOnEnabled   = IDLE_WAKE_ALWAYSON_EN;  // "Sensor remains on in sleep state"
   cfg.reportInterval_us = IDLE_DETECTOR_INTERVAL_US;
-  int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_STABILITY_DETECTOR, &cfg);
+  int rc = sh2_setSensorConfig((sh2_SensorId_t)IDLE_WAKE_SENSOR_ID, &cfg);
   if (rc != SH2_OK) {
-    LOGF("BNO: sh2_setSensorConfig(0x1C) FAILED rc=%d — using enableReport()", rc);
-    imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+    LOGF("BNO: sh2_setSensorConfig(%s) FAILED rc=%d — using enableReport()",
+         IDLE_WAKE_NAME, rc);
+    imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_US);
   }
 #else
-  // Detector without devSleep: host stays in System-ON (__WFE) sleep reading INT.
-  imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+  // Accel-only wake without devSleep: host stays in System-ON (__WFE) sleep on INT.
+  imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_US);
 #endif
 }
 
@@ -1250,6 +1268,25 @@ void handleIdle() {
         requestTransition(STATE_ACTIVE_RECORDING);
         return;
       }
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+    // Significant Motion (0x12) is a ONE-SHOT wake event: its mere arrival means
+    // motion started, so there's no value to decode. The sensor auto-disables
+    // after firing; enableIdleReports() re-arms it on the next IDLE entry/reset.
+    if (id == SH2_SIG_MOTION) {
+      lastStabilityEvent = millis();
+      consecutiveResets  = 0;
+      LOGF("SIGMOTION: significant motion → ACTIVE_RECORDING");
+#if IDLE_USE_DEVSLEEP
+      imu.modeOn();   // hub was in devSleep — wake before configureBNO_Running()
+      delay(20);
+#endif
+      activeHz         = DEFAULT_ACTIVE_HZ;
+      lastMotionTime   = millis();
+      onTableStartTime = 0;
+      lastActiveSample = 0;
+      requestTransition(STATE_ACTIVE_RECORDING);
+      return;
     }
 #else
     if (id == SH2_STABILITY_DETECTOR) {
