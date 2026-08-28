@@ -61,6 +61,7 @@ UUID_SYNCINFO = "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 CMD_SYNC_MS = 0x05
 CMD_OFFLOAD = 0x04
+CMD_ERASE = 0x03
 
 
 def host_epoch_ms() -> int:
@@ -258,6 +259,30 @@ def report_offsets(nodes: list) -> None:
     print("====================================\n")
 
 
+async def erase_node(node: Node, wait_s: float = 40.0) -> None:
+    """Erase one node's flash log (control 0x03). Wipes ALL logged data.
+
+    eraseLog() blocks the firmware ~30s; the nRF SoftDevice keeps the link up.
+    We fire-and-forget the write, wait, then read status to confirm log=0KB.
+    """
+    await read_status(node)  # show current log size before wiping
+    print(f"[ERASE] {node.name}: sending erase (0x03) — this WIPES all logged "
+          f"data on this node...")
+    try:
+        await node.client.write_gatt_char(UUID_CONTROL, bytes([CMD_ERASE]),
+                                          response=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ERASE] {node.name}: write failed ({exc})")
+        return
+    print(f"[ERASE] {node.name}: erasing (~30s, do NOT power off)...")
+    await asyncio.sleep(wait_s)
+    try:
+        await read_status(node)  # should now show log=0KB
+    except Exception:  # noqa: BLE001
+        print(f"[ERASE] {node.name}: status read failed — reconnect to verify.")
+    print(f"[ERASE] {node.name}: done.")
+
+
 async def measure_offload(node: Node, quiet_s: float = 3.0,
                           max_s: float = 300.0, save_path: str = None) -> None:
     """Offload one node's flash log: measure throughput and optionally save it.
@@ -390,7 +415,7 @@ async def request_fast_connection_windows(client, name: str) -> bool:
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
-              offload_dir: str = None) -> None:
+              offload_dir: str = None, erase: bool = False) -> None:
     devices = await scan(count, scan_timeout, name_filter)
 
     nodes = []
@@ -416,6 +441,12 @@ async def run(count: int, duration: float, interval: float,
         if issued:
             await asyncio.sleep(1.5)   # let Windows renegotiate before sampling
             print()
+
+        if erase:
+            # Wipe each connected node's flash, one at a time.
+            for node in connected:
+                await erase_node(node)
+            return
 
         if offload:
             # Offload EVERY connected node in turn, each to its own .bin named
@@ -512,16 +543,21 @@ def main() -> None:
                          ".bin files (default: current dir)")
     ap.add_argument("--name", metavar="SUFFIX",
                     help="only connect to the node whose name contains SUFFIX "
-                         "(e.g. --name D067). Use with --offload to pick exactly "
-                         "which node to offload.")
+                         "(e.g. --name D067). Use with --offload/--erase to pick "
+                         "exactly which node.")
+    ap.add_argument("--erase", action="store_true",
+                    help="WIPE each connected node's flash log (control 0x03), "
+                         "then exit. Use before a clean capture. Destructive.")
     args = ap.parse_args()
     if args.save and not args.offload:
         ap.error("--save requires --offload")
+    if args.erase and args.offload:
+        ap.error("--erase and --offload are separate steps; run them separately")
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
                         args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir))
+                        args.out_dir, args.erase))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 

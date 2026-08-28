@@ -84,7 +84,11 @@ def load_log(path: str):
 
     arr = np.frombuffer(raw[:n * RECORD_SIZE], dtype=_RECORD_DT)
     t = arr["t"].astype(np.int64)
-    q = np.stack([arr["w"], arr["x"], arr["y"], arr["z"]], axis=1).astype(np.float64)
+    # Garbage bytes decode to NaN/inf float32; the cast warns — harmless, we
+    # drop those rows below, so silence it.
+    with np.errstate(invalid="ignore"):
+        q = np.stack([arr["w"], arr["x"], arr["y"], arr["z"]],
+                     axis=1).astype(np.float64)
 
     # Drop junk: erased timestamps, and non-finite / zero-norm quaternions.
     finite = np.isfinite(q).all(axis=1)
