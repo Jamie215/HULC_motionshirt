@@ -1550,6 +1550,24 @@ void setup() {
     Serial.print("  writeAddr: 0x");
     Serial.print(writeAddr, HEX);
     Serial.println(")");
+
+    // DIAGNOSTIC: dump the first 60 raw bytes of the DATA region so we can see
+    // whether the flash itself is clean 20-byte records or already carries the
+    // stray 0x02-per-record framing. Records are [ts:4][w:4][x:4][y:4][z:4].
+    // If this is clean but the offloaded .bin is not, the bug is in the BLE
+    // transfer, not the write. Remove once the framing bug is resolved.
+    if (writeCount > 0) {
+      uint8_t dbg[60];
+      if (qspiRead(LOG_DATA_START, dbg, 60)) {
+        Serial.print("[DBG] flash@DATA_START:");
+        for (int i = 0; i < 60; i++) {
+          Serial.print(' ');
+          if (dbg[i] < 16) Serial.print('0');
+          Serial.print(dbg[i], HEX);
+        }
+        Serial.println();
+      }
+    }
   } else {
     Serial.println("FAILED — logging disabled, state machine runs without flash");
   }
