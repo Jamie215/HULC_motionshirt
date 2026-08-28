@@ -189,15 +189,14 @@
 // FINDINGS.md) cannot hold a host-commanded devSleep, so it is forced 0 there —
 // the classifier's higher idle current is the known price of its reset-free idle.
 //
-// DIAGNOSTIC — DETECTOR_DIAG_NO_DEVSLEEP: set to 1 to run the DETECTOR build with
-// the hub AWAKE (devSleep off). Purpose: test whether devSleep is what suppresses
-// the detector's EXITED motion-wake. With devSleep the hub may deliver only the
-// periodic heartbeat and coalesce the wake-channel change-event; running awake
-// lets the detector emit change-events continuously. Shake in both settings and
-// watch the per-event "DETECTOR: 0x1C val=" log (added in handleIdle): if it
-// wakes awake but not asleep, devSleep is the blocker. No effect on the
-// classifier build (never uses devSleep). Leave 0 for normal operation.
-#define DETECTOR_DIAG_NO_DEVSLEEP  0
+// DETECTOR_DIAG_NO_DEVSLEEP: run the accel-only wake sensor (DETECTOR/SIGMOTION)
+// with the hub AWAKE (devSleep off). Now DEFAULT 1 — bench testing plus the
+// original working firmware confirmed that with devSleep the hub coalesces the
+// detector's EXITED wake event, so shaking rarely (or never) woke IDLE→ACTIVE.
+// Hub-awake (~7.4mA, harmless periodic re-arm) is the proven-working config.
+// Set to 0 only to re-test the devSleep (~7mA) path, which suppresses the wake.
+// No effect on the CLASSIFIER build (never uses devSleep).
+#define DETECTOR_DIAG_NO_DEVSLEEP  1
 
 // ── IDLE wake source (compile-time A/B switch) ─────────────────────────────
 // DETECTOR   — Stability Detector (0x1C), accelerometer only. Holds host
@@ -224,7 +223,7 @@
 // FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms), but the
 // wake event may fire more reliably than the Stability Detector's ENTERED/
 // EXITED transition. Use it to A/B against the detector for low-power wake.
-#define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER
+#define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
   #define IDLE_WAKE_NAME "Stability Detector (0x1C)"
@@ -288,7 +287,12 @@
 // TRADEOFF TO VERIFY: if the detector only evaluates at the heartbeat (poll),
 // a long interval also slows motion-onset detection. Watch the move→EXITED
 // latency on the bench. 10s is chosen to sit just above the reboot interval.
-#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
+#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — devSleep (sh2 config) path, microseconds
+// enableReport() (the non-devSleep path) takes MILLISECONDS, not microseconds —
+// passing the _US value there asked for a report every ~2.8 HOURS. Keep a
+// separate ms constant. 1s matches the original working firmware's responsive
+// detector heartbeat.
+#define IDLE_DETECTOR_INTERVAL_MS   1000UL       // hub-awake enableReport() path, milliseconds
 
 
 // =============================================================================
@@ -1021,11 +1025,11 @@ void enableIdleReports() {
   if (rc != SH2_OK) {
     LOGF("BNO: sh2_setSensorConfig(%s) FAILED rc=%d — using enableReport()",
          IDLE_WAKE_NAME, rc);
-    imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_US);
+    imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_MS);  // ms!
   }
 #else
   // Accel-only wake without devSleep: host stays in System-ON (__WFE) sleep on INT.
-  imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_US);
+  imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_MS);    // ms!
 #endif
 }
 

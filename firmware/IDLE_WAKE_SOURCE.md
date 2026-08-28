@@ -80,6 +80,28 @@ test-harness A/B convention.
    classifier reaches `MOTION` within one `IDLE_STABILITY_MS` interval, default
    1 s) — tune `IDLE_STABILITY_MS` for the latency/power balance you want.
 
+## Resolution: devSleep broke the detector's motion-wake
+
+Bench testing (and comparing against the original working firmware) found the
+Stability Detector **stopped waking on motion** once the low-power **devSleep**
+path was added: with the hub asleep, the EXITED wake event is coalesced/rarely
+delivered (shaking only occasionally printed a `0x1C val=` line, state never
+changed). Two regressions compounded it: the report interval was stretched
+1 s → 10 s, and the `_US` (microsecond) interval was passed to
+`enableReport()`, which takes **milliseconds** (asking for a report every
+~2.8 h).
+
+Fixes: `DETECTOR_DIAG_NO_DEVSLEEP` now defaults **1** (hub awake — the proven
+config, ~7.4 mA with a harmless periodic re-arm), the enableReport path uses a
+dedicated `IDLE_DETECTOR_INTERVAL_MS = 1000`, and the default `IDLE_WAKE_SOURCE`
+is back to `IDLE_WAKE_DETECTOR`. The `getStabilityClassifier()` read was **not**
+the problem — the original working code uses the identical read.
+
+**Net:** low-power idle on this chip means hub-awake accel-only (~7.4 mA, works)
+— *not* devSleep (~7 mA, suppresses the wake). Getting below ~7.4 mA needs a
+hardware wake (a separate low-power accel/motion interrupt waking the nRF, which
+then powers the BNO), not the BNO's own devSleep.
+
 ## Recommendation
 
 Use the classifier when a reset-free, robust idle matters more than the last few
