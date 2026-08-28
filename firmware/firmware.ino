@@ -209,7 +209,12 @@
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
-#define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
+// CLASSIFIER (accel+gyro) so IDLE wakes on ROTATION too. The DETECTOR is
+// accelerometer-only and can miss pure rotation of a rigid body (little linear
+// accel), leaving the node stuck in IDLE with nothing logged. CLASSIFIER costs
+// higher idle current (no devSleep) — revisit for power once capture works;
+// flip back to IDLE_WAKE_DETECTOR if you specifically want the low-power path.
+#define IDLE_WAKE_SOURCE      IDLE_WAKE_CLASSIFIER
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
   #define IDLE_WAKE_NAME "Stability Detector (0x1C)"

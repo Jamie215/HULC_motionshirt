@@ -273,12 +273,18 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
                                       response=True)
 
     t0 = time.monotonic()
+    no_data_timeout = 8.0    # if nothing ever arrives, the log is empty
     # Wait until the stream has been quiet for `quiet_s` after the last chunk,
     # or we hit max_s. (Firmware streams until all flash data is sent.)
     while True:
         await asyncio.sleep(0.5)
         elapsed = time.monotonic() - t0
         last = state["last"]
+        if last is None and elapsed > no_data_timeout:
+            print(f"[OFFLOAD] {node.name}: no data in {no_data_timeout:.0f}s — "
+                  f"the node's flash log is empty (nothing was recorded). "
+                  f"Make it record first (see below), then re-offload.")
+            break
         if last is not None and (time.monotonic() - last) > quiet_s:
             break
         if elapsed > max_s:
