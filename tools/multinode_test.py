@@ -19,6 +19,11 @@ Typical use (two boards on the bench):
 
     python tools/multinode_test.py --count 2 --duration 60
 
+Offload every detected node's log, each to its own file named by node id
+(e.g. HULC-IMU-D067.bin), ready for tools/reconcile_nodes.py:
+
+    python tools/multinode_test.py --offload --count 2 --out-dir ./capture
+
 What to look for
 ----------------
 * CONNECT: both nodes should connect and stay connected.
@@ -35,6 +40,8 @@ BLE GATT (see firmware.ino header for the authoritative layout):
 
 import argparse
 import asyncio
+import os
+import re
 import statistics
 import struct
 import sys
@@ -382,7 +389,8 @@ async def request_fast_connection_windows(client, name: str) -> bool:
 
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
-              offload_save: str = None, name_filter: str = None) -> None:
+              offload_save: str = None, name_filter: str = None,
+              offload_dir: str = None) -> None:
     devices = await scan(count, scan_timeout, name_filter)
 
     nodes = []
@@ -410,8 +418,22 @@ async def run(count: int, duration: float, interval: float,
             print()
 
         if offload:
-            # Throughput mode: offload the first node's log (measure + save).
-            await measure_offload(connected[0], save_path=offload_save)
+            # Offload EVERY connected node in turn, each to its own .bin named
+            # after the node id (e.g. HULC-IMU-D067.bin). --save overrides the
+            # filename only when exactly one node is offloaded.
+            if offload_dir:
+                os.makedirs(offload_dir, exist_ok=True)
+            single = offload_save and len(connected) == 1
+            if offload_save and len(connected) > 1:
+                print(f"[OFFLOAD] --save ignored ({len(connected)} nodes) — "
+                      f"auto-naming each file by node id.")
+            for node in connected:
+                if single:
+                    path = offload_save
+                else:
+                    safe = re.sub(r"[^A-Za-z0-9._-]", "_", node.name)
+                    path = os.path.join(offload_dir or ".", f"{safe}.bin")
+                await measure_offload(node, save_path=path)
             return
 
         # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
@@ -483,8 +505,11 @@ def main() -> None:
                     help="offload one node's flash log (measure throughput) "
                          "instead of the sync-offset test")
     ap.add_argument("--save", metavar="PATH",
-                    help="with --offload: write the offloaded log to this .bin "
-                         "file (for tools/reconcile_nodes.py)")
+                    help="with --offload and a SINGLE node: write the log to this "
+                         "exact .bin path (overrides the auto name)")
+    ap.add_argument("--out-dir", metavar="DIR", default=".",
+                    help="with --offload: directory for the auto-named per-node "
+                         ".bin files (default: current dir)")
     ap.add_argument("--name", metavar="SUFFIX",
                     help="only connect to the node whose name contains SUFFIX "
                          "(e.g. --name D067). Use with --offload to pick exactly "
@@ -495,7 +520,8 @@ def main() -> None:
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout, args.offload, args.save, args.name))
+                        args.scan_timeout, args.offload, args.save, args.name,
+                        args.out_dir))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 
