@@ -246,15 +246,16 @@ def report_offsets(nodes: list) -> None:
 
 
 async def measure_offload(node: Node, quiet_s: float = 3.0,
-                          max_s: float = 300.0) -> None:
-    """Measure log-offload throughput (Req 2) on one node.
+                          max_s: float = 300.0, save_path: str = None) -> None:
+    """Offload one node's flash log: measure throughput and optionally save it.
 
     Subscribes to A004, sends control 0x04 (begin offload — IDLE only, does NOT
-    erase), counts bytes until notifications go quiet, and reports KB/s. This
-    is the hard number the flash-offload use case depends on; at a slow
-    connection interval it will be painfully low.
+    erase), collects the streamed 20-byte records until notifications go quiet,
+    reports KB/s, and (if save_path) writes the raw bytes to a .bin file ready
+    for tools/reconcile_nodes.py.
     """
     state = {"bytes": 0, "chunks": 0, "first": None, "last": None}
+    buf = bytearray()
 
     def on_chunk(_char, data: bytearray) -> None:
         now = time.monotonic()
@@ -263,6 +264,7 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
         state["last"] = now
         state["bytes"] += len(data)
         state["chunks"] += 1
+        buf.extend(data)
 
     await read_status(node)  # prints log size / IDLE state for context
     print(f"[OFFLOAD] {node.name}: starting — subscribing to A004...")
@@ -303,6 +305,15 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
         print(f"           throughput: {kb / dur:.2f} KB/s")
         print(f"           => a full 2 MB flash would take "
               f"~{(2048 / (kb / dur)) / 60:.1f} min at this rate")
+        if save_path:
+            trailing = len(buf) % 20
+            if trailing:
+                print(f"           [warn] {trailing} trailing bytes "
+                      f"(partial record) — records are 20 bytes.")
+            with open(save_path, "wb") as f:
+                f.write(buf)
+            print(f"           saved {len(buf)} bytes ({len(buf)//20} records) "
+                  f"-> {save_path}")
     print("==============================\n")
 
 
@@ -358,7 +369,8 @@ async def request_fast_connection_windows(client, name: str) -> bool:
 
 
 async def run(count: int, duration: float, interval: float,
-              scan_timeout: float, offload: bool = False) -> None:
+              scan_timeout: float, offload: bool = False,
+              offload_save: str = None) -> None:
     devices = await scan(count, scan_timeout)
 
     nodes = []
@@ -386,8 +398,8 @@ async def run(count: int, duration: float, interval: float,
             print()
 
         if offload:
-            # Throughput mode: measure log offload on the first node, then stop.
-            await measure_offload(connected[0])
+            # Throughput mode: offload the first node's log (measure + save).
+            await measure_offload(connected[0], save_path=offload_save)
             return
 
         # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
@@ -456,13 +468,18 @@ def main() -> None:
     ap.add_argument("--scan-timeout", type=float, default=8.0,
                     help="BLE scan timeout in seconds (default 8)")
     ap.add_argument("--offload", action="store_true",
-                    help="measure log-offload throughput on one node (Req 2) "
+                    help="offload one node's flash log (measure throughput) "
                          "instead of the sync-offset test")
+    ap.add_argument("--save", metavar="PATH",
+                    help="with --offload: write the offloaded log to this .bin "
+                         "file (for tools/reconcile_nodes.py)")
     args = ap.parse_args()
+    if args.save and not args.offload:
+        ap.error("--save requires --offload")
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout, args.offload))
+                        args.scan_timeout, args.offload, args.save))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 
