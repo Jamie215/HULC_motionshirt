@@ -107,9 +107,10 @@ def parse_syncinfo(data: bytes) -> tuple:
     return node_millis_now, sync_epoch_ms, sync_millis
 
 
-async def scan(count: int, timeout: float) -> list:
+async def scan(count: int, timeout: float, name_filter: str = None) -> list:
     print(f"[SCAN] Looking for {count} '{NAME_PREFIX}-*' node(s) "
-          f"({timeout:.0f}s)...")
+          f"({timeout:.0f}s)"
+          f"{' matching ' + name_filter if name_filter else ''}...")
     devices = await BleakScanner.discover(timeout=timeout)
     found = []
     for d in devices:
@@ -117,6 +118,11 @@ async def scan(count: int, timeout: float) -> list:
         if name.startswith(NAME_PREFIX):
             found.append(d)
             print(f"[SCAN]   found {name}  ({d.address})")
+    if name_filter:
+        nf = name_filter.lower()
+        found = [d for d in found if nf in (d.name or "").lower()]
+        if not found:
+            raise SystemExit(f"[SCAN] No node matching '{name_filter}' found.")
     if not found:
         raise SystemExit("[SCAN] No HULC nodes found. Are they powered and "
                          "advertising? (a connected node stops advertising)")
@@ -376,8 +382,8 @@ async def request_fast_connection_windows(client, name: str) -> bool:
 
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
-              offload_save: str = None) -> None:
-    devices = await scan(count, scan_timeout)
+              offload_save: str = None, name_filter: str = None) -> None:
+    devices = await scan(count, scan_timeout, name_filter)
 
     nodes = []
     try:
@@ -479,13 +485,17 @@ def main() -> None:
     ap.add_argument("--save", metavar="PATH",
                     help="with --offload: write the offloaded log to this .bin "
                          "file (for tools/reconcile_nodes.py)")
+    ap.add_argument("--name", metavar="SUFFIX",
+                    help="only connect to the node whose name contains SUFFIX "
+                         "(e.g. --name D067). Use with --offload to pick exactly "
+                         "which node to offload.")
     args = ap.parse_args()
     if args.save and not args.offload:
         ap.error("--save requires --offload")
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout, args.offload, args.save))
+                        args.scan_timeout, args.offload, args.save, args.name))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 
