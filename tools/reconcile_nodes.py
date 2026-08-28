@@ -71,6 +71,24 @@ _RECORD_DT = np.dtype([("t", "<u4"), ("w", "<f4"), ("x", "<f4"),
                        ("y", "<f4"), ("z", "<f4")])
 
 
+def _best_offset(raw: bytes) -> int:
+    """Find the start byte offset (0..19) whose 20-byte records decode to the
+    most unit-norm quaternions — robust to a one-byte offload framing shift."""
+    best_off, best_score = 0, -1.0
+    for off in range(RECORD_SIZE):
+        m = (len(raw) - off) // RECORD_SIZE
+        if m < 8:
+            continue
+        a = np.frombuffer(raw[off:off + m * RECORD_SIZE], dtype=_RECORD_DT)
+        with np.errstate(invalid="ignore", over="ignore"):
+            q = np.stack([a["w"], a["x"], a["y"], a["z"]], axis=1).astype(np.float64)
+            nrm = np.sqrt(np.nansum(q * q, axis=1))
+        score = np.mean((nrm > 0.9) & (nrm < 1.1))
+        if score > best_score:
+            best_off, best_score = off, score
+    return best_off
+
+
 def load_log(path: str):
     """Decode + sanitize a binary node log → (t_ms int64[N], quat float64[N,4])."""
     with open(path, "rb") as f:
@@ -82,7 +100,15 @@ def load_log(path: str):
         print(f"[warn] {path}: {len(raw) % RECORD_SIZE} trailing bytes ignored "
               f"(partial record).")
 
-    arr = np.frombuffer(raw[:n * RECORD_SIZE], dtype=_RECORD_DT)
+    # Auto-detect byte alignment. An offload framing bug can shift every record
+    # by a byte (a stray byte every 20), which scrambles the naive decode. Pick
+    # the start offset (0..19) whose quaternions are most unit-norm.
+    off = _best_offset(raw)
+    if off:
+        print(f"[warn] {path}: records start at byte offset {off} "
+              f"(framing shift) — decoding from there.")
+    m = (len(raw) - off) // RECORD_SIZE
+    arr = np.frombuffer(raw[off:off + m * RECORD_SIZE], dtype=_RECORD_DT)
     t = arr["t"].astype(np.int64)
     # Garbage bytes decode to NaN/inf float32; the cast warns — harmless, we
     # drop those rows below, so silence it.
