@@ -61,8 +61,18 @@ RECORD_SIZE = RECORD.size          # 20
 # ---------------------------------------------------------------------------
 # Decode
 # ---------------------------------------------------------------------------
+# Records read straight out of flash can include junk: erased regions decode to
+# a timestamp of 0xFFFFFFFF and NaN quaternions, and a stale write pointer can
+# leave gaps. One bad timestamp alone makes resample_uniform try to build a grid
+# spanning ~4.29e9 ms (hundreds of millions of samples) and the tool hangs. So
+# every log is sanitized on load.
+_ERASED_TS = 0xFFFFFFFF
+_RECORD_DT = np.dtype([("t", "<u4"), ("w", "<f4"), ("x", "<f4"),
+                       ("y", "<f4"), ("z", "<f4")])
+
+
 def load_log(path: str):
-    """Decode a binary node log → (t_ms int64[N], quat float64[N,4])."""
+    """Decode + sanitize a binary node log → (t_ms int64[N], quat float64[N,4])."""
     with open(path, "rb") as f:
         raw = f.read()
     n = len(raw) // RECORD_SIZE
@@ -71,13 +81,33 @@ def load_log(path: str):
     if len(raw) % RECORD_SIZE:
         print(f"[warn] {path}: {len(raw) % RECORD_SIZE} trailing bytes ignored "
               f"(partial record).")
-    t = np.empty(n, dtype=np.int64)
-    q = np.empty((n, 4), dtype=np.float64)
-    for i in range(n):
-        ts, w, x, y, z = RECORD.unpack_from(raw, i * RECORD_SIZE)
-        t[i] = ts
-        q[i] = (w, x, y, z)
-    return t, normalize_quats(q)
+
+    arr = np.frombuffer(raw[:n * RECORD_SIZE], dtype=_RECORD_DT)
+    t = arr["t"].astype(np.int64)
+    q = np.stack([arr["w"], arr["x"], arr["y"], arr["z"]], axis=1).astype(np.float64)
+
+    # Drop junk: erased timestamps, and non-finite / zero-norm quaternions.
+    finite = np.isfinite(q).all(axis=1)
+    nonzero = np.linalg.norm(q, axis=1) > 1e-6
+    valid = finite & nonzero & (arr["t"] != _ERASED_TS)
+    # Keep only strictly-increasing timestamps (drops backward jumps / dupes).
+    tv = t[valid]
+    if len(tv):
+        rising = np.concatenate(([True], np.maximum.accumulate(tv)[1:]
+                                 > np.maximum.accumulate(tv)[:-1]))
+        idx = np.flatnonzero(valid)[rising]
+    else:
+        idx = np.array([], dtype=np.int64)
+
+    dropped = n - len(idx)
+    if dropped:
+        print(f"[warn] {path}: dropped {dropped}/{n} bad records "
+              f"(erased/NaN/non-monotonic); {len(idx)} valid.")
+    if len(idx) < 2:
+        raise SystemExit(f"{path}: only {len(idx)} valid record(s) after "
+                         f"sanitizing — is this a real capture (state reached "
+                         f"ACTIVE_RECORDING and logged QUAT samples)?")
+    return t[idx], normalize_quats(q[idx])
 
 
 def normalize_quats(q: np.ndarray) -> np.ndarray:
@@ -117,6 +147,12 @@ def resample_uniform(t_ms: np.ndarray, y: np.ndarray, fs: float):
     t0 = float(t_ms[0])
     rel = t_ms - t0
     step = 1000.0 / fs
+    n_pts = int(rel[-1] / step) + 2
+    if n_pts > 5_000_000:
+        raise SystemExit(
+            f"[reconcile] resample grid would be {n_pts} samples "
+            f"(span {rel[-1] / 1000:.0f}s @ {fs:.0f}Hz) — the log's timestamps "
+            f"look corrupt. Re-capture, or check the .bin for junk records.")
     grid = np.arange(0.0, rel[-1] + step, step)
     y_u = np.interp(grid, rel, y)
     return t0, grid, y_u
@@ -125,6 +161,15 @@ def resample_uniform(t_ms: np.ndarray, y: np.ndarray, fs: float):
 # ---------------------------------------------------------------------------
 # Cross-correlation lag
 # ---------------------------------------------------------------------------
+def _xcorr_full(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Same result as np.correlate(a, b, 'full') but via FFT — O(N log N)
+    instead of O(N*M), so it doesn't hang on long signals."""
+    N, M = len(a), len(b)
+    nfft = 1 << int(np.ceil(np.log2(N + M - 1)))
+    cc = np.fft.irfft(np.fft.rfft(a, nfft) * np.conj(np.fft.rfft(b, nfft)), nfft)
+    return np.concatenate((cc[nfft - (M - 1):nfft], cc[:N]))
+
+
 def best_lag_seconds(ya: np.ndarray, yb: np.ndarray, fs: float) -> float:
     """Lag L (seconds) such that ya[t] best matches yb[t - L].
 
@@ -133,7 +178,7 @@ def best_lag_seconds(ya: np.ndarray, yb: np.ndarray, fs: float) -> float:
     """
     a = ya - ya.mean()
     b = yb - yb.mean()
-    corr = np.correlate(a, b, mode="full")
+    corr = _xcorr_full(a, b)
     lags = np.arange(-len(b) + 1, len(a))
     k = int(np.argmax(corr))
     delta = 0.0
@@ -171,7 +216,7 @@ def lag_and_confidence(ya: np.ndarray, yb: np.ndarray, fs: float):
     two motion signals at that lag. Low confidence = little shared motion."""
     a = ya - ya.mean()
     b = yb - yb.mean()
-    corr = np.correlate(a, b, mode="full")
+    corr = _xcorr_full(a, b)
     lags = np.arange(-len(b) + 1, len(a))
     k = int(np.argmax(corr))
     delta = 0.0
@@ -498,6 +543,32 @@ def selftest() -> int:
     return 0 if ok else 1
 
 
+def inspect_logs(paths) -> None:
+    """Print per-file capture stats — useful for diagnosing a bad .bin."""
+    print("===== LOG INSPECTION =====")
+    for p in paths:
+        try:
+            t, q = load_log(p)
+        except SystemExit as exc:
+            print(f"[{p}] {exc}")
+            continue
+        span_s = (t[-1] - t[0]) / 1000.0
+        dt = np.diff(t)
+        rate = 1000.0 / np.median(dt) if len(dt) else 0.0
+        ts, sp = angular_speed(t, q)
+        print(f"\n[{p}]")
+        print(f"  valid records : {len(t)}")
+        print(f"  time span     : {span_s:.1f} s")
+        print(f"  sample rate   : {rate:.1f} Hz (median)")
+        print(f"  gaps > 1s     : {int(np.sum(dt > 1000))}")
+        if len(sp):
+            print(f"  angular speed : mean {sp.mean():.2f}, max {sp.max():.2f} rad/s "
+                  f"(is there real motion? near-zero = node barely moved)")
+    print("\nFor alignment, two logs need OVERLAPPING real motion. Compare the")
+    print("time spans and motion above; if a node barely moved, re-capture.")
+    print("==========================")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -508,10 +579,18 @@ def main() -> None:
                     help="output sample rate Hz (default: node0 native rate)")
     ap.add_argument("--selftest", action="store_true",
                     help="run the synthetic recovery test (no hardware)")
+    ap.add_argument("--inspect", action="store_true",
+                    help="just print stats for each log (records, span, rate, "
+                         "motion) — for checking capture quality, no alignment")
     args = ap.parse_args()
 
     if args.selftest:
         sys.exit(selftest())
+    if args.inspect:
+        if not args.logs:
+            ap.error("--inspect needs at least one log file")
+        inspect_logs(args.logs)
+        return
     if len(args.logs) < 2:
         ap.error("need at least 2 log files to align (or use --selftest)")
     align_and_emit(args.logs, args.out, args.fs)
