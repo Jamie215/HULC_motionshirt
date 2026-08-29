@@ -4,6 +4,10 @@ Status: **working design**, pending the central-platform test (below).
 Scope: how multiple IMU nodes on one motion shirt stay time-aligned and get
 their data off, given what the bench testing has shown so far.
 
+> For the **math and algorithm** behind the offline reconciliation (clock model,
+> cross-correlation, confidence, drift, references), see
+> [`MULTINODE_SYNC_MATH.md`](MULTINODE_SYNC_MATH.md).
+
 ## Requirements
 
 Two places need Bluetooth "sync":
