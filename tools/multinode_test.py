@@ -440,6 +440,36 @@ async def request_fast_connection_windows(client, name: str) -> bool:
     return False
 
 
+async def connect_with_retry(device, attempts: int = 3):
+    """Connect to one device, retrying transient failures. Returns a connected
+    BleakClient, or None if every attempt failed.
+
+    Windows' BLE stack intermittently cancels service discovery while a second
+    peripheral is connecting (the CancelledError -> TimeoutError seen when
+    connecting several nodes back to back). A short retry with a fresh client
+    clears it almost every time, so one flaky connect no longer aborts the run.
+    """
+    for attempt in range(1, attempts + 1):
+        client = BleakClient(device)
+        try:
+            await client.connect()
+            if client.is_connected:
+                return client
+        except Exception as exc:  # noqa: BLE001
+            if attempt < attempts:
+                wait = 1.5 * attempt
+                print(f"[{type(exc).__name__}, retry {attempt}/{attempts - 1} "
+                      f"in {wait:.0f}s]", end=" ", flush=True)
+        # Failed this attempt — drop the client cleanly before retrying.
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        if attempt < attempts:
+            await asyncio.sleep(1.5 * attempt)
+    return None
+
+
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
@@ -449,11 +479,13 @@ async def run(count: int, duration: float, interval: float,
     nodes = []
     try:
         for d in devices:
-            client = BleakClient(d)
             print(f"[CONNECT] {d.name} ...", end=" ", flush=True)
-            await client.connect()
-            print("OK" if client.is_connected else "FAILED")
-            nodes.append(Node(d.name or d.address, d.address, client))
+            client = await connect_with_retry(d)
+            if client is not None:
+                print("OK")
+                nodes.append(Node(d.name or d.address, d.address, client))
+            else:
+                print("FAILED — skipping this node")
 
         connected = [n for n in nodes if n.client.is_connected]
         if len(connected) < 1:
