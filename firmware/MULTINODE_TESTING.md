@@ -80,25 +80,62 @@ A **header** notification is sent first with a sentinel offset
 the existing 200-byte notification, so no MTU change is needed.
 
 The host (`measure_offload`) places each payload by its offset, so a dropped
-notification leaves a **locatable hole** instead of a collapsed gap. It then
-**re-offloads and merges by offset** — the node does not erase until it receives
-`0x03`, so each pass fills the previous pass's holes — up to
-`OFFLOAD_MAX_ATTEMPTS` (4) times, until the received bytes match the header
-total. Reading the output:
+notification leaves a **locatable hole** instead of a collapsed gap. Recovery
+has two parts, both leaning on the fact that the node does **not** erase until it
+receives `0x03`:
 
-* `attempt 1: 4200/4600 bytes (200 missing / 10 records)` → a drop was detected
-  and located; `re-offloading to fill 1 hole(s)...` follows.
+1. **Backpressure (firmware).** `offloadChar.writeValue()` returns false when the
+   BLE TX buffer is full; the sender now retries the same notification (pumping
+   `BLE.poll()`) instead of advancing, so it self-paces to the negotiated
+   connection interval rather than blasting every 3 ms and overflowing. Without
+   this the sender alone dropped ~45% of notifications.
+2. **Targeted range re-request (control `0x06`).** After a first full pass
+   (which also delivers the header total), the host re-requests **only the
+   missing byte ranges** — `[0x06, offset u32 LE, length u32 LE]` → the firmware
+   re-sends just those bytes with the same framing. A whole-log re-offload
+   recreates the same fast burst and tends to drop the *same* chunk every pass
+   (deterministic central-side loss that merging can never fill); a small,
+   non-bursty range resend does not, so it recovers those holes. Repeats up to
+   `OFFLOAD_MAX_ATTEMPTS` (4) times until the bytes match the header total.
+
+Reading the output:
+
+* `pass 1 (full): 3528/5300 bytes, 5 hole(s)` → drops detected and located.
+* `pass 2: re-requesting 5 range(s)...` → targeted recovery.
 * `COMPLETE — saved N bytes (M records) -> file.bin` → verified whole; safe to
   reconcile.
-* `[!] INCOMPLETE after 4 attempts …` → still missing data after all retries.
-  The file is saved with holes **zero-filled** (reconcile drops zero-norm
-  records, so survivors keep their true timestamps rather than collapsing into a
-  fake, undetectable gap), and a warning lists the missing offsets. Re-run
-  `--offload` to recover the rest (the log is still on the node).
+* `[!] INCOMPLETE after 4 attempts …` → still missing after all retries. The
+  file is saved with holes **zero-filled** (reconcile drops zero-norm records,
+  so survivors keep their true timestamps rather than collapsing into a fake,
+  undetectable gap), and a warning lists the missing offsets. Re-run `--offload`
+  to recover the rest (the log is still on the node).
 
 If a particular central drops heavily, raise `OFFLOAD_MAX_ATTEMPTS`, or switch
 to a non-Windows central (below) — the same platform choice that governs
 throughput also governs drop rate.
+
+### Flash hygiene — erase between sessions
+
+The write pointer persists across reboots (it's saved in the flash header), so
+if you **power-cycle a node without erasing**, the next recording is *appended*
+to the old one. `millis()` resets to ~0 on boot, so the log then holds two
+sessions with a large backward timestamp jump at the seam. `reconcile_nodes.py`
+keeps the strictly-increasing run and drops the rest — you'll see a
+`dropped N/M bad records (… non-monotonic)` warning. It's harmless to the
+analysis but means stale data is accumulating.
+
+Keep each node's flash to a single session:
+
+* **`--offload --erase-after-offload`** — wipe each node's flash **only after its
+  offload is verified `COMPLETE`**, so you never erase data you didn't fully
+  receive. This is the clean default workflow: offload, verify, wipe.
+* **`--erase`** — wipe unconditionally, then exit (use before a capture, or to
+  clear a node you don't need to offload).
+
+`eraseLog()` erases the whole chip in 64 KB blocks and **verifies the data region
+reads back blank (0xFF) before resetting the write pointer**, so a silently
+failed erase leaves the log intact and still reported at its real size rather
+than falsely showing `log=0KB`.
 
 ## Offline reconciliation (`tools/reconcile_nodes.py`)
 

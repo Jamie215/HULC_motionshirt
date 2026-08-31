@@ -488,6 +488,7 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
         print(f"[{node.name}] no data received. Is there a log to offload "
               f"(status log>0KB) and is the node in IDLE?")
     print("==============================\n")
+    return complete
 
 
 # Keep WinRT connection-parameter request objects alive for the whole session:
@@ -574,7 +575,8 @@ async def connect_with_retry(device, attempts: int = 3):
 async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
-              offload_dir: str = None, erase: bool = False) -> None:
+              offload_dir: str = None, erase: bool = False,
+              erase_after: bool = False) -> None:
     devices = await scan(count, scan_timeout, name_filter)
 
     nodes = []
@@ -625,7 +627,19 @@ async def run(count: int, duration: float, interval: float,
                 else:
                     safe = re.sub(r"[^A-Za-z0-9._-]", "_", node.name)
                     path = os.path.join(offload_dir or ".", f"{safe}.bin")
-                await measure_offload(node, save_path=path)
+                complete = await measure_offload(node, save_path=path)
+                # Erase ONLY after a verified-complete offload, so we never wipe
+                # data we didn't fully receive. This keeps each node's flash to a
+                # single session (no reboot-seam / stale-record accumulation).
+                if erase_after:
+                    if complete:
+                        print(f"[OFFLOAD] {node.name}: verified complete — "
+                              f"erasing flash so the next capture starts clean.")
+                        await erase_node(node)
+                    else:
+                        print(f"[OFFLOAD] {node.name}: NOT erasing — offload was "
+                              f"incomplete. Re-run to recover, or erase manually "
+                              f"with --erase once you have the data.")
             return
 
         # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
@@ -709,16 +723,23 @@ def main() -> None:
     ap.add_argument("--erase", action="store_true",
                     help="WIPE each connected node's flash log (control 0x03), "
                          "then exit. Use before a clean capture. Destructive.")
+    ap.add_argument("--erase-after-offload", action="store_true",
+                    help="with --offload: after each node's offload is verified "
+                         "COMPLETE, wipe its flash so the next capture starts "
+                         "clean (avoids reboot-seam / stale-record buildup). "
+                         "An incomplete offload is never erased.")
     args = ap.parse_args()
     if args.save and not args.offload:
         ap.error("--save requires --offload")
     if args.erase and args.offload:
         ap.error("--erase and --offload are separate steps; run them separately")
+    if args.erase_after_offload and not args.offload:
+        ap.error("--erase-after-offload requires --offload")
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
                         args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir, args.erase))
+                        args.out_dir, args.erase, args.erase_after_offload))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 
