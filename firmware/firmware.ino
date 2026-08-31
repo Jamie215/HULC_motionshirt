@@ -544,6 +544,31 @@ bool qspiEraseSector(uint32_t addr) {
   return qspiWait();
 }
 
+// Erase one 64KB block, with error checking and an erase-sized busy-wait.
+// A 64KB block erase can take up to ~1s on the P25Q16H — far longer than the
+// ~100ms qspiWait() budget used for writes — so poll with a larger bound.
+// Returning early (as qspiWait() would) while the chip is still busy makes the
+// next erase land on a busy chip and get dropped, so the wait MUST cover the
+// whole erase. Returns false on driver error or timeout so callers can abort.
+bool qspiEraseBlock64k(uint32_t addr) {
+  nrfx_err_t err = nrfx_qspi_erase(NRF_QSPI_ERASE_LEN_64KB, addr);
+  if (err != NRFX_SUCCESS) {
+    Serial.print("[QSPI] 64K erase failed at 0x");
+    Serial.println(addr, HEX);
+    return false;
+  }
+  uint32_t timeout = 200000;   // ~2s: 200000 * 10us
+  while (nrfx_qspi_mem_busy_check() != NRFX_SUCCESS) {
+    if (--timeout == 0) {
+      Serial.print("[QSPI] 64K erase timeout at 0x");
+      Serial.println(addr, HEX);
+      return false;
+    }
+    delayMicroseconds(10);
+  }
+  return true;
+}
+
 bool qspiWrite(uint32_t addr, const uint8_t* buf, size_t len) {
   nrfx_err_t err = nrfx_qspi_write(buf, len, addr);
   if (err != NRFX_SUCCESS) {
@@ -624,11 +649,37 @@ bool loadHeader() {
 // Wired to BLE control command 0x03 (see handleControl).
 // ---------------------------------------------------------------------------
 void eraseLog() {
-  Serial.println("[QSPI] Erasing log — this takes ~30s...");
+  Serial.println("[QSPI] Erasing log — this takes ~10-30s...");
 
+  // Erase the whole chip in 64KB blocks. Abort on the FIRST failure: the old
+  // eraseLog() ignored every return value and unconditionally reset the write
+  // pointer, so a silently-failed erase (dropped block-erase, chip busy) left
+  // stale records on flash while reporting log=0. Bail without touching
+  // writeAddr instead — status keeps reporting the real (still-populated) size.
   for (uint32_t addr = 0; addr < QSPI_FLASH_SIZE; addr += 64 * 1024) {
-    nrfx_qspi_erase(NRF_QSPI_ERASE_LEN_64KB, addr);
-    qspiWait();
+    if (!qspiEraseBlock64k(addr)) {
+      Serial.println("[QSPI] Log erase FAILED — flash NOT wiped, pointer unchanged");
+      return;
+    }
+  }
+
+  // Verify the data region actually came back blank (0xFF) before trusting the
+  // erase and resetting the pointer. A read-back is cheap insurance against a
+  // block that reports success but did not physically clear.
+  alignas(4) uint8_t check[16];   // QSPI EasyDMA: 4-byte aligned
+  if (!qspiRead(LOG_DATA_START, check, sizeof(check))) {
+    Serial.println("[QSPI] Log erase verify read FAILED — pointer unchanged");
+    return;
+  }
+  for (size_t i = 0; i < sizeof(check); i++) {
+    if (check[i] != 0xFF) {
+      Serial.print("[QSPI] Log erase verify FAILED at data byte ");
+      Serial.print(i);
+      Serial.print(" (0x");
+      Serial.print(check[i], HEX);
+      Serial.println(") — pointer unchanged");
+      return;
+    }
   }
 
   writeAddr  = LOG_DATA_START;
