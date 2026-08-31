@@ -52,8 +52,53 @@ duration and reports the cross-node offset and its drift.
 Other modes:
 * `--count 1` — single-node latency diagnostic (isolates per-link latency from
   multi-connection scheduling).
-* `--offload` — measure log-offload throughput (KB/s) on one node, the number
-  the flash-offload use case depends on.
+* `--offload` — offload one node's flash log to a `.bin` (and measure throughput
+  KB/s). The transfer is now framed and loss-verified — see below.
+
+## Flash offload — framing & drop recovery
+
+The offload streams the flash log over the `A004` characteristic as BLE
+**notifications**, which are **unacknowledged**: if the central's stack drops
+one (common on Windows/WinRT under a fast burst), that packet is gone and
+neither side is told. Because each packet carried 10 back-to-back records
+(200 bytes ÷ 20), a single dropped notification silently deletes a 10-record
+run from the *middle* of the reconstructed file, and the records on either side
+become adjacent — showing up downstream as a multi-second **gap** with clean,
+valid records on both sides. The tell: gap durations are exact multiples of one
+chunk (~1.2 s = 10 records), independent per node, with nothing in the device's
+serial (the recording never gapped — only the transfer lost data).
+
+To make loss **detectable and recoverable**, every notification is framed:
+
+| Bytes | Field |
+|---|---|
+| 0–3 | `uint32` LE **offset** of this payload within the log data region |
+| 4… | up to `OFFLOAD_DATA_SIZE` (196) bytes of record data |
+
+A **header** notification is sent first with a sentinel offset
+(`0xFFFFFFFF`) whose payload is the exact total log length. Framing stays within
+the existing 200-byte notification, so no MTU change is needed.
+
+The host (`measure_offload`) places each payload by its offset, so a dropped
+notification leaves a **locatable hole** instead of a collapsed gap. It then
+**re-offloads and merges by offset** — the node does not erase until it receives
+`0x03`, so each pass fills the previous pass's holes — up to
+`OFFLOAD_MAX_ATTEMPTS` (4) times, until the received bytes match the header
+total. Reading the output:
+
+* `attempt 1: 4200/4600 bytes (200 missing / 10 records)` → a drop was detected
+  and located; `re-offloading to fill 1 hole(s)...` follows.
+* `COMPLETE — saved N bytes (M records) -> file.bin` → verified whole; safe to
+  reconcile.
+* `[!] INCOMPLETE after 4 attempts …` → still missing data after all retries.
+  The file is saved with holes **zero-filled** (reconcile drops zero-norm
+  records, so survivors keep their true timestamps rather than collapsing into a
+  fake, undetectable gap), and a warning lists the missing offsets. Re-run
+  `--offload` to recover the rest (the log is still on the node).
+
+If a particular central drops heavily, raise `OFFLOAD_MAX_ATTEMPTS`, or switch
+to a non-Windows central (below) — the same platform choice that governs
+throughput also governs drop rate.
 
 ## Offline reconciliation (`tools/reconcile_nodes.py`)
 
