@@ -449,7 +449,10 @@ bool         qspiReady           = false;
 bool         logging             = true;
 uint32_t     writeAddr           = LOG_DATA_START;
 uint32_t     writeCount          = 0;
-uint8_t      pktBuf[20];          // Shared record packing buffer
+// MUST be 4-byte aligned: nRF52 QSPI EasyDMA requires word-aligned buffers.
+// An unaligned pktBuf caused every flash record to be written shifted by one
+// byte (a stray leading byte + the last byte truncated) — see git history.
+alignas(4) uint8_t pktBuf[20];     // Shared record packing buffer
 
 // ── Timers ──
 uint32_t     lastMotionTime      = 0;
@@ -567,14 +570,14 @@ bool qspiRead(uint32_t addr, uint8_t* buf, size_t len) {
 // ---------------------------------------------------------------------------
 void saveHeader() {
   qspiEraseSector(LOG_HEADER_ADDR);
-  uint8_t  header[20]  = {0};
+  alignas(4) uint8_t header[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   uint32_t magic       = LOG_MAGIC;
   memcpy(header,     &magic,     4);
   memcpy(header + 4, &writeAddr, 4);
   qspiWrite(LOG_HEADER_ADDR, header, 20);
 
   // Read-back verify
-  uint8_t  verify[20] = {0};
+  alignas(4) uint8_t verify[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   uint32_t readMagic  = 0;
   uint32_t readBack   = 0;
   qspiRead(LOG_HEADER_ADDR, verify, 20);
@@ -591,7 +594,7 @@ void saveHeader() {
 }
 
 bool loadHeader() {
-  uint8_t header[20] = {0};
+  alignas(4) uint8_t header[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   if (!qspiRead(LOG_HEADER_ADDR, header, 20)) return false;
 
   uint32_t magic = 0;
@@ -779,7 +782,7 @@ void offloadLog(BLEDevice& central) {
   uint32_t bytesSent    = 0;
   uint32_t chunkCount   = 0;
   uint32_t lastProgress = 0;
-  uint8_t  chunk[OFFLOAD_CHUNK_SIZE];
+  alignas(4) uint8_t chunk[OFFLOAD_CHUNK_SIZE];   // QSPI EasyDMA: 4-byte aligned
 
   // Real wall-clock timing. offloadChar.writeValue() applies backpressure when
   // the BLE TX buffer is full, so the loop is paced by the actual connection
@@ -1558,7 +1561,7 @@ void setup() {
     // transfer, not the write. Unconditional: all 0xFF = empty flash (capture a
     // session, then reboot WITHOUT erasing to see it). Remove once resolved.
     {
-      uint8_t dbg[60];
+      alignas(4) uint8_t dbg[60];   // QSPI EasyDMA: 4-byte aligned
       if (qspiRead(LOG_DATA_START, dbg, 60)) {
         Serial.print("[DBG] flash@DATA_START (writeCount=");
         Serial.print(writeCount);
