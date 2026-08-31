@@ -13,24 +13,46 @@
 //   + Phase 3d (control commands: stream, erase, offload)
 //   + Phase 3e (time sync, fast offload, IDLE-only sync enforcement)
 //
+// MULTI-NODE:
+//   A motion shirt uses several IMU nodes (e.g. one per body segment). Each
+//   node advertises a UNIQUE name — DEVICE_NAME_PREFIX + "-" + the last 4 hex
+//   chars of its BLE MAC (stable per board, no per-board reflash).
+//   A central (laptop harness / phone) connects to N nodes at once. For the
+//   nodes' quaternion streams to be fusable they must share a common time base
+//   to within a few ms, so this build adds a millisecond-resolution sync
+//   (command 0x05) and a read-only Time Info characteristic (A005) the central
+//   reads from each node to measure cross-node clock offset. See
+//   firmware/MULTINODE_TESTING.md and tools/multinode_test.py.
+//
 // BLE GATT layout:
 //   Service  : IMU Motion Service         (UUID A0010000-...)
 //   Char A001: Quaternion stream          NOTIFY  20 bytes   (debug only)
-//   Char A002: Control                    WRITE    5 bytes
+//   Char A002: Control                    WRITE    9 bytes
 //   Char A003: Status                     READ     4 bytes
 //   Char A004: Log offload                NOTIFY  200 bytes
+//   Char A005: Time Info                  READ    16 bytes
 //
 // Status characteristic (A003) layout:
 //   Byte 0  : Device state (0=IDLE, 1=STATIC_POSTURE, 2=ACTIVE_RECORDING)
 //   Byte 1  : Flags (bit 0 = streaming, bit 1 = time synced)
 //   Byte 2-3: Log size in KB (little-endian uint16)
 //
+// Time Info characteristic (A005) layout (little-endian) — for skew measurement:
+//   Byte 0-3   : node millis() at the moment of the read (live)
+//   Byte 4-11  : sync epoch in ms (uint64, 0 if never synced)
+//   Byte 12-15 : node millis() captured at the last sync
+//   The central computes each node's epoch-now as
+//     sync_epoch_ms + (node_millis_now - sync_millis)
+//   and compares two nodes to get their clock offset.
+//
 // Control commands:
 //   0x00  stop BLE streaming (debug)
 //   0x01  start BLE streaming (debug)
-//   0x02  time sync — payload: [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
+//   0x02  time sync (seconds) — payload: [0x02, epoch_b0..b3]  (legacy)
 //         Firmware stores mapping between millis() and Unix epoch.
 //         Records continue using raw millis(); phone applies correction.
+//   0x05  time sync (ms) — payload: [0x05, epoch_ms_b0..b7]  (uint64 LE)
+//         Millisecond-resolution variant used for multi-node alignment.
 //   0x03  erase flash log
 //   0x04  begin log offload over A004 (IDLE only — rejected in other states)
 //
@@ -43,7 +65,10 @@
 //   When no BLE central is connected, state handlers sleep via __WFE()
 //   between BNO086 INT pulses (low power). When a central connects,
 //   waitForIMUData() switches to BLE.poll() loop to keep the BLE stack
-//   alive. State machine runs identically in both modes.
+//   alive. State machine runs identically in both modes. The firmware also
+//   requests a fast connection interval (15–30 ms, iOS-compliant, see
+//   setup()) so a connected central gets low-latency GATT reads/notifies and
+//   usable offload throughput — the central still has final say.
 //
 // FLASH APPROACH: nrfx_qspi direct driver
 //   Targets EXTERNAL 2MB QSPI chip (P25Q16H). Bootloader lives on
@@ -119,17 +144,37 @@
 // SECTION 2b — BLE Configuration (from Phase 2b)
 // =============================================================================
 
-#define DEVICE_NAME    "HULC-IMU-01"
+// Base advertised name. Each node appends a unique "-XXXX" suffix (from the
+// last 4 hex chars of its BLE MAC) at boot so multiple nodes never collide on
+// the air. See makeDeviceName(). The full name is held in g_deviceName.
+#define DEVICE_NAME_PREFIX "HULC-IMU"
 #define UUID_SERVICE   "A0010000-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_QUAT      "A0010001-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_CONTROL   "A0010002-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_STATUS    "A0010003-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_OFFLOAD   "A0010004-B0CE-4A4A-8F0B-0011223344FF"
+#define UUID_SYNCINFO  "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 // Offload transfer tuning
-#define OFFLOAD_CHUNK_SIZE    200    // bytes per BLE notification (up from 20)
+#define OFFLOAD_CHUNK_SIZE    200    // max bytes per BLE notification (up from 20)
 #define OFFLOAD_PACING_MS     3      // ms delay between chunks (down from 10)
 #define OFFLOAD_PROGRESS_KB   10     // print progress every N KB
+
+// A004 notifications are unacknowledged, so a notification the central drops
+// (common on some BLE stacks) vanishes silently — a run of records simply
+// disappears from the middle of the reconstructed file. To make loss
+// detectable and recoverable, every notification is framed:
+//     [0..3]  uint32 LE  offset of this payload within the log data region
+//     [4..]              up to OFFLOAD_DATA_SIZE bytes of record data
+// and a header notification is sent first with a sentinel offset carrying the
+// exact total length. The host places each payload by its offset, so a dropped
+// notification leaves a locatable hole it can fill by re-offloading (the log is
+// not erased until the host sends 0x03). Framing keeps the notification within
+// the existing 200-byte size, so no MTU change is needed.
+#define OFFLOAD_HEADER_SIZE   4                                       // LE offset prefix
+#define OFFLOAD_DATA_SIZE     (OFFLOAD_CHUNK_SIZE - OFFLOAD_HEADER_SIZE)  // 196 record bytes/notification
+#define OFFLOAD_OFFSET_HDR    0xFFFFFFFFUL   // sentinel offset: payload is the 4-byte total length
+#define OFFLOAD_SEND_TIMEOUT_MS 3000         // give up on one notification after this long backpressured
 
 
 // =============================================================================
@@ -138,6 +183,9 @@
 
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
+#endif
+#ifndef SH2_SIG_MOTION
+#define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
 #endif
 #define DETECTOR_EXITED   2
 #define DETECTOR_ENTERED  1
@@ -157,15 +205,14 @@
 // FINDINGS.md) cannot hold a host-commanded devSleep, so it is forced 0 there —
 // the classifier's higher idle current is the known price of its reset-free idle.
 //
-// DIAGNOSTIC — DETECTOR_DIAG_NO_DEVSLEEP: set to 1 to run the DETECTOR build with
-// the hub AWAKE (devSleep off). Purpose: test whether devSleep is what suppresses
-// the detector's EXITED motion-wake. With devSleep the hub may deliver only the
-// periodic heartbeat and coalesce the wake-channel change-event; running awake
-// lets the detector emit change-events continuously. Shake in both settings and
-// watch the per-event "DETECTOR: 0x1C val=" log (added in handleIdle): if it
-// wakes awake but not asleep, devSleep is the blocker. No effect on the
-// classifier build (never uses devSleep). Leave 0 for normal operation.
-#define DETECTOR_DIAG_NO_DEVSLEEP  0
+// DETECTOR_DIAG_NO_DEVSLEEP: run the accel-only wake sensor (DETECTOR/SIGMOTION)
+// with the hub AWAKE (devSleep off). Now DEFAULT 1 — bench testing plus the
+// original working firmware confirmed that with devSleep the hub coalesces the
+// detector's EXITED wake event, so shaking rarely (or never) woke IDLE→ACTIVE.
+// Hub-awake (~7.4mA, harmless periodic re-arm) is the proven-working config.
+// Set to 0 only to re-test the devSleep (~7mA) path, which suppresses the wake.
+// No effect on the CLASSIFIER build (never uses devSleep).
+#define DETECTOR_DIAG_NO_DEVSLEEP  1
 
 // ── IDLE wake source (compile-time A/B switch) ─────────────────────────────
 // DETECTOR   — Stability Detector (0x1C), accelerometer only. Holds host
@@ -180,17 +227,36 @@
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
+#define IDLE_WAKE_SIGMOTION   2
+// CLASSIFIER (accel+gyro) so IDLE wakes on ROTATION too. The DETECTOR is
+// accelerometer-only and can miss pure rotation of a rigid body (little linear
+// accel), leaving the node stuck in IDLE with nothing logged. CLASSIFIER costs
+// higher idle current (no devSleep) — revisit for power once capture works;
+// flip back to IDLE_WAKE_DETECTOR if you specifically want the low-power path.
+//
+// SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
+// low-power, one-shot wake-on-motion event. It is accel-based (so, per
+// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms), but the
+// wake event may fire more reliably than the Stability Detector's ENTERED/
+// EXITED transition. Use it to A/B against the detector for low-power wake.
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
   #define IDLE_WAKE_NAME "Stability Detector (0x1C)"
+  #define IDLE_WAKE_SENSOR_ID SH2_STABILITY_DETECTOR
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
   #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+  #define IDLE_WAKE_NAME "Significant Motion (0x12)"
+  #define IDLE_WAKE_SENSOR_ID SH2_SIG_MOTION
 #else
-  #error "IDLE_WAKE_SOURCE must be IDLE_WAKE_DETECTOR or IDLE_WAKE_CLASSIFIER"
+  #error "IDLE_WAKE_SOURCE must be DETECTOR, CLASSIFIER, or SIGMOTION"
 #endif
 
-#if IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR && !DETECTOR_DIAG_NO_DEVSLEEP
+// DETECTOR and SIGMOTION are both accel-only wake sensors that can run while the
+// hub is in devSleep; the CLASSIFIER (MotionEngine) cannot. DETECTOR_DIAG_NO_DEVSLEEP
+// forces the hub awake for either accel-only source (isolates devSleep effects).
+#if (IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR || IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION) && !DETECTOR_DIAG_NO_DEVSLEEP
   #define IDLE_USE_DEVSLEEP  1
 #else
   #define IDLE_USE_DEVSLEEP  0
@@ -237,7 +303,12 @@
 // TRADEOFF TO VERIFY: if the detector only evaluates at the heartbeat (poll),
 // a long interval also slows motion-onset detection. Watch the move→EXITED
 // latency on the bench. 10s is chosen to sit just above the reboot interval.
-#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — see ceiling notes above
+#define IDLE_DETECTOR_INTERVAL_US   10000000UL   // 10s — devSleep (sh2 config) path, microseconds
+// enableReport() (the non-devSleep path) takes MILLISECONDS, not microseconds —
+// passing the _US value there asked for a report every ~2.8 HOURS. Keep a
+// separate ms constant. 1s matches the original working firmware's responsive
+// detector heartbeat.
+#define IDLE_DETECTOR_INTERVAL_MS   1000UL       // hub-awake enableReport() path, milliseconds
 
 
 // =============================================================================
@@ -365,14 +436,21 @@ BNO08x       imu;
 // ── BLE (from Phase 2b) ──
 BLEService        imuService(UUID_SERVICE);
 BLECharacteristic quatChar(UUID_QUAT,       BLENotify,  20);
-BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    5);  // 1 cmd + 4 epoch
+BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    9);  // 1 cmd + up to 8-byte payload
 BLECharacteristic statChar(UUID_STATUS,     BLERead,     4);
 BLECharacteristic offloadChar(UUID_OFFLOAD, BLENotify,  OFFLOAD_CHUNK_SIZE);
+BLECharacteristic syncInfoChar(UUID_SYNCINFO, BLERead,  16);  // clock info for skew measurement
 bool              bleConnected     = false;
 bool              streaming        = false;
 
+// ── Node identity ──
+// Full advertised name: DEVICE_NAME_PREFIX + "-" + last 4 hex of BLE MAC.
+// Filled once in makeDeviceName(); unique per physical board.
+char              g_deviceName[24] = DEVICE_NAME_PREFIX;
+
 // ── Time Sync ──
-uint32_t          syncEpoch        = 0;     // Unix epoch from phone
+uint32_t          syncEpoch        = 0;     // Unix epoch (seconds) from central
+uint64_t          syncEpochMs      = 0;     // Unix epoch (ms) — multi-node alignment
 uint32_t          syncMillis       = 0;     // millis() at time of sync
 bool              timeSynced       = false;
 
@@ -387,7 +465,10 @@ bool         qspiReady           = false;
 bool         logging             = true;
 uint32_t     writeAddr           = LOG_DATA_START;
 uint32_t     writeCount          = 0;
-uint8_t      pktBuf[20];          // Shared record packing buffer
+// MUST be 4-byte aligned: nRF52 QSPI EasyDMA requires word-aligned buffers.
+// An unaligned pktBuf caused every flash record to be written shifted by one
+// byte (a stray leading byte + the last byte truncated) — see git history.
+alignas(4) uint8_t pktBuf[20];     // Shared record packing buffer
 
 // ── Timers ──
 uint32_t     lastMotionTime      = 0;
@@ -479,6 +560,31 @@ bool qspiEraseSector(uint32_t addr) {
   return qspiWait();
 }
 
+// Erase one 64KB block, with error checking and an erase-sized busy-wait.
+// A 64KB block erase can take up to ~1s on the P25Q16H — far longer than the
+// ~100ms qspiWait() budget used for writes — so poll with a larger bound.
+// Returning early (as qspiWait() would) while the chip is still busy makes the
+// next erase land on a busy chip and get dropped, so the wait MUST cover the
+// whole erase. Returns false on driver error or timeout so callers can abort.
+bool qspiEraseBlock64k(uint32_t addr) {
+  nrfx_err_t err = nrfx_qspi_erase(NRF_QSPI_ERASE_LEN_64KB, addr);
+  if (err != NRFX_SUCCESS) {
+    Serial.print("[QSPI] 64K erase failed at 0x");
+    Serial.println(addr, HEX);
+    return false;
+  }
+  uint32_t timeout = 200000;   // ~2s: 200000 * 10us
+  while (nrfx_qspi_mem_busy_check() != NRFX_SUCCESS) {
+    if (--timeout == 0) {
+      Serial.print("[QSPI] 64K erase timeout at 0x");
+      Serial.println(addr, HEX);
+      return false;
+    }
+    delayMicroseconds(10);
+  }
+  return true;
+}
+
 bool qspiWrite(uint32_t addr, const uint8_t* buf, size_t len) {
   nrfx_err_t err = nrfx_qspi_write(buf, len, addr);
   if (err != NRFX_SUCCESS) {
@@ -505,14 +611,14 @@ bool qspiRead(uint32_t addr, uint8_t* buf, size_t len) {
 // ---------------------------------------------------------------------------
 void saveHeader() {
   qspiEraseSector(LOG_HEADER_ADDR);
-  uint8_t  header[20]  = {0};
+  alignas(4) uint8_t header[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   uint32_t magic       = LOG_MAGIC;
   memcpy(header,     &magic,     4);
   memcpy(header + 4, &writeAddr, 4);
   qspiWrite(LOG_HEADER_ADDR, header, 20);
 
   // Read-back verify
-  uint8_t  verify[20] = {0};
+  alignas(4) uint8_t verify[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   uint32_t readMagic  = 0;
   uint32_t readBack   = 0;
   qspiRead(LOG_HEADER_ADDR, verify, 20);
@@ -529,7 +635,7 @@ void saveHeader() {
 }
 
 bool loadHeader() {
-  uint8_t header[20] = {0};
+  alignas(4) uint8_t header[20] = {0};   // QSPI EasyDMA: 4-byte aligned
   if (!qspiRead(LOG_HEADER_ADDR, header, 20)) return false;
 
   uint32_t magic = 0;
@@ -559,11 +665,37 @@ bool loadHeader() {
 // Wired to BLE control command 0x03 (see handleControl).
 // ---------------------------------------------------------------------------
 void eraseLog() {
-  Serial.println("[QSPI] Erasing log — this takes ~30s...");
+  Serial.println("[QSPI] Erasing log — this takes ~10-30s...");
 
+  // Erase the whole chip in 64KB blocks. Abort on the FIRST failure: the old
+  // eraseLog() ignored every return value and unconditionally reset the write
+  // pointer, so a silently-failed erase (dropped block-erase, chip busy) left
+  // stale records on flash while reporting log=0. Bail without touching
+  // writeAddr instead — status keeps reporting the real (still-populated) size.
   for (uint32_t addr = 0; addr < QSPI_FLASH_SIZE; addr += 64 * 1024) {
-    nrfx_qspi_erase(NRF_QSPI_ERASE_LEN_64KB, addr);
-    qspiWait();
+    if (!qspiEraseBlock64k(addr)) {
+      Serial.println("[QSPI] Log erase FAILED — flash NOT wiped, pointer unchanged");
+      return;
+    }
+  }
+
+  // Verify the data region actually came back blank (0xFF) before trusting the
+  // erase and resetting the pointer. A read-back is cheap insurance against a
+  // block that reports success but did not physically clear.
+  alignas(4) uint8_t check[16];   // QSPI EasyDMA: 4-byte aligned
+  if (!qspiRead(LOG_DATA_START, check, sizeof(check))) {
+    Serial.println("[QSPI] Log erase verify read FAILED — pointer unchanged");
+    return;
+  }
+  for (size_t i = 0; i < sizeof(check); i++) {
+    if (check[i] != 0xFF) {
+      Serial.print("[QSPI] Log erase verify FAILED at data byte ");
+      Serial.print(i);
+      Serial.print(" (0x");
+      Serial.print(check[i], HEX);
+      Serial.println(") — pointer unchanged");
+      return;
+    }
   }
 
   writeAddr  = LOG_DATA_START;
@@ -641,13 +773,82 @@ void updateStatus() {
 }
 
 // ---------------------------------------------------------------------------
+// makeDeviceName() — builds a per-board unique advertised name into
+// g_deviceName by appending the last 4 hex chars of the BLE MAC address.
+// The MAC is fixed per board, so the suffix is stable across reboots and
+// unique per physical board — no per-board reflash needed.
+//
+// MUST be called after BLE.begin() (BLE.address() is only valid once the
+// stack is up). Uses only ArduinoBLE, so it needs no nRF MDK headers.
+// ---------------------------------------------------------------------------
+void makeDeviceName() {
+  String addr = BLE.address();     // "xx:xx:xx:xx:xx:xx"
+  addr.replace(":", "");           // "xxxxxxxxxxxx"
+  addr.toUpperCase();
+  String suffix = (addr.length() >= 4) ? addr.substring(addr.length() - 4)
+                                       : addr;
+  snprintf(g_deviceName, sizeof(g_deviceName),
+           "%s-%s", DEVICE_NAME_PREFIX, suffix.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// updateSyncInfo() — packs the node's current clock state into the Time Info
+// characteristic (A005). The central reads this from each node and computes
+//   epoch_now_ms = sync_epoch_ms + (node_millis_now - sync_millis)
+// then compares nodes to measure cross-node clock offset. Refreshed lazily
+// on every read via the BLERead handler so byte 0-3 is always live.
+//
+// Layout (little-endian):
+//   [0-3]   uint32 node millis() now
+//   [4-11]  uint64 sync epoch ms (0 if never synced)
+//   [12-15] uint32 node millis() captured at last sync
+// ---------------------------------------------------------------------------
+void updateSyncInfo() {
+  uint8_t  buf[16];
+  uint32_t nowMs = millis();
+  memcpy(buf + 0,  &nowMs,       4);
+  memcpy(buf + 4,  &syncEpochMs, 8);
+  memcpy(buf + 12, &syncMillis,  4);
+  syncInfoChar.writeValue(buf, 16);
+}
+
+// BLERead handler: refresh the live millis() field just before the value is
+// served, so the central always reads a fresh timestamp.
+void onSyncInfoRead(BLEDevice /*central*/, BLECharacteristic /*chr*/) {
+  updateSyncInfo();
+}
+
+// ---------------------------------------------------------------------------
 // offloadLog(central) — streams all logged records to phone via A004.
 //
-// Uses 200-byte chunks at 3ms pacing (~20s for 888KB vs ~7min at 20B/10ms).
-// Pauses flash logging during transfer. Does NOT erase afterward — the
-// phone sends 0x03 explicitly after confirming receipt.
+// Uses 200-byte notifications at 3ms pacing (~20s for 888KB vs ~7min at
+// 20B/10ms). Each notification is framed with a 4-byte LE offset prefix
+// (see OFFLOAD_* defines) so the host can detect and locate any dropped,
+// unacknowledged notification; a header notification with a sentinel offset
+// carries the exact total length up front. Pauses flash logging during
+// transfer. Does NOT erase afterward — the phone sends 0x03 explicitly after
+// confirming complete receipt, so an incomplete transfer can be re-offloaded.
 // Rejected if not in IDLE state (enforced by handleControl).
 // ---------------------------------------------------------------------------
+
+// Send one offload notification WITH backpressure. offloadChar.writeValue()
+// returns false when the BLE TX buffer is full (no ACL credits this connection
+// event); the previous code ignored that and advanced anyway, silently dropping
+// ~half the notifications when 3ms pacing outran the negotiated connection
+// interval. Here we instead retry the SAME bytes, pumping the stack with
+// BLE.poll() so a connection event can drain the queue, until it is accepted.
+// This self-paces to whatever interval the central negotiated (fast or slow).
+// Returns false only if the link drops or the packet is stuck past the timeout.
+static bool offloadSend(BLEDevice& central, const uint8_t* buf, size_t len) {
+  uint32_t start = millis();
+  while (central.connected()) {
+    if (offloadChar.writeValue(buf, len)) return true;
+    BLE.poll();                                  // let a connection event transmit
+    if (millis() - start > OFFLOAD_SEND_TIMEOUT_MS) return false;
+  }
+  return false;
+}
+
 void offloadLog(BLEDevice& central) {
   saveHeader();
 
@@ -669,18 +870,36 @@ void offloadLog(BLEDevice& central) {
 
   uint32_t readAddr     = LOG_DATA_START;
   uint32_t bytesSent    = 0;
+  uint32_t chunkCount   = 0;
   uint32_t lastProgress = 0;
-  uint8_t  chunk[OFFLOAD_CHUNK_SIZE];
+  alignas(4) uint8_t chunk[OFFLOAD_CHUNK_SIZE];   // QSPI EasyDMA: 4-byte aligned
+
+  // Header notification: sentinel offset + exact total length, so the host can
+  // detect any dropped notification by the byte count / hole it leaves.
+  uint32_t hdrOffset = OFFLOAD_OFFSET_HDR;
+  memcpy(chunk, &hdrOffset, OFFLOAD_HEADER_SIZE);
+  memcpy(chunk + OFFLOAD_HEADER_SIZE, &totalBytes, 4);
+  offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + 4);
+
+  // Real wall-clock timing. offloadSend() blocks until the stack accepts each
+  // notification, so the loop is paced by the actual connection interval —
+  // measuring elapsed here captures the TRUE transfer time.
+  uint32_t tStart = millis();
 
   while (central.connected() && readAddr < writeAddr) {
-    size_t remaining = writeAddr - readAddr;
-    size_t chunkSize = (remaining >= OFFLOAD_CHUNK_SIZE) ? OFFLOAD_CHUNK_SIZE : remaining;
+    uint32_t off       = readAddr - LOG_DATA_START;   // payload position in the log
+    size_t   remaining = writeAddr - readAddr;
+    size_t   dataSize  = (remaining >= OFFLOAD_DATA_SIZE) ? OFFLOAD_DATA_SIZE : remaining;
 
-    if (!qspiRead(readAddr, chunk, chunkSize)) break;
-    offloadChar.writeValue(chunk, chunkSize);
+    memcpy(chunk, &off, OFFLOAD_HEADER_SIZE);         // 4-byte LE offset prefix
+    if (!qspiRead(readAddr, chunk + OFFLOAD_HEADER_SIZE, dataSize)) break;
+    // Backpressure: retry the same chunk until the stack accepts it, so a full
+    // TX buffer stalls the loop instead of silently dropping the notification.
+    if (!offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + dataSize)) break;
 
-    readAddr  += chunkSize;
-    bytesSent += chunkSize;
+    readAddr   += dataSize;
+    bytesSent  += dataSize;
+    chunkCount += 1;
 
     // Progress logging
     uint32_t sentKB = bytesSent / 1024;
@@ -696,14 +915,71 @@ void offloadLog(BLEDevice& central) {
     delay(OFFLOAD_PACING_MS);
   }
 
+  uint32_t elapsedMs = millis() - tStart;
+  if (elapsedMs == 0) elapsedMs = 1;   // guard divide-by-zero on tiny transfers
+
   // Restore logging state
   logging = wasLogging;
 
+  // Real throughput + per-chunk pace. Per-chunk ms ≈ the effective connection
+  // interval (one notification is delivered per connection event), so this line
+  // is also a live readout of what interval the central actually negotiated.
+  uint32_t kbps_x100 = (uint32_t)(((uint64_t)bytesSent * 100000ULL) / elapsedMs / 1024);
   Serial.print("[OFFLOAD] Done — ");
   Serial.print(bytesSent);
-  Serial.print(" bytes sent in ");
-  Serial.print((bytesSent / OFFLOAD_CHUNK_SIZE) * OFFLOAD_PACING_MS / 1000);
-  Serial.println("s");
+  Serial.print(" bytes / ");
+  Serial.print(chunkCount);
+  Serial.print(" chunks in ");
+  Serial.print(elapsedMs);
+  Serial.print(" ms  (");
+  Serial.print(kbps_x100 / 100); Serial.print('.'); Serial.print(kbps_x100 % 100);
+  Serial.print(" KB/s, ");
+  Serial.print((float)elapsedMs / (chunkCount ? chunkCount : 1), 1);
+  Serial.print(" ms/chunk — pacing floor ");
+  Serial.print(OFFLOAD_PACING_MS);
+  Serial.println(" ms)");
+}
+
+// ---------------------------------------------------------------------------
+// offloadRange(central, startOff, length) — re-send only a byte range of the
+// log, for host gap recovery (control cmd 0x06). Same per-notification framing
+// as offloadLog but NO total-header: the host already knows the total and is
+// just filling holes a dropped notification left. Because whole-log re-offloads
+// recreate the same fast burst — and so the same central-side drops (a chunk
+// can go missing on every pass) — re-requesting just the missing bytes sends a
+// small, non-bursty transfer the central can actually absorb. startOff/length
+// are clamped to the logged region. IDLE-only (enforced by handleControl).
+// ---------------------------------------------------------------------------
+void offloadRange(BLEDevice& central, uint32_t startOff, uint32_t length) {
+  uint32_t logBytes = (writeAddr > LOG_DATA_START) ? (writeAddr - LOG_DATA_START) : 0;
+  if (startOff >= logBytes || length == 0) return;
+  if (startOff + length > logBytes) length = logBytes - startOff;
+
+  bool wasLogging = logging;
+  logging = false;
+
+  Serial.print("[OFFLOAD] range resend — offset ");
+  Serial.print(startOff);
+  Serial.print(" len ");
+  Serial.println(length);
+
+  alignas(4) uint8_t chunk[OFFLOAD_CHUNK_SIZE];   // QSPI EasyDMA: 4-byte aligned
+  uint32_t readAddr = LOG_DATA_START + startOff;
+  uint32_t endAddr  = LOG_DATA_START + startOff + length;
+
+  while (central.connected() && readAddr < endAddr) {
+    uint32_t off      = readAddr - LOG_DATA_START;   // absolute payload offset
+    uint32_t remain   = endAddr - readAddr;
+    size_t   dataSize = (remain >= OFFLOAD_DATA_SIZE) ? OFFLOAD_DATA_SIZE : remain;
+
+    memcpy(chunk, &off, OFFLOAD_HEADER_SIZE);
+    if (!qspiRead(readAddr, chunk + OFFLOAD_HEADER_SIZE, dataSize)) break;
+    if (!offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + dataSize)) break;
+    readAddr += dataSize;
+    delay(OFFLOAD_PACING_MS);
+  }
+
+  logging = wasLogging;
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +989,7 @@ void offloadLog(BLEDevice& central) {
 //   0x02  time sync (5-byte payload: cmd + 4-byte Unix epoch)
 //   0x03  erase flash log
 //   0x04  begin log offload (IDLE only)
+//   0x06  re-send a byte range (IDLE only): [0x06, offset u32 LE, length u32 LE]
 // ---------------------------------------------------------------------------
 void handleControl(BLEDevice& central) {
   uint8_t cmd = ctrlChar.value()[0];
@@ -728,13 +1005,15 @@ void handleControl(BLEDevice& central) {
       break;
 
     case 0x02: {
-      // Time sync: [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
+      // Time sync (seconds, legacy): [0x02, epoch_b0, epoch_b1, epoch_b2, epoch_b3]
       if (ctrlChar.valueLength() >= 5) {
         const uint8_t* val = ctrlChar.value();
         memcpy(&syncEpoch, val + 1, 4);
-        syncMillis = millis();
-        timeSynced = true;
-        Serial.print("[CTRL] Time sync — epoch: ");
+        syncMillis  = millis();
+        syncEpochMs = (uint64_t)syncEpoch * 1000ULL;   // keep ms mapping consistent
+        timeSynced  = true;
+        updateSyncInfo();
+        Serial.print("[CTRL] Time sync (s) — epoch: ");
         Serial.print(syncEpoch);
         Serial.print("  millis: ");
         Serial.println(syncMillis);
@@ -744,10 +1023,34 @@ void handleControl(BLEDevice& central) {
       break;
     }
 
+    case 0x05: {
+      // Time sync (ms): [0x05, epoch_ms_b0 .. epoch_ms_b7]  (uint64 LE)
+      // Millisecond resolution for multi-node alignment. syncMillis is
+      // captured as close to receipt as possible; the central pairs this with
+      // the send time to bound the residual sync error.
+      if (ctrlChar.valueLength() >= 9) {
+        const uint8_t* val = ctrlChar.value();
+        syncMillis = millis();
+        memcpy(&syncEpochMs, val + 1, 8);
+        syncEpoch  = (uint32_t)(syncEpochMs / 1000ULL);
+        timeSynced = true;
+        updateSyncInfo();
+        Serial.print("[CTRL] Time sync (ms) — epoch_ms: ");
+        Serial.print((uint32_t)(syncEpochMs / 1000ULL));   // seconds part (printable)
+        Serial.print("  millis: ");
+        Serial.println(syncMillis);
+      } else {
+        Serial.println("[CTRL] Time sync (ms) — missing payload (need 9 bytes)");
+      }
+      break;
+    }
+
     case 0x03:
       if (qspiReady) {
         eraseLog();
-        timeSynced = false;   // Sync epoch meaningless after log erase
+        timeSynced  = false;   // Sync epoch meaningless after log erase
+        syncEpochMs = 0;
+        updateSyncInfo();
       }
       break;
 
@@ -760,6 +1063,25 @@ void handleControl(BLEDevice& central) {
       }
       if (qspiReady) offloadLog(central);
       break;
+
+    case 0x06: {
+      // Re-send a byte range for host gap recovery (IDLE only):
+      //   [0x06, offset u32 LE, length u32 LE]
+      if (currentState != STATE_IDLE) {
+        Serial.println("[CTRL] Range resend REJECTED — device not in IDLE state");
+        break;
+      }
+      if (ctrlChar.valueLength() >= 9 && qspiReady) {
+        const uint8_t* val = ctrlChar.value();
+        uint32_t offset, length;
+        memcpy(&offset, val + 1, 4);
+        memcpy(&length, val + 5, 4);
+        offloadRange(central, offset, length);
+      } else {
+        Serial.println("[CTRL] Range resend — missing payload (need 9 bytes)");
+      }
+      break;
+    }
 
     default:
       Serial.print("[CTRL] Unknown: 0x");
@@ -864,16 +1186,16 @@ void enableIdleReports() {
   cfg.wakeupEnabled     = IDLE_WAKE_WAKEUP_EN;    // "Wake host on event"
   cfg.alwaysOnEnabled   = IDLE_WAKE_ALWAYSON_EN;  // "Sensor remains on in sleep state"
   cfg.reportInterval_us = IDLE_DETECTOR_INTERVAL_US;
-  int rc = sh2_setSensorConfig((sh2_SensorId_t)SH2_STABILITY_DETECTOR, &cfg);
+  int rc = sh2_setSensorConfig((sh2_SensorId_t)IDLE_WAKE_SENSOR_ID, &cfg);
   if (rc != SH2_OK) {
-    LOGF("BNO: sh2_setSensorConfig(0x1C) FAILED rc=%d — using enableReport()", rc);
-    imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+    LOGF("BNO: sh2_setSensorConfig(%s) FAILED rc=%d — using enableReport()",
+         IDLE_WAKE_NAME, rc);
+    imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_MS);  // ms!
   }
 #else
-  // Detector without devSleep: host stays in System-ON (__WFE) sleep reading INT.
-  imu.enableReport(SH2_STABILITY_DETECTOR, IDLE_DETECTOR_INTERVAL_US);
+  // Accel-only wake without devSleep: host stays in System-ON (__WFE) sleep on INT.
+  imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_MS);    // ms!
 #endif
-  idleArmedMs = millis();   // start-of-arm marker for the reset-hold stats
 }
 
 void configureBNO_Idle() {
@@ -1096,6 +1418,46 @@ void handleIdle() {
   while (imu.getSensorEvent()) {
     uint8_t id = imu.getSensorEventID();
 
+#if IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
+    // Stability Classifier drives IDLE: it streams ON_TABLE / STATIONARY /
+    // STABLE / MOTION. MOTION = patient moving → wake into ACTIVE_RECORDING.
+    // This is the SAME motion test STATIC_POSTURE / ACTIVE_RECORDING use.
+    if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+      lastStabilityEvent = millis();
+      consecutiveResets  = 0;
+
+      uint8_t s = imu.getStabilityClassifier();
+      logStabilityIfChanged(s);
+      if (isMotion(s)) {
+        LOGF("CLASSIFIER: MOTION — patient moving → ACTIVE_RECORDING");
+        activeHz         = DEFAULT_ACTIVE_HZ;
+        lastMotionTime   = millis();
+        onTableStartTime = 0;
+        lastActiveSample = 0;
+        requestTransition(STATE_ACTIVE_RECORDING);
+        return;
+      }
+    }
+#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
+    // Significant Motion (0x12) is a ONE-SHOT wake event: its mere arrival means
+    // motion started, so there's no value to decode. The sensor auto-disables
+    // after firing; enableIdleReports() re-arms it on the next IDLE entry/reset.
+    if (id == SH2_SIG_MOTION) {
+      lastStabilityEvent = millis();
+      consecutiveResets  = 0;
+      LOGF("SIGMOTION: significant motion → ACTIVE_RECORDING");
+#if IDLE_USE_DEVSLEEP
+      imu.modeOn();   // hub was in devSleep — wake before configureBNO_Running()
+      delay(20);
+#endif
+      activeHz         = DEFAULT_ACTIVE_HZ;
+      lastMotionTime   = millis();
+      onTableStartTime = 0;
+      lastActiveSample = 0;
+      requestTransition(STATE_ACTIVE_RECORDING);
+      return;
+    }
+#else
     if (id == SH2_STABILITY_DETECTOR) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
@@ -1394,21 +1756,39 @@ void setup() {
   if (!BLE.begin()) {
     Serial.println("FAILED — BLE disabled, state machine runs without sync");
   } else {
-    BLE.setLocalName(DEVICE_NAME);
-    BLE.setDeviceName(DEVICE_NAME);
+    makeDeviceName();                    // unique per-board name (multi-node)
+    BLE.setLocalName(g_deviceName);
+    BLE.setDeviceName(g_deviceName);
+
+    // Request a FAST connection interval (15–30 ms). Units are 1.25 ms, so
+    // 12 = 15 ms and 24 = 30 ms. Without this the central often negotiates a
+    // slow interval (hundreds of ms), which floored A005 read latency at
+    // ~850 ms on a Windows host and throttles log offload throughput.
+    //
+    // 15 ms is the floor deliberately: Apple's Bluetooth Design Guidelines
+    // require a requested Interval Min >= 15 ms (and a multiple of 15 ms), or
+    // iOS rejects the connection-parameter update and falls back to its slow
+    // default. 15 ms keeps this request honorable by iOS, Android, and BlueZ
+    // alike. The central still has final say — this is a request, not a
+    // guarantee. Must be set before advertise().
+    BLE.setConnectionInterval(12, 24);
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);
     imuService.addCharacteristic(statChar);
     imuService.addCharacteristic(offloadChar);
+    imuService.addCharacteristic(syncInfoChar);
     BLE.addService(imuService);
 
+    syncInfoChar.setEventHandler(BLERead, onSyncInfoRead);
+
     updateStatus();
+    updateSyncInfo();
     BLE.advertise();
 
     Serial.println("OK");
     Serial.print("[BLE] Advertising as ");
-    Serial.println(DEVICE_NAME);
+    Serial.println(g_deviceName);
   }
 
   LOG("Setup complete. State machine running — waiting for movement...\n");
