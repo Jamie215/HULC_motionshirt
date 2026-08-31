@@ -63,6 +63,15 @@ CMD_SYNC_MS = 0x05
 CMD_OFFLOAD = 0x04
 CMD_ERASE = 0x03
 
+# Offload framing (must match firmware OFFLOAD_* defines): every A004
+# notification is [4-byte LE offset][payload]; the header notification uses a
+# sentinel offset and carries the exact total log length. Placing payloads by
+# offset makes a dropped (unacknowledged) notification a locatable hole rather
+# than a silent, gap-collapsing loss.
+OFFLOAD_OFFSET_HDR = 0xFFFFFFFF   # sentinel offset: payload is the 4-byte total length
+OFFLOAD_MAX_ATTEMPTS = 4          # re-offload (merging by offset) until complete
+RECORD_SIZE = 20                  # bytes per quaternion record
+
 
 def host_epoch_ms() -> int:
     """Host wall-clock in Unix epoch milliseconds."""
@@ -311,81 +320,159 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
               f"the updated firmware.")
 
 
-async def measure_offload(node: Node, quiet_s: float = 3.0,
-                          max_s: float = 300.0, save_path: str = None) -> None:
-    """Offload one node's flash log: measure throughput and optionally save it.
+def _missing_ranges(received: dict, total: int):
+    """Given {offset: payload} and the expected total, return the list of
+    (start, length) byte ranges that were never received."""
+    holes = []
+    cursor = 0
+    for off in sorted(received):
+        if off > cursor:
+            holes.append((cursor, off - cursor))
+        cursor = max(cursor, off + len(received[off]))
+    if total is not None and cursor < total:
+        holes.append((cursor, total - cursor))
+    return holes
 
-    Subscribes to A004, sends control 0x04 (begin offload — IDLE only, does NOT
-    erase), collects the streamed 20-byte records until notifications go quiet,
-    reports KB/s, and (if save_path) writes the raw bytes to a .bin file ready
-    for tools/reconcile_nodes.py.
-    """
-    state = {"bytes": 0, "chunks": 0, "first": None, "last": None}
-    buf = bytearray()
+
+async def _offload_pass(node: Node, received: dict, quiet_s: float, max_s: float):
+    """Run one A004 offload pass. Frames are [4B LE offset][payload]; payloads
+    are merged into `received` by offset (so repeated passes fill each other's
+    holes). Returns (expected_total_or_None, stats_dict)."""
+    st = {"bytes": 0, "chunks": 0, "new": 0, "first": None, "last": None,
+          "total": None}
 
     def on_chunk(_char, data: bytearray) -> None:
+        b = bytes(data)
+        if len(b) < 4:
+            return
         now = time.monotonic()
-        if state["first"] is None:
-            state["first"] = now
-        state["last"] = now
-        state["bytes"] += len(data)
-        state["chunks"] += 1
-        buf.extend(data)
+        if st["first"] is None:
+            st["first"] = now
+        st["last"] = now
+        st["chunks"] += 1
+        off = int.from_bytes(b[:4], "little")
+        if off == OFFLOAD_OFFSET_HDR:            # header: exact total length
+            if len(b) >= 8:
+                st["total"] = int.from_bytes(b[4:8], "little")
+            return
+        payload = b[4:]
+        if not payload:
+            return
+        st["bytes"] += len(payload)
+        if off not in received:                  # merge; ignore duplicates
+            received[off] = payload
+            st["new"] += len(payload)
 
-    await read_status(node)  # prints log size / IDLE state for context
-    print(f"[OFFLOAD] {node.name}: starting — subscribing to A004...")
     await node.client.start_notify(UUID_OFFLOAD, on_chunk)
     await node.client.write_gatt_char(UUID_CONTROL, bytes([CMD_OFFLOAD]),
                                       response=True)
-
     t0 = time.monotonic()
     no_data_timeout = 8.0    # if nothing ever arrives, the log is empty
-    # Wait until the stream has been quiet for `quiet_s` after the last chunk,
-    # or we hit max_s. (Firmware streams until all flash data is sent.)
     while True:
         await asyncio.sleep(0.5)
         elapsed = time.monotonic() - t0
-        last = state["last"]
+        last = st["last"]
         if last is None and elapsed > no_data_timeout:
-            print(f"[OFFLOAD] {node.name}: no data in {no_data_timeout:.0f}s — "
-                  f"the node's flash log is empty (nothing was recorded). "
-                  f"Make it record first (see below), then re-offload.")
             break
         if last is not None and (time.monotonic() - last) > quiet_s:
             break
         if elapsed > max_s:
             print(f"[OFFLOAD] {node.name}: hit max {max_s:.0f}s cap.")
             break
-        if state["chunks"] and int(elapsed) % 5 == 0:
-            print(f"[OFFLOAD] {node.name}: {state['bytes']/1024:.1f} KB "
-                  f"in {elapsed:.0f}s...")
-
     try:
         await node.client.stop_notify(UUID_OFFLOAD)
     except Exception:  # noqa: BLE001
         pass
+    return st["total"], st
+
+
+async def measure_offload(node: Node, quiet_s: float = 3.0,
+                          max_s: float = 300.0, save_path: str = None,
+                          max_attempts: int = OFFLOAD_MAX_ATTEMPTS) -> None:
+    """Offload one node's flash log with drop-detection and recovery.
+
+    A004 notifications are unacknowledged, so a notification the central drops
+    silently erases a run of records from the middle of the file. Each
+    notification is now framed [4-byte LE offset][payload] with a header giving
+    the exact total, so we place payloads by offset and know precisely what is
+    missing. Because the node does not erase until it receives 0x03, we simply
+    re-offload (merging by offset) up to `max_attempts` times until the log is
+    complete. Only a verified-complete log is written to save_path.
+    """
+    await read_status(node)  # prints log size / IDLE state for context
+    print(f"[OFFLOAD] {node.name}: starting — subscribing to A004...")
+
+    received: dict = {}
+    expected_total = None
+    last_stats = None
+
+    for attempt in range(1, max_attempts + 1):
+        total, st = await _offload_pass(node, received, quiet_s, max_s)
+        if total is not None:
+            expected_total = total
+        last_stats = st
+        have = sum(len(v) for v in received.values())
+        holes = _missing_ranges(received, expected_total)
+        if attempt == 1 and st["first"] is None:
+            print(f"[OFFLOAD] {node.name}: no data — the node's flash log is "
+                  f"empty (nothing recorded), or it is not in IDLE.")
+            return
+        if expected_total is None:
+            print(f"[OFFLOAD] {node.name}: attempt {attempt}: got "
+                  f"{have} bytes but no header (total unknown) — can't verify "
+                  f"completeness.")
+        else:
+            miss = sum(n for _, n in holes)
+            print(f"[OFFLOAD] {node.name}: attempt {attempt}: "
+                  f"{have}/{expected_total} bytes "
+                  f"({st['new']} new this pass, {miss} missing / "
+                  f"{miss // RECORD_SIZE} records)")
+        if expected_total is not None and not holes:
+            break   # complete
+        if attempt < max_attempts:
+            print(f"[OFFLOAD] {node.name}: re-offloading to fill "
+                  f"{len(holes)} hole(s)...")
+
+    holes = _missing_ranges(received, expected_total)
+    complete = expected_total is not None and not holes
 
     print("\n===== OFFLOAD THROUGHPUT =====")
-    if state["first"] is None or state["bytes"] == 0:
+    if last_stats and last_stats["first"] is not None and last_stats["bytes"]:
+        dur = max(1e-3, last_stats["last"] - last_stats["first"])
+        kb = last_stats["bytes"] / 1024
+        print(f"[{node.name}] last pass: {kb:.1f} KB in {dur:.1f}s "
+              f"({last_stats['chunks']} chunks), {kb / dur:.2f} KB/s")
+        if kb / dur > 0:
+            print(f"           => a full 2 MB flash would take "
+                  f"~{(2048 / (kb / dur)) / 60:.1f} min at this rate")
+
+    if save_path and received:
+        # Assemble by offset. Holes are left as zeroed bytes: they decode to
+        # zero-norm quaternions that reconcile_nodes.py drops, so survivors keep
+        # their true timestamps instead of collapsing together into a fake,
+        # undetectable gap.
+        size = expected_total if expected_total is not None else (
+            max(off + len(p) for off, p in received.items()))
+        buf = bytearray(size)
+        for off, payload in received.items():
+            buf[off:off + len(payload)] = payload
+        with open(save_path, "wb") as f:
+            f.write(buf)
+        recs = size // RECORD_SIZE
+        if complete:
+            print(f"           COMPLETE — saved {size} bytes ({recs} records) "
+                  f"-> {save_path}")
+        else:
+            miss = sum(n for _, n in holes)
+            print(f"           [!] INCOMPLETE after {max_attempts} attempts — "
+                  f"{miss} bytes / {miss // RECORD_SIZE} records still missing "
+                  f"at offsets {[(o, n) for o, n in holes]}.")
+            print(f"           Saved {size} bytes with holes zero-filled "
+                  f"(reconcile drops them) -> {save_path}. Re-run --offload to "
+                  f"recover the rest (the node has NOT erased its log).")
+    elif not received:
         print(f"[{node.name}] no data received. Is there a log to offload "
               f"(status log>0KB) and is the node in IDLE?")
-    else:
-        dur = max(1e-3, state["last"] - state["first"])
-        kb = state["bytes"] / 1024
-        print(f"[{node.name}] received {kb:.1f} KB in {dur:.1f}s "
-              f"({state['chunks']} chunks)")
-        print(f"           throughput: {kb / dur:.2f} KB/s")
-        print(f"           => a full 2 MB flash would take "
-              f"~{(2048 / (kb / dur)) / 60:.1f} min at this rate")
-        if save_path:
-            trailing = len(buf) % 20
-            if trailing:
-                print(f"           [warn] {trailing} trailing bytes "
-                      f"(partial record) — records are 20 bytes.")
-            with open(save_path, "wb") as f:
-                f.write(buf)
-            print(f"           saved {len(buf)} bytes ({len(buf)//20} records) "
-                  f"-> {save_path}")
     print("==============================\n")
 
 

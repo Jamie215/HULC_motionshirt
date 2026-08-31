@@ -156,9 +156,24 @@
 #define UUID_SYNCINFO  "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 // Offload transfer tuning
-#define OFFLOAD_CHUNK_SIZE    200    // bytes per BLE notification (up from 20)
+#define OFFLOAD_CHUNK_SIZE    200    // max bytes per BLE notification (up from 20)
 #define OFFLOAD_PACING_MS     3      // ms delay between chunks (down from 10)
 #define OFFLOAD_PROGRESS_KB   10     // print progress every N KB
+
+// A004 notifications are unacknowledged, so a notification the central drops
+// (common on some BLE stacks) vanishes silently — a run of records simply
+// disappears from the middle of the reconstructed file. To make loss
+// detectable and recoverable, every notification is framed:
+//     [0..3]  uint32 LE  offset of this payload within the log data region
+//     [4..]              up to OFFLOAD_DATA_SIZE bytes of record data
+// and a header notification is sent first with a sentinel offset carrying the
+// exact total length. The host places each payload by its offset, so a dropped
+// notification leaves a locatable hole it can fill by re-offloading (the log is
+// not erased until the host sends 0x03). Framing keeps the notification within
+// the existing 200-byte size, so no MTU change is needed.
+#define OFFLOAD_HEADER_SIZE   4                                       // LE offset prefix
+#define OFFLOAD_DATA_SIZE     (OFFLOAD_CHUNK_SIZE - OFFLOAD_HEADER_SIZE)  // 196 record bytes/notification
+#define OFFLOAD_OFFSET_HDR    0xFFFFFFFFUL   // sentinel offset: payload is the 4-byte total length
 
 
 // =============================================================================
@@ -378,14 +393,6 @@
   #define LOGF(fmt, ...)
 #endif
 
-// TEMP DIAGNOSTIC — remove once the log-gap cause is confirmed.
-// Once per second during ACTIVE_RECORDING, report how many rotation-vector
-// events vs stability-classifier events arrived. A QUAT gap that shows up here
-// as rv=0 while stab>0 proves the rotation-vector stream stalled while the
-// sensor (and its classifier) stayed alive — i.e. the gaps are an RV-report
-// stall, not a reset or the state machine.
-#define DEBUG_STREAM_HEARTBEAT 1
-
 
 // =============================================================================
 // SECTION 10 — State Machine Types
@@ -468,12 +475,6 @@ uint32_t     onTableStartTime    = 0;
 uint32_t     lastActiveSample    = 0;
 uint32_t     lastStaticSample    = 0;
 uint8_t      lastLoggedStability = 255;
-
-#if DEBUG_STREAM_HEARTBEAT
-uint32_t     dbgRvEvents   = 0;    // rotation-vector events since last heartbeat
-uint32_t     dbgStabEvents = 0;    // stability-classifier events since last heartbeat
-uint32_t     dbgLastBeatMs = 0;    // millis() of last heartbeat print
-#endif
 
 // ── Watchdog ──
 uint32_t     lastStabilityEvent  = 0;
@@ -819,9 +820,13 @@ void onSyncInfoRead(BLEDevice /*central*/, BLECharacteristic /*chr*/) {
 // ---------------------------------------------------------------------------
 // offloadLog(central) — streams all logged records to phone via A004.
 //
-// Uses 200-byte chunks at 3ms pacing (~20s for 888KB vs ~7min at 20B/10ms).
-// Pauses flash logging during transfer. Does NOT erase afterward — the
-// phone sends 0x03 explicitly after confirming receipt.
+// Uses 200-byte notifications at 3ms pacing (~20s for 888KB vs ~7min at
+// 20B/10ms). Each notification is framed with a 4-byte LE offset prefix
+// (see OFFLOAD_* defines) so the host can detect and locate any dropped,
+// unacknowledged notification; a header notification with a sentinel offset
+// carries the exact total length up front. Pauses flash logging during
+// transfer. Does NOT erase afterward — the phone sends 0x03 explicitly after
+// confirming complete receipt, so an incomplete transfer can be re-offloaded.
 // Rejected if not in IDLE state (enforced by handleControl).
 // ---------------------------------------------------------------------------
 void offloadLog(BLEDevice& central) {
@@ -849,6 +854,14 @@ void offloadLog(BLEDevice& central) {
   uint32_t lastProgress = 0;
   alignas(4) uint8_t chunk[OFFLOAD_CHUNK_SIZE];   // QSPI EasyDMA: 4-byte aligned
 
+  // Header notification: sentinel offset + exact total length, so the host can
+  // detect any dropped notification by the byte count / hole it leaves.
+  uint32_t hdrOffset = OFFLOAD_OFFSET_HDR;
+  memcpy(chunk, &hdrOffset, OFFLOAD_HEADER_SIZE);
+  memcpy(chunk + OFFLOAD_HEADER_SIZE, &totalBytes, 4);
+  offloadChar.writeValue(chunk, OFFLOAD_HEADER_SIZE + 4);
+  delay(OFFLOAD_PACING_MS);
+
   // Real wall-clock timing. offloadChar.writeValue() applies backpressure when
   // the BLE TX buffer is full, so the loop is paced by the actual connection
   // interval — measuring elapsed here captures the TRUE transfer time (unlike
@@ -856,14 +869,16 @@ void offloadLog(BLEDevice& central) {
   uint32_t tStart = millis();
 
   while (central.connected() && readAddr < writeAddr) {
-    size_t remaining = writeAddr - readAddr;
-    size_t chunkSize = (remaining >= OFFLOAD_CHUNK_SIZE) ? OFFLOAD_CHUNK_SIZE : remaining;
+    uint32_t off       = readAddr - LOG_DATA_START;   // payload position in the log
+    size_t   remaining = writeAddr - readAddr;
+    size_t   dataSize  = (remaining >= OFFLOAD_DATA_SIZE) ? OFFLOAD_DATA_SIZE : remaining;
 
-    if (!qspiRead(readAddr, chunk, chunkSize)) break;
-    offloadChar.writeValue(chunk, chunkSize);
+    memcpy(chunk, &off, OFFLOAD_HEADER_SIZE);         // 4-byte LE offset prefix
+    if (!qspiRead(readAddr, chunk + OFFLOAD_HEADER_SIZE, dataSize)) break;
+    offloadChar.writeValue(chunk, OFFLOAD_HEADER_SIZE + dataSize);
 
-    readAddr   += chunkSize;
-    bytesSent  += chunkSize;
+    readAddr   += dataSize;
+    bytesSent  += dataSize;
     chunkCount += 1;
 
     // Progress logging
@@ -1485,29 +1500,11 @@ void handleActiveRecording() {
 
   waitForIMUData();
 
-#if DEBUG_STREAM_HEARTBEAT
-  {
-    uint32_t beatNow = millis();
-    if (beatNow - dbgLastBeatMs >= 1000) {
-      LOGF("STREAM: rv=%lu stab=%lu in %lums -> RV %s",
-           (unsigned long)dbgRvEvents, (unsigned long)dbgStabEvents,
-           (unsigned long)(beatNow - dbgLastBeatMs),
-           dbgRvEvents ? "flowing" : "STALLED (gap)");
-      dbgRvEvents = 0;
-      dbgStabEvents = 0;
-      dbgLastBeatMs = beatNow;
-    }
-  }
-#endif
-
   while (imu.getSensorEvent()) {
     uint8_t id   = imu.getSensorEventID();
     uint32_t now = millis();
 
     if (id == SENSOR_REPORTID_ROTATION_VECTOR) {
-#if DEBUG_STREAM_HEARTBEAT
-      dbgRvEvents++;
-#endif
       bool timeToSample = (now - lastActiveSample >= (1000u / activeHz));
       if (timeToSample) {
         writeQuaternionSample(
@@ -1519,9 +1516,6 @@ void handleActiveRecording() {
     }
 
     if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
-#if DEBUG_STREAM_HEARTBEAT
-      dbgStabEvents++;
-#endif
       uint8_t s = imu.getStabilityClassifier();
       logStabilityIfChanged(s);
       lastStabilityEvent = now;
