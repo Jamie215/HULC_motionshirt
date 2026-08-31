@@ -70,7 +70,7 @@ CMD_OFFLOAD_RANGE = 0x06   # [0x06, offset u32 LE, length u32 LE] — resend one
 # offset makes a dropped (unacknowledged) notification a locatable hole rather
 # than a silent, gap-collapsing loss.
 OFFLOAD_OFFSET_HDR = 0xFFFFFFFF   # sentinel offset: payload is the 4-byte total length
-OFFLOAD_MAX_ATTEMPTS = 4          # re-offload (merging by offset) until complete
+OFFLOAD_MAX_ATTEMPTS = 4          # full pass + range re-requests, until complete
 RECORD_SIZE = 20                  # bytes per quaternion record
 
 
