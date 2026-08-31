@@ -378,6 +378,14 @@
   #define LOGF(fmt, ...)
 #endif
 
+// TEMP DIAGNOSTIC — remove once the log-gap cause is confirmed.
+// Once per second during ACTIVE_RECORDING, report how many rotation-vector
+// events vs stability-classifier events arrived. A QUAT gap that shows up here
+// as rv=0 while stab>0 proves the rotation-vector stream stalled while the
+// sensor (and its classifier) stayed alive — i.e. the gaps are an RV-report
+// stall, not a reset or the state machine.
+#define DEBUG_STREAM_HEARTBEAT 1
+
 
 // =============================================================================
 // SECTION 10 — State Machine Types
@@ -460,6 +468,12 @@ uint32_t     onTableStartTime    = 0;
 uint32_t     lastActiveSample    = 0;
 uint32_t     lastStaticSample    = 0;
 uint8_t      lastLoggedStability = 255;
+
+#if DEBUG_STREAM_HEARTBEAT
+uint32_t     dbgRvEvents   = 0;    // rotation-vector events since last heartbeat
+uint32_t     dbgStabEvents = 0;    // stability-classifier events since last heartbeat
+uint32_t     dbgLastBeatMs = 0;    // millis() of last heartbeat print
+#endif
 
 // ── Watchdog ──
 uint32_t     lastStabilityEvent  = 0;
@@ -1471,11 +1485,29 @@ void handleActiveRecording() {
 
   waitForIMUData();
 
+#if DEBUG_STREAM_HEARTBEAT
+  {
+    uint32_t beatNow = millis();
+    if (beatNow - dbgLastBeatMs >= 1000) {
+      LOGF("STREAM: rv=%lu stab=%lu in %lums -> RV %s",
+           (unsigned long)dbgRvEvents, (unsigned long)dbgStabEvents,
+           (unsigned long)(beatNow - dbgLastBeatMs),
+           dbgRvEvents ? "flowing" : "STALLED (gap)");
+      dbgRvEvents = 0;
+      dbgStabEvents = 0;
+      dbgLastBeatMs = beatNow;
+    }
+  }
+#endif
+
   while (imu.getSensorEvent()) {
     uint8_t id   = imu.getSensorEventID();
     uint32_t now = millis();
 
     if (id == SENSOR_REPORTID_ROTATION_VECTOR) {
+#if DEBUG_STREAM_HEARTBEAT
+      dbgRvEvents++;
+#endif
       bool timeToSample = (now - lastActiveSample >= (1000u / activeHz));
       if (timeToSample) {
         writeQuaternionSample(
@@ -1487,6 +1519,9 @@ void handleActiveRecording() {
     }
 
     if (id == SENSOR_REPORTID_STABILITY_CLASSIFIER) {
+#if DEBUG_STREAM_HEARTBEAT
+      dbgStabEvents++;
+#endif
       uint8_t s = imu.getStabilityClassifier();
       logStabilityIfChanged(s);
       lastStabilityEvent = now;
