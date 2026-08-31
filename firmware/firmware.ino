@@ -1573,6 +1573,26 @@ void setup() {
         }
         Serial.println();
       }
+
+      // Also dump the NEWEST 60 bytes (the last 3 records before writeAddr).
+      // DATA_START holds the OLDEST records (possibly written by old firmware);
+      // to verify the alignment fix WITHOUT erasing, look here — these are the
+      // records the CURRENT firmware just wrote. Clean = byte 0 is a timestamp
+      // low byte (not 0x02) and no 0x02 every 20 bytes.
+      if (writeCount > 0 && writeAddr >= LOG_DATA_START + 60) {
+        alignas(4) uint8_t tail[60];   // QSPI EasyDMA: 4-byte aligned
+        if (qspiRead(writeAddr - 60, tail, 60)) {
+          Serial.print("[DBG] flash@writeAddr-60 (newest, writeAddr=0x");
+          Serial.print(writeAddr, HEX);
+          Serial.print("):");
+          for (int i = 0; i < 60; i++) {
+            Serial.print(' ');
+            if (tail[i] < 16) Serial.print('0');
+            Serial.print(tail[i], HEX);
+          }
+          Serial.println();
+        }
+      }
     }
   } else {
     Serial.println("FAILED — logging disabled, state machine runs without flash");
