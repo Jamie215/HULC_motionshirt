@@ -62,6 +62,7 @@ UUID_SYNCINFO = "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 CMD_SYNC_MS = 0x05
 CMD_OFFLOAD = 0x04
 CMD_ERASE = 0x03
+CMD_OFFLOAD_RANGE = 0x06   # [0x06, offset u32 LE, length u32 LE] — resend one byte range
 
 # Offload framing (must match firmware OFFLOAD_* defines): every A004
 # notification is [4-byte LE offset][payload]; the header notification uses a
@@ -334,10 +335,14 @@ def _missing_ranges(received: dict, total: int):
     return holes
 
 
-async def _offload_pass(node: Node, received: dict, quiet_s: float, max_s: float):
-    """Run one A004 offload pass. Frames are [4B LE offset][payload]; payloads
-    are merged into `received` by offset (so repeated passes fill each other's
-    holes). Returns (expected_total_or_None, stats_dict)."""
+async def _offload_pass(node: Node, received: dict, quiet_s: float, max_s: float,
+                        cmd: bytes = None):
+    """Run one A004 offload pass, sending control `cmd` (default: full offload).
+    Frames are [4B LE offset][payload]; payloads are merged into `received` by
+    offset (so passes / range-resends fill each other's holes). Returns
+    (expected_total_or_None, stats_dict)."""
+    if cmd is None:
+        cmd = bytes([CMD_OFFLOAD])
     st = {"bytes": 0, "chunks": 0, "new": 0, "first": None, "last": None,
           "total": None}
 
@@ -364,8 +369,7 @@ async def _offload_pass(node: Node, received: dict, quiet_s: float, max_s: float
             st["new"] += len(payload)
 
     await node.client.start_notify(UUID_OFFLOAD, on_chunk)
-    await node.client.write_gatt_char(UUID_CONTROL, bytes([CMD_OFFLOAD]),
-                                      response=True)
+    await node.client.write_gatt_char(UUID_CONTROL, cmd, response=True)
     t0 = time.monotonic()
     no_data_timeout = 8.0    # if nothing ever arrives, the log is empty
     while True:
@@ -393,55 +397,65 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
 
     A004 notifications are unacknowledged, so a notification the central drops
     silently erases a run of records from the middle of the file. Each
-    notification is now framed [4-byte LE offset][payload] with a header giving
-    the exact total, so we place payloads by offset and know precisely what is
-    missing. Because the node does not erase until it receives 0x03, we simply
-    re-offload (merging by offset) up to `max_attempts` times until the log is
-    complete. Only a verified-complete log is written to save_path.
+    notification is framed [4-byte LE offset][payload] with a header giving the
+    exact total, so we place payloads by offset and know precisely what is
+    missing. Recovery: the first pass is a full offload; then we re-request only
+    the missing byte ranges (control 0x06). A whole-log re-offload recreates the
+    same fast burst and so tends to drop the SAME chunks every pass; a small
+    targeted resend does not, so it recovers the deterministic holes the naive
+    retry could not. The node does not erase until it receives 0x03, so this is
+    safe to repeat. Only a verified-complete log is written to save_path.
     """
     await read_status(node)  # prints log size / IDLE state for context
     print(f"[OFFLOAD] {node.name}: starting — subscribing to A004...")
 
     received: dict = {}
     expected_total = None
-    last_stats = None
 
-    for attempt in range(1, max_attempts + 1):
-        total, st = await _offload_pass(node, received, quiet_s, max_s)
-        if total is not None:
-            expected_total = total
-        last_stats = st
+    # Pass 1: full offload (also delivers the header total).
+    total, full_stats = await _offload_pass(node, received, quiet_s, max_s)
+    if full_stats["first"] is None:
+        print(f"[OFFLOAD] {node.name}: no data — the node's flash log is "
+              f"empty (nothing recorded), or it is not in IDLE.")
+        return
+    if total is not None:
+        expected_total = total
+    have = sum(len(v) for v in received.values())
+    holes = _missing_ranges(received, expected_total)
+    print(f"[OFFLOAD] {node.name}: pass 1 (full): {have}"
+          f"{'/' + str(expected_total) if expected_total else ''} bytes, "
+          f"{len(holes)} hole(s)")
+
+    # Recovery passes: re-request only the missing ranges.
+    attempt = 1
+    while attempt < max_attempts and holes:
+        attempt += 1
+        if expected_total is None:
+            # No header yet — can't target ranges; fall back to a full re-offload.
+            total, full_stats = await _offload_pass(node, received, quiet_s, max_s)
+            if total is not None:
+                expected_total = total
+        else:
+            print(f"[OFFLOAD] {node.name}: pass {attempt}: re-requesting "
+                  f"{len(holes)} range(s)...")
+            for start, length in holes:
+                cmd = struct.pack("<BII", CMD_OFFLOAD_RANGE, start, length)
+                await _offload_pass(node, received, quiet_s, max_s, cmd=cmd)
         have = sum(len(v) for v in received.values())
         holes = _missing_ranges(received, expected_total)
-        if attempt == 1 and st["first"] is None:
-            print(f"[OFFLOAD] {node.name}: no data — the node's flash log is "
-                  f"empty (nothing recorded), or it is not in IDLE.")
-            return
-        if expected_total is None:
-            print(f"[OFFLOAD] {node.name}: attempt {attempt}: got "
-                  f"{have} bytes but no header (total unknown) — can't verify "
-                  f"completeness.")
-        else:
-            miss = sum(n for _, n in holes)
-            print(f"[OFFLOAD] {node.name}: attempt {attempt}: "
-                  f"{have}/{expected_total} bytes "
-                  f"({st['new']} new this pass, {miss} missing / "
-                  f"{miss // RECORD_SIZE} records)")
-        if expected_total is not None and not holes:
-            break   # complete
-        if attempt < max_attempts:
-            print(f"[OFFLOAD] {node.name}: re-offloading to fill "
-                  f"{len(holes)} hole(s)...")
+        miss = sum(n for _, n in holes)
+        print(f"[OFFLOAD] {node.name}: after pass {attempt}: "
+              f"{have}/{expected_total if expected_total else '?'} bytes, "
+              f"{miss} missing / {miss // RECORD_SIZE} records")
 
-    holes = _missing_ranges(received, expected_total)
     complete = expected_total is not None and not holes
 
     print("\n===== OFFLOAD THROUGHPUT =====")
-    if last_stats and last_stats["first"] is not None and last_stats["bytes"]:
-        dur = max(1e-3, last_stats["last"] - last_stats["first"])
-        kb = last_stats["bytes"] / 1024
-        print(f"[{node.name}] last pass: {kb:.1f} KB in {dur:.1f}s "
-              f"({last_stats['chunks']} chunks), {kb / dur:.2f} KB/s")
+    if full_stats and full_stats["first"] is not None and full_stats["bytes"]:
+        dur = max(1e-3, full_stats["last"] - full_stats["first"])
+        kb = full_stats["bytes"] / 1024
+        print(f"[{node.name}] full pass: {kb:.1f} KB in {dur:.1f}s "
+              f"({full_stats['chunks']} chunks), {kb / dur:.2f} KB/s")
         if kb / dur > 0:
             print(f"           => a full 2 MB flash would take "
                   f"~{(2048 / (kb / dur)) / 60:.1f} min at this rate")

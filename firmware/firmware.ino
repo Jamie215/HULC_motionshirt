@@ -941,12 +941,55 @@ void offloadLog(BLEDevice& central) {
 }
 
 // ---------------------------------------------------------------------------
+// offloadRange(central, startOff, length) — re-send only a byte range of the
+// log, for host gap recovery (control cmd 0x06). Same per-notification framing
+// as offloadLog but NO total-header: the host already knows the total and is
+// just filling holes a dropped notification left. Because whole-log re-offloads
+// recreate the same fast burst — and so the same central-side drops (a chunk
+// can go missing on every pass) — re-requesting just the missing bytes sends a
+// small, non-bursty transfer the central can actually absorb. startOff/length
+// are clamped to the logged region. IDLE-only (enforced by handleControl).
+// ---------------------------------------------------------------------------
+void offloadRange(BLEDevice& central, uint32_t startOff, uint32_t length) {
+  uint32_t logBytes = (writeAddr > LOG_DATA_START) ? (writeAddr - LOG_DATA_START) : 0;
+  if (startOff >= logBytes || length == 0) return;
+  if (startOff + length > logBytes) length = logBytes - startOff;
+
+  bool wasLogging = logging;
+  logging = false;
+
+  Serial.print("[OFFLOAD] range resend — offset ");
+  Serial.print(startOff);
+  Serial.print(" len ");
+  Serial.println(length);
+
+  alignas(4) uint8_t chunk[OFFLOAD_CHUNK_SIZE];   // QSPI EasyDMA: 4-byte aligned
+  uint32_t readAddr = LOG_DATA_START + startOff;
+  uint32_t endAddr  = LOG_DATA_START + startOff + length;
+
+  while (central.connected() && readAddr < endAddr) {
+    uint32_t off      = readAddr - LOG_DATA_START;   // absolute payload offset
+    uint32_t remain   = endAddr - readAddr;
+    size_t   dataSize = (remain >= OFFLOAD_DATA_SIZE) ? OFFLOAD_DATA_SIZE : remain;
+
+    memcpy(chunk, &off, OFFLOAD_HEADER_SIZE);
+    if (!qspiRead(readAddr, chunk + OFFLOAD_HEADER_SIZE, dataSize)) break;
+    if (!offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + dataSize)) break;
+    readAddr += dataSize;
+    delay(OFFLOAD_PACING_MS);
+  }
+
+  logging = wasLogging;
+}
+
+// ---------------------------------------------------------------------------
 // handleControl(central) — dispatches BLE control commands.
 //   0x00  stop BLE streaming (debug)
 //   0x01  start BLE streaming (debug)
 //   0x02  time sync (5-byte payload: cmd + 4-byte Unix epoch)
 //   0x03  erase flash log
 //   0x04  begin log offload (IDLE only)
+//   0x06  re-send a byte range (IDLE only): [0x06, offset u32 LE, length u32 LE]
 // ---------------------------------------------------------------------------
 void handleControl(BLEDevice& central) {
   uint8_t cmd = ctrlChar.value()[0];
@@ -1020,6 +1063,25 @@ void handleControl(BLEDevice& central) {
       }
       if (qspiReady) offloadLog(central);
       break;
+
+    case 0x06: {
+      // Re-send a byte range for host gap recovery (IDLE only):
+      //   [0x06, offset u32 LE, length u32 LE]
+      if (currentState != STATE_IDLE) {
+        Serial.println("[CTRL] Range resend REJECTED — device not in IDLE state");
+        break;
+      }
+      if (ctrlChar.valueLength() >= 9 && qspiReady) {
+        const uint8_t* val = ctrlChar.value();
+        uint32_t offset, length;
+        memcpy(&offset, val + 1, 4);
+        memcpy(&length, val + 5, 4);
+        offloadRange(central, offset, length);
+      } else {
+        Serial.println("[CTRL] Range resend — missing payload (need 9 bytes)");
+      }
+      break;
+    }
 
     default:
       Serial.print("[CTRL] Unknown: 0x");
