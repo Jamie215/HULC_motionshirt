@@ -274,10 +274,15 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
     eraseLog() blocks the firmware ~30s; the nRF SoftDevice keeps the link up.
     We send the command, wait, then confirm the reported log size dropped to 0.
     The firmware only resets its write pointer after a verified-blank erase, so
-    a log that stays non-zero means the wipe did NOT take — that is a firmware /
-    flash failure, not something this tool can fix. Check the node's USB serial
-    for the '[QSPI] ... FAILED/timeout' line, and confirm the node is actually
-    running the updated firmware.
+    a log that stays non-zero means the wipe did NOT take — check the node's USB
+    serial for the '[QSPI] ... FAILED/timeout' line, and confirm the node is
+    actually running the updated firmware.
+
+    NOTE: this MUST be a write-WITH-response. The control characteristic is
+    declared BLEWrite (Write Request) only, so a Write Command (response=False)
+    is silently dropped at the ATT layer — ctrlChar.written() never fires and
+    eraseLog() never runs. Sync (0x02) and offload (0x04) already use
+    response=True; erase was the odd one out, which is why it never erased.
     """
     before_kb = await _read_log_kb(node)
     await read_status(node)  # show current log size before wiping
@@ -285,7 +290,7 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
           f"data on this node...")
     try:
         await node.client.write_gatt_char(UUID_CONTROL, bytes([CMD_ERASE]),
-                                          response=False)
+                                          response=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[ERASE] {node.name}: write failed ({exc})")
         return
