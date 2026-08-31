@@ -259,12 +259,27 @@ def report_offsets(nodes: list) -> None:
     print("====================================\n")
 
 
+async def _read_log_kb(node: Node):
+    """Return the reported log size in KB from the status char, or None."""
+    try:
+        data = bytes(await node.client.read_gatt_char(UUID_STATUS))
+    except Exception:  # noqa: BLE001
+        return None
+    return struct.unpack_from("<H", data, 2)[0] if len(data) >= 4 else None
+
+
 async def erase_node(node: Node, wait_s: float = 40.0) -> None:
     """Erase one node's flash log (control 0x03). Wipes ALL logged data.
 
     eraseLog() blocks the firmware ~30s; the nRF SoftDevice keeps the link up.
-    We fire-and-forget the write, wait, then read status to confirm log=0KB.
+    We send the command, wait, then confirm the reported log size dropped to 0.
+    The firmware only resets its write pointer after a verified-blank erase, so
+    a log that stays non-zero means the wipe did NOT take — that is a firmware /
+    flash failure, not something this tool can fix. Check the node's USB serial
+    for the '[QSPI] ... FAILED/timeout' line, and confirm the node is actually
+    running the updated firmware.
     """
+    before_kb = await _read_log_kb(node)
     await read_status(node)  # show current log size before wiping
     print(f"[ERASE] {node.name}: sending erase (0x03) — this WIPES all logged "
           f"data on this node...")
@@ -276,11 +291,19 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
         return
     print(f"[ERASE] {node.name}: erasing (~30s, do NOT power off)...")
     await asyncio.sleep(wait_s)
-    try:
-        await read_status(node)  # should now show log=0KB
-    except Exception:  # noqa: BLE001
-        print(f"[ERASE] {node.name}: status read failed — reconnect to verify.")
-    print(f"[ERASE] {node.name}: done.")
+    await read_status(node)  # should now show log=0KB
+    after_kb = await _read_log_kb(node)
+    if after_kb is None:
+        print(f"[ERASE] {node.name}: could not read status back — reconnect to "
+              f"verify (expected log=0KB).")
+    elif after_kb == 0:
+        print(f"[ERASE] {node.name}: OK — log is now 0KB (wipe confirmed).")
+    else:
+        print(f"[ERASE] {node.name}: FAILED — log still {after_kb}KB"
+              f"{'' if before_kb is None else f' (was {before_kb}KB)'}. Firmware "
+              f"did not confirm a blank erase. Check the node's USB serial for a "
+              f"'[QSPI] ... FAILED/timeout' line, and confirm the node is running "
+              f"the updated firmware.")
 
 
 async def measure_offload(node: Node, quiet_s: float = 3.0,
