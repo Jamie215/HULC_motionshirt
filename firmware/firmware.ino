@@ -174,6 +174,7 @@
 #define OFFLOAD_HEADER_SIZE   4                                       // LE offset prefix
 #define OFFLOAD_DATA_SIZE     (OFFLOAD_CHUNK_SIZE - OFFLOAD_HEADER_SIZE)  // 196 record bytes/notification
 #define OFFLOAD_OFFSET_HDR    0xFFFFFFFFUL   // sentinel offset: payload is the 4-byte total length
+#define OFFLOAD_SEND_TIMEOUT_MS 3000         // give up on one notification after this long backpressured
 
 
 // =============================================================================
@@ -829,6 +830,25 @@ void onSyncInfoRead(BLEDevice /*central*/, BLECharacteristic /*chr*/) {
 // confirming complete receipt, so an incomplete transfer can be re-offloaded.
 // Rejected if not in IDLE state (enforced by handleControl).
 // ---------------------------------------------------------------------------
+
+// Send one offload notification WITH backpressure. offloadChar.writeValue()
+// returns false when the BLE TX buffer is full (no ACL credits this connection
+// event); the previous code ignored that and advanced anyway, silently dropping
+// ~half the notifications when 3ms pacing outran the negotiated connection
+// interval. Here we instead retry the SAME bytes, pumping the stack with
+// BLE.poll() so a connection event can drain the queue, until it is accepted.
+// This self-paces to whatever interval the central negotiated (fast or slow).
+// Returns false only if the link drops or the packet is stuck past the timeout.
+static bool offloadSend(BLEDevice& central, const uint8_t* buf, size_t len) {
+  uint32_t start = millis();
+  while (central.connected()) {
+    if (offloadChar.writeValue(buf, len)) return true;
+    BLE.poll();                                  // let a connection event transmit
+    if (millis() - start > OFFLOAD_SEND_TIMEOUT_MS) return false;
+  }
+  return false;
+}
+
 void offloadLog(BLEDevice& central) {
   saveHeader();
 
@@ -859,13 +879,11 @@ void offloadLog(BLEDevice& central) {
   uint32_t hdrOffset = OFFLOAD_OFFSET_HDR;
   memcpy(chunk, &hdrOffset, OFFLOAD_HEADER_SIZE);
   memcpy(chunk + OFFLOAD_HEADER_SIZE, &totalBytes, 4);
-  offloadChar.writeValue(chunk, OFFLOAD_HEADER_SIZE + 4);
-  delay(OFFLOAD_PACING_MS);
+  offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + 4);
 
-  // Real wall-clock timing. offloadChar.writeValue() applies backpressure when
-  // the BLE TX buffer is full, so the loop is paced by the actual connection
-  // interval — measuring elapsed here captures the TRUE transfer time (unlike
-  // the old estimate, which just multiplied chunk count by the 3ms pacing).
+  // Real wall-clock timing. offloadSend() blocks until the stack accepts each
+  // notification, so the loop is paced by the actual connection interval —
+  // measuring elapsed here captures the TRUE transfer time.
   uint32_t tStart = millis();
 
   while (central.connected() && readAddr < writeAddr) {
@@ -875,7 +893,9 @@ void offloadLog(BLEDevice& central) {
 
     memcpy(chunk, &off, OFFLOAD_HEADER_SIZE);         // 4-byte LE offset prefix
     if (!qspiRead(readAddr, chunk + OFFLOAD_HEADER_SIZE, dataSize)) break;
-    offloadChar.writeValue(chunk, OFFLOAD_HEADER_SIZE + dataSize);
+    // Backpressure: retry the same chunk until the stack accepts it, so a full
+    // TX buffer stalls the loop instead of silently dropping the notification.
+    if (!offloadSend(central, chunk, OFFLOAD_HEADER_SIZE + dataSize)) break;
 
     readAddr   += dataSize;
     bytesSent  += dataSize;
