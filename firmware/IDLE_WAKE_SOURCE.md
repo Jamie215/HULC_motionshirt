@@ -15,7 +15,7 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 `firmware.ino`, Section 3:
 
 ```c
-#define IDLE_WAKE_SOURCE   IDLE_WAKE_CLASSIFIER   // DETECTOR | CLASSIFIER | SIGMOTION
+#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER | SIGMOTION
 ```
 
 ## Third option: Significant Motion (0x12)
@@ -38,7 +38,7 @@ To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
 reliably transitions IDLE → ACTIVE_RECORDING (watch for the
 `SIGMOTION:` / `DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
 
-| | `IDLE_WAKE_DETECTOR` (original) | `IDLE_WAKE_CLASSIFIER` (new default) |
+| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) |
 |---|---|---|
 | Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
 | Sensing | accelerometer only | accel + gyro (MotionEngine) |
