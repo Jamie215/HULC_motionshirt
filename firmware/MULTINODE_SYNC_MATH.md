@@ -188,13 +188,14 @@ target — so fitting it adds noise. It is opt-in for long records.
 When enabled, the lag is measured in $K$ windows spanning the record, giving
 pairs $(t_j, L_j)$. A least-squares line $L = m\,t + c$ is fit; the slope $m$ is
 the drift. It is accepted only if it is both statistically significant and large
-enough to matter:
+enough to matter (the code constant `DRIFT_RESOLVE_MS` is written
+$\varepsilon_{\min}$ below):
 
 ```math
-\lvert m\rvert > 3\,\mathrm{SE}(m) \quad\text{AND}\quad \lvert m\rvert\cdot\bigl(t_{\text{last}}-t_{\text{first}}\bigr) > \text{DRIFT\_RESOLVE\_MS}\ (=15\text{ ms}) \quad (10)
+\lvert m\rvert > 3\,\mathrm{SE}(m) \quad\text{AND}\quad \lvert m\rvert\cdot\bigl(t_{\text{last}}-t_{\text{first}}\bigr) > \varepsilon_{\min}\ (=15\text{ ms}) \quad (10)
 ```
 
-Otherwise $\text{drift}=0$. Reported as $\text{drift\_ppm} = m\times 10^6$.
+Otherwise $\text{drift}=0$. Reported as `drift_ppm` $= m\times 10^6$.
 (Implementation: `_windowed_lags()`, `_lsq_slope()`.)
 
 ---
