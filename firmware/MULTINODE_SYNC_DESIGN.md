@@ -87,24 +87,19 @@ A slow negotiated connection interval hurts in exactly two ways:
 Fix the interval and both requirements fall into place. There is no wire to
 fall back on, so this is the crux.
 
-### Finding: the slow interval is the *host*, not the firmware — CONFIRMED
+### Finding: the bottleneck is the *host*, not the firmware — CONFIRMED
 
-The single-node read latency (~850 ms) was the same as the two-node case, so it
-is **not** multi-connection scheduling — it is the connection interval itself.
-The firmware requests a fast interval (`BLE.setConnectionInterval`), so the
-prime suspect was the **central**: desktop **Windows' BLE stack (WinRT, used by
-`bleak`) imposes slow intervals and does not let apps set connection
-parameters.**
-
-**Confirmed on iPhone (2026-08):** offloading a 48 KB log took **2.46 s → ~20
-KB/s, ~10 ms/chunk** (vs ~850 ms per single read on Windows). The iPhone
-honored the fast interval; Windows was the whole bottleneck. Consequences:
-- **Offload (Req 2) is viable** — a full 2 MB flash offloads in ~1.7 min; real
-  logs go in seconds.
-- **Sync (Req 1) is on track** — the same fast interval makes iOS clock-offset
-  reads ~tens of ms, well within the 25–50 ms alignment target.
-- **Central platform for the product should be iOS/Android/BlueZ, not a Windows
-  desktop.** `bleak`-on-Windows is a bench artifact, not a target.
+Single-node read latency (~850 ms) matched the two-node case, so it isn't
+multi-connection scheduling — it's the connection interval itself. The firmware
+requests a fast interval (`BLE.setConnectionInterval`), so the culprit is the
+**central**: desktop **Windows' BLE stack (WinRT, via `bleak`) imposes slow
+intervals and won't let apps set connection parameters.** Confirmed on **iPhone
+(2026-08):** a 48 KB log offloaded in **2.46 s → ~20 KB/s, ~10 ms/chunk** (vs
+~850 ms per single read on Windows). So both requirements are met on a good
+central — a full 2 MB flash offloads in ~1.7 min, and clock-offset reads drop to
+~tens of ms (inside the 25–50 ms target) — and the product's central should be
+**iOS/Android/BlueZ, not a Windows desktop** (`bleak`-on-Windows is a bench
+artifact).
 
 ### Decision: validate on a good central before touching firmware further
 
@@ -112,15 +107,10 @@ honored the fast interval; Windows was the whole bottleneck. Consequences:
   the floor on purpose: **Apple's Bluetooth guidelines require Interval Min ≥
   15 ms**, or iOS rejects the request and uses its slow default. 15 ms is
   honored by iOS, Android, and BlueZ alike.
-- **Test central = iPhone** (nRF Connect for Mobile). iOS is a well-behaved BLE
-  central and is close to the eventual companion app. Note: **iOS does not
-  expose the negotiated connection interval to apps** (CoreBluetooth hides it),
-  so you can't read the number directly — infer it from *behavior*: trigger an
-  offload and see whether the data streams fast (interval honored) or crawls
-  (slow interval). If a real number is needed, either run the `--offload`
-  harness on a **Mac** (`bleak` works over CoreBluetooth, same commands as the
-  Windows run) or use **Android** nRF Connect, which *does* display the
-  negotiated interval.
+- **Test central = iPhone** (nRF Connect for Mobile) — a well-behaved BLE central
+  close to the eventual companion app. iOS hides the negotiated interval from
+  apps, so judge it by *behavior* (fast offload = interval honored); see
+  `MULTINODE_TESTING.md` for reading the interval on each platform.
 
 ## Coordinated trigger (Req 1, the non-alignment half)
 
@@ -153,12 +143,12 @@ To get a real, tunable sensitivity knob we would have to compute our **own**
 software motion metric — e.g. angular speed from the rotation vector / gyro (the
 same feature `reconcile_nodes.py` already uses offline) — and threshold that
 ourselves. The catch is a coupling to power: computing angular speed means
-running **fusion (gyro)**, i.e. the classifier-style config that **cannot hold
-`devSleep`**, so it raises idle current. The low-power **accel-only** detector is
-precisely the one that gives us *no* threshold. **Trigger sensitivity and idle
-power are therefore coupled** — you cannot make local detection tunable without
-leaving the cheap idle path. (See `IDLE_WAKE_SOURCE.md` for the
-detector/classifier/devSleep trade.)
+running **fusion (gyro)**, i.e. the classifier-style config, which raises idle
+current above the accel-only detector's ~12 mA. The low-power **accel-only**
+detector is precisely the one that gives us *no* threshold. **Trigger
+sensitivity and idle power are therefore coupled** — you cannot make local
+detection tunable without leaving the cheap idle path. (See `IDLE_WAKE_SOURCE.md`
+for the detector/classifier trade.)
 
 Consequences for any coverage fix:
 
@@ -183,9 +173,8 @@ target. Not on the critical path.
 
 ## Open risks / next steps
 
-1. ~~**[blocking] Central-platform test**~~ — **DONE.** iPhone honored the fast
-   interval (~20 KB/s offload). Windows was the bottleneck; use a mobile/BlueZ
-   central going forward.
+1. ~~**[blocking] Central-platform test**~~ — **DONE** (see the Finding above):
+   iPhone honored the fast interval; use a mobile/BlueZ central going forward.
 2. ~~**Offline reconciliation**~~ — **DONE (host prototype).**
    `tools/reconcile_nodes.py` aligns two offloaded logs by cross-correlating the
    motion itself (angular speed, mounting-invariant), so it recovers the clock
