@@ -15,36 +15,46 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 `firmware.ino`, Section 3:
 
 ```c
-#define IDLE_WAKE_SOURCE   IDLE_WAKE_CLASSIFIER   // DETECTOR | CLASSIFIER | SIGMOTION
+#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER | SIGMOTION
 ```
 
 ## Third option: Significant Motion (0x12)
 
-Added after bench testing found the **Stability Detector did not wake on a
-shake** (state never left IDLE, nothing logged) — while the Classifier worked.
 `IDLE_WAKE_SIGMOTION` arms the **Significant Motion** sensor (`0x12`), the
 BNO08x's purpose-built, low-power, **one-shot** wake-on-motion event: its mere
 arrival means motion started (no value to decode), and it auto-disables after
 firing, so `enableIdleReports()` re-arms it on each IDLE entry / reset.
 
 Like the Detector it is **accel-based** and runs hub-awake, so the hub still
-self-reboots ~6.6 s in idle and re-arms — SigMotion is a bet that the *wake
-event* is delivered more reliably than the Detector's ENTERED/EXITED transition,
-not a fix for the reboot. (devSleep was explored and dropped — it suppressed the
-motion wake; see below.)
+self-reboots ~6.6 s in idle and re-arms — it is not a fix for the reboot.
+
+**Bench result (measured).** SigMotion idles at **~8 mA — lower than the
+Stability Detector's ~12 mA**: the one-shot event means there's no ~1 Hz
+detector heartbeat waking the nRF between reboots. The tradeoff is sensitivity —
+SigMotion is **less responsive to slow, gradual movement** than the Detector, so
+gentle motion can wake IDLE→ACTIVE late (or not until the movement sharpens).
+**Verdict:** keep it as the option for the **lowest-power idle** when slow-motion
+wake latency is acceptable; use the **Detector** (default) when catching slow,
+gradual movement matters, or the **Classifier** when a reset-free idle matters.
+
+> An earlier version of this doc said SigMotion was added because the Detector
+> "did not wake on a shake." That symptom was the **devSleep artifact** (below),
+> since removed — hub-awake, the Detector wakes reliably and is in fact the
+> *more* sensitive of the two on slow motion.
 
 To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
 `IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
 reliably transitions IDLE → ACTIVE_RECORDING (watch for the
 `SIGMOTION:` / `DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
 
-| | `IDLE_WAKE_DETECTOR` (original) | `IDLE_WAKE_CLASSIFIER` (new default) |
-|---|---|---|
-| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
-| Sensing | accelerometer only | accel + gyro (MotionEngine) |
-| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active |
-| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) |
-| Motion trigger | detector `EXITED` report | classifier value `== MOTION` |
+| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) | `IDLE_WAKE_SIGMOTION` (alt) |
+|---|---|---|---|
+| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` | Significant Motion `0x12` |
+| Sensing | accelerometer only | accel + gyro (MotionEngine) | accelerometer only (one-shot) |
+| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active | **Yes, ~6.6 s** (inherent) |
+| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) | **~8 mA** (lowest — no heartbeat) |
+| Slow-motion sensitivity | **Best** | Good | **Weakest** (gentle motion wakes late) |
+| Motion trigger | detector `EXITED` report | classifier value `== MOTION` | event fires (one-shot) |
 
 Selecting the classifier also unifies the motion definition: IDLE now wakes on
 the **same** `MOTION` classification that `STATIC_POSTURE` and
@@ -89,13 +99,15 @@ changed). Two regressions compounded it: the report interval was stretched
 `enableReport()`, which takes **milliseconds** (asking for a report every
 ~2.8 h).
 
-Because devSleep suppressed the motion wake, we **opted out of it** and run the
-hub awake. Fixes: `DETECTOR_DIAG_NO_DEVSLEEP` now defaults **1** (hub awake —
-the proven config, ~12 mA idle with a harmless periodic re-arm), the
-enableReport path uses a dedicated `IDLE_DETECTOR_INTERVAL_MS = 1000`, and the
-default `IDLE_WAKE_SOURCE` is back to `IDLE_WAKE_DETECTOR`. The
-`getStabilityClassifier()` read was **not** the problem — the original working
-code uses the identical read.
+Because devSleep suppressed the motion wake, we **opted out of it entirely** and
+run the hub awake. The devSleep path has since been **removed from the firmware**
+(the `DETECTOR_DIAG_NO_DEVSLEEP` / `IDLE_USE_DEVSLEEP` switch, the
+`sh2_setSensorConfig()` wake/always-on arming, the `modeSleep()`/`modeOn()`
+calls, and the `IDLE_DETECTOR_INTERVAL_US` constant are all gone). All wake
+sources now arm via `enableReport()` at `IDLE_DETECTOR_INTERVAL_MS = 1000` with
+the hub awake (~12 mA idle, harmless periodic re-arm), and the default
+`IDLE_WAKE_SOURCE` is `IDLE_WAKE_DETECTOR`. The `getStabilityClassifier()` read
+was **not** the problem — the original working code uses the identical read.
 
 **Net:** low-power idle on this chip means hub-awake accel-only — ~12 mA in IDLE,
 rising to ~22 mA while ACTIVE recording (full fusion). devSleep would be lower on
