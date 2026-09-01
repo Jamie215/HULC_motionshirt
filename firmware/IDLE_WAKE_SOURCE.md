@@ -89,13 +89,15 @@ changed). Two regressions compounded it: the report interval was stretched
 `enableReport()`, which takes **milliseconds** (asking for a report every
 ~2.8 h).
 
-Because devSleep suppressed the motion wake, we **opted out of it** and run the
-hub awake. Fixes: `DETECTOR_DIAG_NO_DEVSLEEP` now defaults **1** (hub awake —
-the proven config, ~12 mA idle with a harmless periodic re-arm), the
-enableReport path uses a dedicated `IDLE_DETECTOR_INTERVAL_MS = 1000`, and the
-default `IDLE_WAKE_SOURCE` is back to `IDLE_WAKE_DETECTOR`. The
-`getStabilityClassifier()` read was **not** the problem — the original working
-code uses the identical read.
+Because devSleep suppressed the motion wake, we **opted out of it entirely** and
+run the hub awake. The devSleep path has since been **removed from the firmware**
+(the `DETECTOR_DIAG_NO_DEVSLEEP` / `IDLE_USE_DEVSLEEP` switch, the
+`sh2_setSensorConfig()` wake/always-on arming, the `modeSleep()`/`modeOn()`
+calls, and the `IDLE_DETECTOR_INTERVAL_US` constant are all gone). All wake
+sources now arm via `enableReport()` at `IDLE_DETECTOR_INTERVAL_MS = 1000` with
+the hub awake (~12 mA idle, harmless periodic re-arm), and the default
+`IDLE_WAKE_SOURCE` is `IDLE_WAKE_DETECTOR`. The `getStabilityClassifier()` read
+was **not** the problem — the original working code uses the identical read.
 
 **Net:** low-power idle on this chip means hub-awake accel-only — ~12 mA in IDLE,
 rising to ~22 mA while ACTIVE recording (full fusion). devSleep would be lower on
