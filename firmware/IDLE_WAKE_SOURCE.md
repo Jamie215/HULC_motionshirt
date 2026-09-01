@@ -47,8 +47,8 @@ reliably transitions IDLE → ACTIVE_RECORDING (watch for the
 | Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` | Significant Motion `0x12` |
 | Sensing | accelerometer only | accel + gyro (MotionEngine) | accelerometer only (one-shot) |
 | Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active | **Yes, ~6.6 s** (inherent) |
-| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) | **~8 mA** (lowest — no heartbeat) |
-| Slow-motion sensitivity | **Best** | Good | **Weakest** (gentle motion wakes late) |
+| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) | **~8 mA** (lowest) |
+| Slow-motion sensitivity | Good | Good | **Weakest** (gentle motion wakes late) |
 | Motion trigger | detector `EXITED` report | classifier value `== MOTION` | event fires (one-shot) |
 
 Selecting the classifier also unifies the motion definition: IDLE now wakes on
