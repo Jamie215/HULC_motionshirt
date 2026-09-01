@@ -303,7 +303,7 @@ There is a single underlying function
 
 — the true clock difference between node $B$ and node $A$ at every instant, and
 its local slope. Every shared-motion event (the don-time sync gesture of §3, or
-an incidental everyday event per below) is a **noisy sample** of this same
+an incidental everyday event, §11.3) is a **noisy sample** of this same
 function: cross-correlating the two nodes' angular-speed windows around the event
 yields one measurement $\bigl(t_j,\ \widehat{\text{offset}}_j\bigr)$ via Eq. (6),
 carrying the event's timestamp and a confidence $r_j$ (Eq. 8). Reconciliation
@@ -324,11 +324,10 @@ spread across the record.
   $j$'s (that double-counts). The only thing that accumulates is *extrapolation
   error when you stop measuring* — $\approx \text{drift}\times\Delta t$ — which is
   the cost of a gap, not a property of the model.
-- **Not a hard validity window.** A rule like "trust an offset for $N$ minutes,
-  then jump to the newer value" makes $\text{offset}(t)$ **discontinuous** at each
-  boundary (the alignment visibly steps) and discards a still-informative older
-  sample. A single event's offset is noisy, so you neither fully jump to it nor
-  fully discard the previous estimate — you **fuse**.
+- **Not a hard validity window.** A single event's offset is noisy, so you
+  neither "trust it for $N$ minutes then jump to the newer value" — which steps
+  $\text{offset}(t)$ discontinuously and throws away still-good older samples —
+  nor fully discard the prior estimate. You **fuse** the two (§11.4).
 
 ### 11.3 Incidental re-anchoring — no user gesture required
 
@@ -341,12 +340,10 @@ turns): periodic motion (steady walking) has the multi-peak lag ambiguity of §3
 and is a poor anchor even when shared. Two practical notes:
 
 - **Partial participation.** A given event re-anchors only the *subset* of nodes
-  that genuinely moved together. Different events cover different subsets; over a
-  day this averages out. A node that stays still for a long stretch is not
-  re-anchored — but its signal is flat then, so its misalignment is harmless, and
-  *the next time it moves is itself an anchoring event*. A node only needs
-  accurate alignment during windows in which it moves, and any shared such window
-  is self-anchoring.
+  that moved together; different events cover different subsets, and over a day
+  this averages out. A node still for a long stretch isn't re-anchored — but its
+  signal is flat then, so the misalignment is harmless, and *its next motion is
+  itself an anchoring event*.
 - **Slowly-varying target.** Drift changes only with temperature, so anchors need
   not be frequent; a fit over the last tens of minutes of events tracks it.
 

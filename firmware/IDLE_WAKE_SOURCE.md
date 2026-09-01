@@ -27,11 +27,11 @@ BNO08x's purpose-built, low-power, **one-shot** wake-on-motion event: its mere
 arrival means motion started (no value to decode), and it auto-disables after
 firing, so `enableIdleReports()` re-arms it on each IDLE entry / reset.
 
-Like the Detector it is **accel-based**, so per this doc's rule the hub still
+Like the Detector it is **accel-based** and runs hub-awake, so the hub still
 self-reboots ~6.6 s in idle and re-arms — SigMotion is a bet that the *wake
 event* is delivered more reliably than the Detector's ENTERED/EXITED transition,
-not a fix for the reboot. Like the detector it runs with the hub awake (devSleep
-was explored and dropped — it suppressed the motion wake; see below).
+not a fix for the reboot. (devSleep was explored and dropped — it suppressed the
+motion wake; see below.)
 
 To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
 `IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which

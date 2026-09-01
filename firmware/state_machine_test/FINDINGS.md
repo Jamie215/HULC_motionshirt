@@ -49,9 +49,8 @@ When the sensor is barely reporting, it restarts in ~1 second. If it manages to
 get a report out within that ~1 second window, it survives much longer —
 ~6.5 seconds. So there are effectively two timers: a short "nothing's happening"
 one (~1 s) and a hard ceiling (~6.5 s). Reporting faster reaches the 6.5 s
-ceiling but **can never push past it**. This directly answered the original
-idea ("slow the reports down to restart less often") — it's backwards: slower
-reporting makes it *worse*, and faster reporting caps out at 6.5 s.
+ceiling but **can never push past it**. So the intuition "slow the reports down
+to restart less often" is backwards — slower reporting makes it *worse*.
 
 ## What the datasheet told us
 
@@ -72,23 +71,17 @@ an **artifact, not the real cause.** We removed the probe.
 
 - **Lesson:** the act of measuring changed the thing being measured. The true
   cause of the *original* 6.5 s restart is still unknown.
-- **Silver lining:** it accidentally proved the **driver WILL reset the chip when
-  its I²C/SHTP communication gets confused** — which supports the "driver /
-  transport reset loop" explanation below.
+- **Silver lining:** it proved the **driver will hard-reset the chip when its
+  I²C/SHTP communication gets confused** — the reason the `i2cBusRecover()`
+  insurance is worth keeping.
 
 ## Best explanation (revised after the Rotation Vector test)
 
 **The restart is an idle-state behaviour of the BNO086, gated by whether the
-fusion engine (MotionEngine) is running.**
-
-- Lightweight sensors that don't run fusion — the **Stability Detector** and the
-  **raw Accelerometer** — leave the hub in a low-activity state, and it
-  self-restarts every ~6.5 s.
-- The **Rotation Vector** is a *fused* output; enabling it runs the fusion
-  pipeline continuously, keeping the hub fully active. Streamed 300+ reports
-  with **zero restarts**.
-
-Confirmed across all four sensors we could arm in IDLE:
+fusion engine (MotionEngine) is running.** Sensors that skip fusion leave the
+hub in a low-activity state that self-restarts every ~6.5 s; a fused output runs
+the engine continuously and keeps the hub active. Confirmed across all four
+sensors we could arm in IDLE:
 
 | Sensor | Uses | Runs MotionEngine? | Restarts? |
 |---|---|---|---|
@@ -101,17 +94,10 @@ Clean rule: **accelerometer-only sensors restart; anything that runs the
 MotionEngine (gyro involved) does not.** Datasheet 2.4.1 confirms the detector
 is accelerometer-only and "lower power than the stability classifier."
 
-This fits every result with no contradictions:
-
-- Detector and raw accelerometer restart → neither runs the MotionEngine.
-- Stability Classifier and Rotation Vector don't restart → both run it.
-- It's **not** the report rate — the detector restarted even at 20 Hz, faster
-  than the Rotation Vector's 15 Hz. So it's the sensor *type* (MotionEngine vs.
-  not), not how often it reports. The classifier confirms this: it's mostly
-  quiet on the wire while still, yet doesn't restart — because the *engine* is
-  running, not because it's streaming reports.
-- Not reported elsewhere → everyone streams a MotionEngine output continuously,
-  so their hub never idles.
+The strongest check that this is the sensor *type* and not the report rate: the
+detector restarted even at 20 Hz — faster than the Rotation Vector's 15 Hz. The
+classifier clinches it: mostly quiet on the wire while still, yet no restart,
+because the *engine* is running, not because it's streaming.
 
 NOTE — an earlier version of this doc concluded "I²C transport / driver-level
 reset." **That was wrong**: a transport-level reset would hit the Rotation

@@ -112,15 +112,10 @@ honored the fast interval; Windows was the whole bottleneck. Consequences:
   the floor on purpose: **Apple's Bluetooth guidelines require Interval Min ≥
   15 ms**, or iOS rejects the request and uses its slow default. 15 ms is
   honored by iOS, Android, and BlueZ alike.
-- **Test central = iPhone** (nRF Connect for Mobile). iOS is a well-behaved BLE
-  central and is close to the eventual companion app. Note: **iOS does not
-  expose the negotiated connection interval to apps** (CoreBluetooth hides it),
-  so you can't read the number directly — infer it from *behavior*: trigger an
-  offload and see whether the data streams fast (interval honored) or crawls
-  (slow interval). If a real number is needed, either run the `--offload`
-  harness on a **Mac** (`bleak` works over CoreBluetooth, same commands as the
-  Windows run) or use **Android** nRF Connect, which *does* display the
-  negotiated interval.
+- **Test central = iPhone** (nRF Connect for Mobile) — a well-behaved BLE central
+  close to the eventual companion app. iOS hides the negotiated interval from
+  apps, so judge it by *behavior* (fast offload = interval honored); see
+  `MULTINODE_TESTING.md` for reading the interval on each platform.
 
 ## Coordinated trigger (Req 1, the non-alignment half)
 
