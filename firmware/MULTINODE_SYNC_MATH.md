@@ -290,11 +290,10 @@ The method is an assembly of **standard techniques** mentioned below:
 record) assumes the relative skew is **constant** across the capture. That holds
 for a minutes-long record at stable temperature. It does **not** hold for a
 full-day wear, where the skew itself drifts as body/ambient temperature moves the
-crystals (§8). This section records the model that covers the long case, and — as
-importantly — the model that is *wrong*, because the naming ("offset and drift")
-invites two wrong mental pictures.
+crystals (§8). This section records the model that covers the long case, and
+clarifies two points where the naming ("offset and drift") can mislead.
 
-### 11.1 The right mental model: one curve, sampled by events
+### 11.1 The model: one curve, sampled by events
 
 There is a single underlying function
 
@@ -317,7 +316,7 @@ lever arm is too short for the slope to clear the noise floor (`DRIFT_RESOLVE_MS
 Eq. 10). The long time baseline that makes drift measurable comes from events
 spread across the record.
 
-### 11.2 Two wrong models (and why)
+### 11.2 Two properties the naming can obscure
 
 - **Not cumulative addition.** `offset` is an *absolute* clock difference at an
   instant, not a per-event increment. Each event measures $\text{offset}(t_j)$
@@ -351,7 +350,7 @@ and is a poor anchor even when shared. Two practical notes:
 - **Slowly-varying target.** Drift changes only with temperature, so anchors need
   not be frequent; a fit over the last tens of minutes of events tracks it.
 
-### 11.4 How long is an old sample "good"? — estimator memory, not a fixed cliff
+### 11.4 Estimator memory: how long an old sample stays useful
 
 There is no fixed validity duration. An old anchor stays useful while the
 extrapolation error it implies stays under budget, and that is governed by the
@@ -369,18 +368,17 @@ implementations:
   with covariance. Predict between events ($\text{offset}\mathrel{+}=
   \text{drift}\cdot\Delta t$; drift as a slow random walk; covariance grows),
   update at each event weighted by the Kalman gain (confidence). Old data is never
-  hard-dropped; its influence *decays smoothly*. The process-noise parameter **is**
-  the "duration limit" the naming suggests — as a soft forgetting-time, not a
-  hard number.
+  hard-dropped; its influence *decays smoothly*. The process-noise parameter sets
+  that forgetting time — a soft decay, not a hard cutoff.
 
 In both, a new event neither replaces nor adds to the prior estimate — the
 estimate moves *partway* toward it, weighted by relative confidence, tracking the
 true $\text{offset}(t)$ smoothly.
 
-### 11.5 Offline processing dissolves most of it — interpolate, don't extrapolate
+### 11.5 Offline processing: interpolate, don't extrapolate
 
-The "how long is a stale value good?" question is a **causal/real-time** worry:
-it bites only when all you have is the past. This pipeline is **post-hoc** — the
+Whether a stale value is still usable is a **causal/real-time** worry: it bites
+only when all you have is the past. This pipeline is **post-hoc** — the
 whole log is on the host at reconcile time — so for essentially any instant you
 want to align, anchors exist on **both sides** of it. Evaluate $\text{offset}(t)$
 by **interpolating between the bracketing anchors** rather than extrapolating

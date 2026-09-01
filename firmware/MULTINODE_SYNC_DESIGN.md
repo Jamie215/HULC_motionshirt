@@ -153,12 +153,12 @@ To get a real, tunable sensitivity knob we would have to compute our **own**
 software motion metric — e.g. angular speed from the rotation vector / gyro (the
 same feature `reconcile_nodes.py` already uses offline) — and threshold that
 ourselves. The catch is a coupling to power: computing angular speed means
-running **fusion (gyro)**, i.e. the classifier-style config that **cannot hold
-`devSleep`**, so it raises idle current. The low-power **accel-only** detector is
-precisely the one that gives us *no* threshold. **Trigger sensitivity and idle
-power are therefore coupled** — you cannot make local detection tunable without
-leaving the cheap idle path. (See `IDLE_WAKE_SOURCE.md` for the
-detector/classifier/devSleep trade.)
+running **fusion (gyro)**, i.e. the classifier-style config, which raises idle
+current above the accel-only detector's ~12 mA. The low-power **accel-only**
+detector is precisely the one that gives us *no* threshold. **Trigger
+sensitivity and idle power are therefore coupled** — you cannot make local
+detection tunable without leaving the cheap idle path. (See `IDLE_WAKE_SOURCE.md`
+for the detector/classifier trade.)
 
 Consequences for any coverage fix:
 

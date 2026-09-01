@@ -138,14 +138,14 @@ the ~6.5 s idle restart.)
 
   | IDLE wake option | Restarts? | Idle power | Notes |
   |---|---|---|---|
-  | Stability Detector (current) | Yes ~6.5 s | Lowest (accel-only, devSleep-friendly) | Restart is harmless in IDLE |
-  | Stability Classifier | **No** | Higher (gyro on, MotionEngine — likely can't devSleep) | Still stability-based; quiet on the wire while stationary |
-  | Rotation Vector | **No** | Highest (full fusion) | Overkill for a wake source |
+  | Stability Detector (current) | Yes ~6.5 s | Lowest (~12 mA, accel-only) | Restart is harmless in IDLE |
+  | Stability Classifier | **No** | Higher (gyro on, MotionEngine) | Still stability-based; quiet on the wire while stationary |
+  | Rotation Vector | **No** | Highest (full fusion, ~22 mA — as in ACTIVE) | Overkill for a wake source |
 
   The detector was chosen for lowest power, and its restart is the price. The
   **Stability Classifier is the reset-free middle ground** if the restart ever
   becomes a problem — but it runs the gyro/MotionEngine, so idle current rises
-  and it likely can't be combined with the hub's devSleep.
+  above the detector's ~12 mA.
 - **One real risk worth guarding against:** if a restart ever lands mid-I²C
   transaction, it can leave the bus stuck (SDA held low) and **freeze the device
   until power-cycle**. Not observed (restarts kept auto-recovering), but a cheap

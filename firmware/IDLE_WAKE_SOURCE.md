@@ -30,8 +30,8 @@ firing, so `enableIdleReports()` re-arms it on each IDLE entry / reset.
 Like the Detector it is **accel-based**, so per this doc's rule the hub still
 self-reboots ~6.6 s in idle and re-arms — SigMotion is a bet that the *wake
 event* is delivered more reliably than the Detector's ENTERED/EXITED transition,
-not a fix for the reboot. It reuses `IDLE_USE_DEVSLEEP` (devSleep on by default;
-`DETECTOR_DIAG_NO_DEVSLEEP=1` runs it hub-awake to isolate devSleep effects).
+not a fix for the reboot. Like the detector it runs with the hub awake (devSleep
+was explored and dropped — it suppressed the motion wake; see below).
 
 To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
 `IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
@@ -43,16 +43,14 @@ reliably transitions IDLE → ACTIVE_RECORDING (watch for the
 | Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
 | Sensing | accelerometer only | accel + gyro (MotionEngine) |
 | Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active |
-| `IDLE_USE_DEVSLEEP` | `1` (auto) — hub sleeps ~7 mA | `0` (auto) — MotionEngine can't hold devSleep |
-| Idle current | Lowest | Higher (gyro running, no devSleep) |
+| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) |
 | Motion trigger | detector `EXITED` report | classifier value `== MOTION` |
 
-`IDLE_USE_DEVSLEEP` is now derived from the wake source automatically — you only
-set `IDLE_WAKE_SOURCE`. Selecting the classifier also unifies the motion
-definition: IDLE now wakes on the **same** `MOTION` classification that
-`STATIC_POSTURE` and `ACTIVE_RECORDING` already act on.
+Selecting the classifier also unifies the motion definition: IDLE now wakes on
+the **same** `MOTION` classification that `STATIC_POSTURE` and
+`ACTIVE_RECORDING` already act on.
 
-## What "compare the performance" measures
+## Measuring the difference: idle-reset stats
 
 `handleIdle()` records every self-reset and prints a running summary on each one:
 
@@ -80,7 +78,7 @@ test-harness A/B convention.
    classifier reaches `MOTION` within one `IDLE_STABILITY_MS` interval, default
    1 s) — tune `IDLE_STABILITY_MS` for the latency/power balance you want.
 
-## Resolution: devSleep broke the detector's motion-wake
+## Resolution: devSleep was explored and dropped
 
 Bench testing (and comparing against the original working firmware) found the
 Stability Detector **stopped waking on motion** once the low-power **devSleep**
@@ -91,16 +89,20 @@ changed). Two regressions compounded it: the report interval was stretched
 `enableReport()`, which takes **milliseconds** (asking for a report every
 ~2.8 h).
 
-Fixes: `DETECTOR_DIAG_NO_DEVSLEEP` now defaults **1** (hub awake — the proven
-config, ~7.4 mA with a harmless periodic re-arm), the enableReport path uses a
-dedicated `IDLE_DETECTOR_INTERVAL_MS = 1000`, and the default `IDLE_WAKE_SOURCE`
-is back to `IDLE_WAKE_DETECTOR`. The `getStabilityClassifier()` read was **not**
-the problem — the original working code uses the identical read.
+Because devSleep suppressed the motion wake, we **opted out of it** and run the
+hub awake. Fixes: `DETECTOR_DIAG_NO_DEVSLEEP` now defaults **1** (hub awake —
+the proven config, ~12 mA idle with a harmless periodic re-arm), the
+enableReport path uses a dedicated `IDLE_DETECTOR_INTERVAL_MS = 1000`, and the
+default `IDLE_WAKE_SOURCE` is back to `IDLE_WAKE_DETECTOR`. The
+`getStabilityClassifier()` read was **not** the problem — the original working
+code uses the identical read.
 
-**Net:** low-power idle on this chip means hub-awake accel-only (~7.4 mA, works)
-— *not* devSleep (~7 mA, suppresses the wake). Getting below ~7.4 mA needs a
-hardware wake (a separate low-power accel/motion interrupt waking the nRF, which
-then powers the BNO), not the BNO's own devSleep.
+**Net:** low-power idle on this chip means hub-awake accel-only — ~12 mA in IDLE,
+rising to ~22 mA while ACTIVE recording (full fusion). devSleep would be lower on
+paper but suppresses the motion wake, so it is not used. Getting below the
+hub-awake idle figure would need a hardware wake (a separate low-power
+accel/motion interrupt waking the nRF, which then powers the BNO), not the BNO's
+own devSleep.
 
 ## Recommendation
 
