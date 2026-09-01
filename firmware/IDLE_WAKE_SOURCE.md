@@ -37,11 +37,6 @@ gentle motion can wake IDLE→ACTIVE late (or not until the movement sharpens).
 wake latency is acceptable; use the **Detector** (default) when catching slow,
 gradual movement matters, or the **Classifier** when a reset-free idle matters.
 
-> An earlier version of this doc said SigMotion was added because the Detector
-> "did not wake on a shake." That symptom was the **devSleep artifact** (below),
-> since removed — hub-awake, the Detector wakes reliably and is in fact the
-> *more* sensitive of the two on slow motion.
-
 To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
 `IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
 reliably transitions IDLE → ACTIVE_RECORDING (watch for the
