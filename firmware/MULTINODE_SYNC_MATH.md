@@ -303,95 +303,78 @@ There is a single underlying function
 
 — the true clock difference between node $B$ and node $A$ at every instant, and
 its local slope. Every shared-motion event (the don-time sync gesture of §3, or
-an incidental everyday event, §11.3) is a **noisy sample** of this same
-function: cross-correlating the two nodes' angular-speed windows around the event
-yields one measurement $\bigl(t_j,\ \widehat{\text{offset}}_j\bigr)$ via Eq. (6),
-carrying the event's timestamp and a confidence $r_j$ (Eq. 8). Reconciliation
-**reconstructs the curve** by fitting/interpolating through these samples.
+incidental everyday motion, §11.2) is a **noisy sample** of this function:
+cross-correlating the two nodes' angular-speed windows around the event yields
+one measurement $\bigl(t_j,\ \widehat{\text{offset}}_j\bigr)$ via Eq. (6), with a
+confidence $r_j$ (Eq. 8). Reconciliation **reconstructs the curve** by
+fitting/interpolating through these samples.
 
-`drift` is not a separate measured quantity — it is the *slope* of that curve, so
-it only becomes observable once you have samples separated in time. This is why
-the don gesture (seconds long, §5) gives a good `offset` but a poor `drift`: the
-lever arm is too short for the slope to clear the noise floor (`DRIFT_RESOLVE_MS`,
-Eq. 10). The long time baseline that makes drift measurable comes from events
-spread across the record.
+Two things the naming ("offset and drift") can obscure:
 
-### 11.2 Two properties the naming can obscure
+- **`offset` is absolute, not cumulative.** Each event measures
+  $\text{offset}(t_j)$ directly and independently; you never add event $j{+}1$'s
+  offset onto event $j$'s (that double-counts). The only thing that accumulates
+  is *extrapolation error when you stop measuring* ($\approx
+  \text{drift}\times\Delta t$) — the cost of a gap, not a property of the model.
+- **`drift` is a slope, not a separate measurement.** It becomes observable only
+  once samples are separated in time, which is why the don gesture (seconds long)
+  gives a good `offset` but a poor `drift` — the lever arm is too short to clear
+  the noise floor (`DRIFT_RESOLVE_MS`, Eq. 10). A single event's offset is noisy
+  too, so you neither "trust it for $N$ minutes then jump" (which steps
+  $\text{offset}(t)$ discontinuously and discards still-good samples) nor discard
+  the prior estimate — you **fuse** (§11.2).
 
-- **Not cumulative addition.** `offset` is an *absolute* clock difference at an
-  instant, not a per-event increment. Each event measures $\text{offset}(t_j)$
-  directly and independently; you never add event $j{+}1$'s offset onto event
-  $j$'s (that double-counts). The only thing that accumulates is *extrapolation
-  error when you stop measuring* — $\approx \text{drift}\times\Delta t$ — which is
-  the cost of a gap, not a property of the model.
-- **Not a hard validity window.** A single event's offset is noisy, so you
-  neither "trust it for $N$ minutes then jump to the newer value" — which steps
-  $\text{offset}(t)$ discontinuously and throws away still-good older samples —
-  nor fully discard the prior estimate. You **fuse** the two (§11.4).
+### 11.2 Getting the anchors, and combining them over time
 
-### 11.3 Incidental re-anchoring — no user gesture required
+**Where the samples come from.** They need not be deliberate. Over a day of wear
+the body produces many **shared** events — standing up, starting to walk, turning
+— each a fresh $\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ measured by the *same*
+machinery, with the confidence gate (Eq. 9) selecting which node-pairs each event
+is valid for. Prefer **aperiodic transients** (sit→stand, turns); periodic motion
+(steady walking) has the multi-peak lag ambiguity of §3/§4 and anchors poorly
+even when shared. Participation is partial — an event re-anchors only the subset
+of nodes that moved together, and different events cover different subsets, so
+over a day it averages out. A node still for a long stretch isn't re-anchored, but
+its signal is flat then, so the misalignment is harmless and *its next motion is
+itself an anchoring event*.
 
-The samples after the don gesture need not come from a deliberate motion. Over a
-day of wear the body produces many **shared** events — standing up, starting to
-walk, turning — each a fresh $\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ measured
-by the *same* machinery, with the confidence gate (Eq. 9) selecting which
-node-pairs each event is valid for. Prefer **aperiodic transients** (sit→stand,
-turns): periodic motion (steady walking) has the multi-peak lag ambiguity of §3/§4
-and is a poor anchor even when shared. Two practical notes:
+**How the anchors combine.** There is no fixed validity duration; an old anchor
+stays useful while its implied extrapolation error stays under budget, set by the
+ratio of **process noise** (how fast $\text{drift}$ wanders — temperature
+dynamics) to **measurement noise** (how tightly one event pins `offset`). Two
+standard estimators carry $\bigl[\text{offset},\ \text{drift}\bigr]$ as a tracked
+state rather than switching on a timer:
 
-- **Partial participation.** A given event re-anchors only the *subset* of nodes
-  that moved together; different events cover different subsets, and over a day
-  this averages out. A node still for a long stretch isn't re-anchored — but its
-  signal is flat then, so the misalignment is harmless, and *its next motion is
-  itself an anchoring event*.
-- **Slowly-varying target.** Drift changes only with temperature, so anchors need
-  not be frequent; a fit over the last tens of minutes of events tracks it.
+- **Sliding-window least squares** — fit a line to the $\bigl(t_j,
+  \widehat{\text{offset}}_j\bigr)$ in a trailing window $W$, long enough for a
+  good lever arm but short enough that drift is ~constant across it.
+- **Kalman filter** — predict between events ($\text{offset}\mathrel{+}=
+  \text{drift}\cdot\Delta t$; drift a slow random walk; covariance grows) and
+  update at each event by the Kalman gain (confidence). Old data decays smoothly
+  rather than being dropped, the process-noise parameter setting that forgetting
+  time.
 
-### 11.4 Estimator memory: how long an old sample stays useful
+Either way a new event neither replaces nor adds to the prior estimate — the
+estimate moves *partway* toward it, weighted by relative confidence. Drift moves
+only with temperature, so anchors need not be frequent.
 
-There is no fixed validity duration. An old anchor stays useful while the
-extrapolation error it implies stays under budget, and that is governed by the
-ratio of **process noise** (how fast $\text{drift}$ actually wanders, i.e.
-temperature dynamics) to **measurement noise** (how tightly one event pins
-`offset`). That ratio sets the estimator's effective **memory**. Two standard
-implementations:
+**Offline, most of this is moot.** "How long is a stale value good?" bites only
+in real time, when all you have is the past. This pipeline is **post-hoc** — the
+whole log is on the host at reconcile time — so for essentially any instant,
+anchors bracket it on **both sides**. Evaluate $\text{offset}(t)$ by
+**interpolating between the bracketing anchors** rather than extrapolating from a
+stale one; the residual is far smaller. Extrapolation (and hence "validity
+duration") only bites at the ends of the log, or inside a one-sided gap.
 
-- **Sliding-window least squares** — fit a line to all $\bigl(t_j,
-  \widehat{\text{offset}}_j\bigr)$ within a trailing window $W$, chosen long
-  enough for a good lever arm but short enough that drift is ~constant across it.
-  A soft version of "windowing," done as a *fit over the window* rather than a
-  use-until-expiry switch.
-- **Kalman filter** — carry a state $\bigl[\text{offset},\ \text{drift}\bigr]$
-  with covariance. Predict between events ($\text{offset}\mathrel{+}=
-  \text{drift}\cdot\Delta t$; drift as a slow random walk; covariance grows),
-  update at each event weighted by the Kalman gain (confidence). Old data is never
-  hard-dropped; its influence *decays smoothly*. The process-noise parameter sets
-  that forgetting time — a soft decay, not a hard cutoff.
-
-In both, a new event neither replaces nor adds to the prior estimate — the
-estimate moves *partway* toward it, weighted by relative confidence, tracking the
-true $\text{offset}(t)$ smoothly.
-
-### 11.5 Offline processing: interpolate, don't extrapolate
-
-Whether a stale value is still usable is a **causal/real-time** worry: it bites
-only when all you have is the past. This pipeline is **post-hoc** — the
-whole log is on the host at reconcile time — so for essentially any instant you
-want to align, anchors exist on **both sides** of it. Evaluate $\text{offset}(t)$
-by **interpolating between the bracketing anchors** rather than extrapolating
-forward from a stale one; the residual is far smaller. Extrapolation (and hence
-"validity duration") only bites at the very ends of the log, or inside a gap with
-anchors on one side only.
-
-### 11.6 Where the code is, and the upgrade path
+### 11.3 Where the code is, and the upgrade path
 
 `reconcile_nodes.py` today fits the **single global line** of §5 — the simplest
 point on this spectrum, correct for a minutes-long, stable-temperature capture.
-Extending to full-day records means replacing that one line with §11.4's
-**sliding-window fit or Kalman tracker**, seeded by the don anchor and fed by the
-incidental events of §11.3, then evaluated by the interpolation of §11.5. The
-per-event measurement, confidence gate, and windowed-lag machinery all already
-exist (`lag_and_confidence()`, `_windowed_lags()`, `_pearson_at_lag()`); what is
-new is carrying `offset`/`drift` as a **tracked state over the whole log** instead
-of two scalars. Robust fitting (§10.3) and GCC-PHAT (§10.2) compose with this
-directly — they sharpen and de-weight the individual samples the tracker consumes.
+Extending to full-day records means replacing that one line with the
+**sliding-window fit or Kalman tracker** of §11.2, seeded by the don anchor and
+fed by incidental events, then evaluated by interpolation. The per-event
+measurement, confidence gate, and windowed-lag machinery all already exist
+(`lag_and_confidence()`, `_windowed_lags()`, `_pearson_at_lag()`); what is new is
+carrying `offset`/`drift` as a **tracked state over the whole log** instead of two
+scalars. Robust fitting (§10.3) and GCC-PHAT (§10.2) compose with this directly —
+they sharpen and de-weight the individual samples the tracker consumes.

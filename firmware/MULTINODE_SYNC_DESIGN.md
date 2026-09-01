@@ -87,24 +87,19 @@ A slow negotiated connection interval hurts in exactly two ways:
 Fix the interval and both requirements fall into place. There is no wire to
 fall back on, so this is the crux.
 
-### Finding: the slow interval is the *host*, not the firmware — CONFIRMED
+### Finding: the bottleneck is the *host*, not the firmware — CONFIRMED
 
-The single-node read latency (~850 ms) was the same as the two-node case, so it
-is **not** multi-connection scheduling — it is the connection interval itself.
-The firmware requests a fast interval (`BLE.setConnectionInterval`), so the
-prime suspect was the **central**: desktop **Windows' BLE stack (WinRT, used by
-`bleak`) imposes slow intervals and does not let apps set connection
-parameters.**
-
-**Confirmed on iPhone (2026-08):** offloading a 48 KB log took **2.46 s → ~20
-KB/s, ~10 ms/chunk** (vs ~850 ms per single read on Windows). The iPhone
-honored the fast interval; Windows was the whole bottleneck. Consequences:
-- **Offload (Req 2) is viable** — a full 2 MB flash offloads in ~1.7 min; real
-  logs go in seconds.
-- **Sync (Req 1) is on track** — the same fast interval makes iOS clock-offset
-  reads ~tens of ms, well within the 25–50 ms alignment target.
-- **Central platform for the product should be iOS/Android/BlueZ, not a Windows
-  desktop.** `bleak`-on-Windows is a bench artifact, not a target.
+Single-node read latency (~850 ms) matched the two-node case, so it isn't
+multi-connection scheduling — it's the connection interval itself. The firmware
+requests a fast interval (`BLE.setConnectionInterval`), so the culprit is the
+**central**: desktop **Windows' BLE stack (WinRT, via `bleak`) imposes slow
+intervals and won't let apps set connection parameters.** Confirmed on **iPhone
+(2026-08):** a 48 KB log offloaded in **2.46 s → ~20 KB/s, ~10 ms/chunk** (vs
+~850 ms per single read on Windows). So both requirements are met on a good
+central — a full 2 MB flash offloads in ~1.7 min, and clock-offset reads drop to
+~tens of ms (inside the 25–50 ms target) — and the product's central should be
+**iOS/Android/BlueZ, not a Windows desktop** (`bleak`-on-Windows is a bench
+artifact).
 
 ### Decision: validate on a good central before touching firmware further
 
@@ -178,9 +173,8 @@ target. Not on the critical path.
 
 ## Open risks / next steps
 
-1. ~~**[blocking] Central-platform test**~~ — **DONE.** iPhone honored the fast
-   interval (~20 KB/s offload). Windows was the bottleneck; use a mobile/BlueZ
-   central going forward.
+1. ~~**[blocking] Central-platform test**~~ — **DONE** (see the Finding above):
+   iPhone honored the fast interval; use a mobile/BlueZ central going forward.
 2. ~~**Offline reconciliation**~~ — **DONE (host prototype).**
    `tools/reconcile_nodes.py` aligns two offloaded logs by cross-correlating the
    motion itself (angular speed, mounting-invariant), so it recovers the clock
