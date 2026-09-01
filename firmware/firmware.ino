@@ -99,12 +99,16 @@
 //                      All sources run the hub AWAKE (the BNO's own devSleep was
 //                      dropped — it suppressed the motion wake; see Section 3):
 //                      • DETECTOR (default) — Stability Detector (0x1C), accel
-//                        only. Lowest power (~12mA) but self-reboots ~6.6s in
-//                        idle (inherent, benign re-arm). Motion = 0x1C EXITED.
+//                        only. ~12mA idle, self-reboots ~6.6s (inherent, benign
+//                        re-arm). Most sensitive to slow motion. Motion = EXITED.
 //                      • CLASSIFIER — Stability Classifier (0x13), accel+gyro /
 //                        MotionEngine. Reset-FREE idle (fusion keeps the hub
 //                        active) at higher idle current. Motion = classifier ==
 //                        MOTION.
+//                      • SIGMOTION — Significant Motion (0x12), accel-only
+//                        one-shot. Lowest idle current (~8mA, bench-measured) but
+//                        LESS sensitive to slow, gradual movement. Motion = event
+//                        fires. See IDLE_WAKE_SOURCE.md.
 //   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
@@ -226,9 +230,11 @@
 //
 // SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
 // low-power, one-shot wake-on-motion event. It is accel-based (so, per
-// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms), but the
-// wake event may fire more reliably than the Stability Detector's ENTERED/
-// EXITED transition. Use it to A/B against the detector for low-power wake.
+// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms).
+// Bench-measured tradeoff vs the detector: LOWER idle current (~8mA vs ~12mA —
+// the one-shot event means no ~1Hz detector heartbeat waking the nRF), but LESS
+// sensitive to slow, gradual movement (gentle motion can wake IDLE→ACTIVE late).
+// Pick it for the lowest-power idle when slow-motion wake latency is acceptable.
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
