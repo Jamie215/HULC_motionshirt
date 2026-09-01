@@ -32,7 +32,7 @@ Two nodes therefore disagree in two ways:
 reference node $A$'s timeline:
 
 ```math
-t_{\text{on }A} = t_B + \text{offset} + \text{drift}\cdot\bigl(t_B - t_{B,0}\bigr) \tag{1}
+t_{\text{on }A} = t_B + \text{offset} + \text{drift}\cdot\bigl(t_B - t_{B,0}\bigr) \quad (1)
 ```
 
 where $\text{offset}$ (ms) and $\text{drift}$ (unitless rate, reported in ppm)
@@ -40,7 +40,7 @@ are what we must estimate. This is the **standard two-parameter clock model**
 used by NTP, PTP, and distributed-systems clock synchronization.
 
 The design constraint (see `MULTINODE_SYNC_DESIGN.md`): nodes are wireless and
-analysis is offline, so we recover $\text{offset}$/$\text{drift}$ **from the
+analysis is offline, so we recover $\text{offset}/\text{drift}$ **from the
 recorded motion itself**, independent of BLE latency.
 
 ---
@@ -55,14 +55,14 @@ orientation. So we reduce each stream to a scalar invariant to mounting:
 The rotation between consecutive orientations $q_i, q_{i+1}$ has angle
 
 ```math
-\theta_i = 2\,\arccos\!\bigl(\lvert\, q_i \cdot q_{i+1}\,\rvert\bigr) \tag{2}
+\theta_i = 2\,\arccos\!\bigl(\lvert\, q_i \cdot q_{i+1}\,\rvert\bigr) \quad (2)
 ```
 
 (the dot product is the quaternion inner product; the absolute value takes the
 shorter arc, since $q$ and $-q$ are the same rotation). Angular speed is
 
 ```math
-\omega_i = \frac{\theta_i}{\Delta t_i}, \qquad \Delta t_i = \frac{t_{i+1}-t_i}{1000} \tag{3}
+\omega_i = \frac{\theta_i}{\Delta t_i}, \qquad \Delta t_i = \frac{t_{i+1}-t_i}{1000} \quad (3)
 ```
 
 **Why this works:** for a rigid body, angular velocity is a property of the body
@@ -84,11 +84,11 @@ The lag between the two sequences is found by **cross-correlation** (the classic
 time-delay-estimation method):
 
 ```math
-C[k] = \sum_n \bigl(a[n]-\bar a\bigr)\,\bigl(b[n-k]-\bar b\bigr) \tag{4}
+C[k] = \sum_n \bigl(a[n]-\bar a\bigr)\,\bigl(b[n-k]-\bar b\bigr) \quad (4)
 ```
 
 ```math
-\hat k = \arg\max_k C[k], \qquad L = \frac{\hat k}{f_s}\ \ [\text{s}] \tag{5}
+\hat k = \arg\max_k C[k], \qquad L = \frac{\hat k}{f_s}\ \ [\text{s}] \quad (5)
 ```
 
 Positive $L$ means $a$ is delayed relative to $b$. (Implementation:
@@ -116,7 +116,7 @@ The left side is exactly the offset that maps $B$'s timestamps onto $A$'s clock
 ($t_A = t_B + \text{offset}$). Hence
 
 ```math
-\boxed{\ \text{offset} = (A_0 - B_0) + 1000L \quad[\text{ms}]\ } \tag{6}
+\boxed{\ \text{offset} = (A_0 - B_0) + 1000L \quad[\text{ms}]\ } \quad (6)
 ```
 
 - $A_0 - B_0$ converts the relative-time result back to absolute clocks
@@ -136,7 +136,7 @@ sample and its two neighbours $y_{-1}, y_0, y_{+1}$
 ($= C[\hat k -1], C[\hat k], C[\hat k +1]$) and take its vertex:
 
 ```math
-\delta = \tfrac{1}{2}\,\frac{y_{-1}-y_{+1}}{\,y_{-1}-2y_0+y_{+1}\,}, \qquad \delta\in[-\tfrac12,\tfrac12] \tag{7}
+\delta = \tfrac{1}{2}\,\frac{y_{-1}-y_{+1}}{\,y_{-1}-2y_0+y_{+1}\,}, \qquad \delta\in[-\tfrac12,\tfrac12] \quad (7)
 ```
 
 ```math
@@ -156,7 +156,7 @@ score whether the peak reflects genuine shared motion, using the **Pearson
 correlation** of the two signals overlapped at the best lag:
 
 ```math
-r = \operatorname{corr}\bigl(a_{\text{overlap}},\, b_{\text{overlap}}\bigr)\ \text{at lag }\hat k, \qquad r\in[-1,1] \tag{8}
+r = \operatorname{corr}\bigl(a_{\text{overlap}},\, b_{\text{overlap}}\bigr)\ \text{at lag }\hat k, \qquad r\in[-1,1] \quad (8)
 ```
 
 Pearson is normalized (divided by each signal's standard deviation), so it
@@ -164,7 +164,7 @@ measures *shape* agreement independent of amplitude — a differently-swinging n
 still scores high if it moved *together*. We accept the offset only when
 
 ```math
-r \ge r_{\min} \quad (r_{\min} = 0.40) \tag{9}
+r \ge r_{\min} \quad (r_{\min} = 0.40) \quad (9)
 ```
 
 Below that, the tool flags the result unreliable and the caller falls back to the
@@ -191,7 +191,7 @@ the drift. It is accepted only if it is both statistically significant and large
 enough to matter:
 
 ```math
-\lvert m\rvert > 3\,\operatorname{SE}(m) \quad\text{AND}\quad \lvert m\rvert\cdot\bigl(t_{\text{last}}-t_{\text{first}}\bigr) > \text{DRIFT\_RESOLVE\_MS}\ (=15\text{ ms}) \tag{10}
+\lvert m\rvert > 3\,\operatorname{SE}(m) \quad\text{AND}\quad \lvert m\rvert\cdot\bigl(t_{\text{last}}-t_{\text{first}}\bigr) > \text{DRIFT\_RESOLVE\_MS}\ (=15\text{ ms}) \quad (10)
 ```
 
 Otherwise $\text{drift}=0$. Reported as $\text{drift\_ppm} = m\times 10^6$.
@@ -208,7 +208,7 @@ interpolated onto it with normalized-linear interpolation (nlerp) along the
 shorter arc:
 
 ```math
-q(t) = \operatorname{normalize}\!\bigl((1-f)\,q_0 + f\,q_1\bigr), \qquad f = \frac{t - t_0}{t_1 - t_0} \tag{11}
+q(t) = \operatorname{normalize}\!\bigl((1-f)\,q_0 + f\,q_1\bigr), \qquad f = \frac{t - t_0}{t_1 - t_0} \quad (11)
 ```
 
 (with a sign flip when $q_0\cdot q_1 < 0$). For 10 Hz human motion nlerp is
