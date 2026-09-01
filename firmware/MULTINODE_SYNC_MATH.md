@@ -240,6 +240,8 @@ synthetic data; it is **not** a validation against hardware ground truth (§9).
   gesture / BLE offset instead.
 - **Linear clock model** (Eq. 1) — valid over minutes; a long session with
   temperature-driven crystal changes could need piecewise / periodic re-sync.
+  See §11 for how a full-day capture is handled by tracking $\text{offset}(t)$
+  as a fitted curve instead of a single global line.
 - **Dropouts/gaps** in the logs degrade the correlation and inflate the residual
   (observed on real captures with intermittent recording).
 - **Feature is a magnitude** — angular speed discards the rotation axis; two
@@ -282,3 +284,122 @@ until §10 is done.
 4. **Richer feature** — correlate the full angular-velocity vector (rotated into
    a common frame after a coarse alignment) instead of only its magnitude, to
    break the axis-ambiguity of §8.
+
+---
+
+## 11. Long-session drift tracking: $\text{offset}(t)$ as a fitted curve
+
+§5's single global line (one $\text{offset}$, one $\text{drift}$ for the whole
+record) assumes the relative skew is **constant** across the capture. That holds
+for a minutes-long record at stable temperature. It does **not** hold for a
+full-day wear, where the skew itself drifts as body/ambient temperature moves the
+crystals (§8). This section records the model that covers the long case, and — as
+importantly — the model that is *wrong*, because the naming ("offset and drift")
+invites two wrong mental pictures.
+
+### 11.1 The right mental model: one curve, sampled by events
+
+There is a single underlying function
+
+```math
+\text{offset}(t) \quad [\text{ms}], \qquad \text{drift}(t) = \frac{d\,\text{offset}}{dt}
+```
+
+— the true clock difference between node $B$ and node $A$ at every instant, and
+its local slope. Every shared-motion event (the don-time sync gesture of §3, or
+an incidental everyday event per below) is a **noisy sample** of this same
+function: cross-correlating the two nodes' angular-speed windows around the event
+yields one measurement $\bigl(t_j,\ \widehat{\text{offset}}_j\bigr)$ via Eq. (6),
+carrying the event's timestamp and a confidence $r_j$ (Eq. 8). Reconciliation
+**reconstructs the curve** by fitting/interpolating through these samples.
+
+`drift` is not a separate measured quantity — it is the *slope* of that curve, so
+it only becomes observable once you have samples separated in time. This is why
+the don gesture (seconds long, §5) gives a good `offset` but a poor `drift`: the
+lever arm is too short for the slope to clear the noise floor (`DRIFT_RESOLVE_MS`,
+Eq. 10). The long time baseline that makes drift measurable comes from events
+spread across the record.
+
+### 11.2 Two wrong models (and why)
+
+- **Not cumulative addition.** `offset` is an *absolute* clock difference at an
+  instant, not a per-event increment. Each event measures $\text{offset}(t_j)$
+  directly and independently; you never add event $j{+}1$'s offset onto event
+  $j$'s (that double-counts). The only thing that accumulates is *extrapolation
+  error when you stop measuring* — $\approx \text{drift}\times\Delta t$ — which is
+  the cost of a gap, not a property of the model.
+- **Not a hard validity window.** A rule like "trust an offset for $N$ minutes,
+  then jump to the newer value" makes $\text{offset}(t)$ **discontinuous** at each
+  boundary (the alignment visibly steps) and discards a still-informative older
+  sample. A single event's offset is noisy, so you neither fully jump to it nor
+  fully discard the previous estimate — you **fuse**.
+
+### 11.3 Incidental re-anchoring — no user gesture required
+
+The samples after the don gesture need not come from a deliberate motion. Over a
+day of wear the body produces many **shared** events — standing up, starting to
+walk, turning — each a fresh $\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ measured
+by the *same* machinery, with the confidence gate (Eq. 9) selecting which
+node-pairs each event is valid for. Prefer **aperiodic transients** (sit→stand,
+turns): periodic motion (steady walking) has the multi-peak lag ambiguity of §3/§4
+and is a poor anchor even when shared. Two practical notes:
+
+- **Partial participation.** A given event re-anchors only the *subset* of nodes
+  that genuinely moved together. Different events cover different subsets; over a
+  day this averages out. A node that stays still for a long stretch is not
+  re-anchored — but its signal is flat then, so its misalignment is harmless, and
+  *the next time it moves is itself an anchoring event*. A node only needs
+  accurate alignment during windows in which it moves, and any shared such window
+  is self-anchoring.
+- **Slowly-varying target.** Drift changes only with temperature, so anchors need
+  not be frequent; a fit over the last tens of minutes of events tracks it.
+
+### 11.4 How long is an old sample "good"? — estimator memory, not a fixed cliff
+
+There is no fixed validity duration. An old anchor stays useful while the
+extrapolation error it implies stays under budget, and that is governed by the
+ratio of **process noise** (how fast $\text{drift}$ actually wanders, i.e.
+temperature dynamics) to **measurement noise** (how tightly one event pins
+`offset`). That ratio sets the estimator's effective **memory**. Two standard
+implementations:
+
+- **Sliding-window least squares** — fit a line to all $\bigl(t_j,
+  \widehat{\text{offset}}_j\bigr)$ within a trailing window $W$, chosen long
+  enough for a good lever arm but short enough that drift is ~constant across it.
+  A soft version of "windowing," done as a *fit over the window* rather than a
+  use-until-expiry switch.
+- **Kalman filter** — carry a state $\bigl[\text{offset},\ \text{drift}\bigr]$
+  with covariance. Predict between events ($\text{offset}\mathrel{+}=
+  \text{drift}\cdot\Delta t$; drift as a slow random walk; covariance grows),
+  update at each event weighted by the Kalman gain (confidence). Old data is never
+  hard-dropped; its influence *decays smoothly*. The process-noise parameter **is**
+  the "duration limit" the naming suggests — as a soft forgetting-time, not a
+  hard number.
+
+In both, a new event neither replaces nor adds to the prior estimate — the
+estimate moves *partway* toward it, weighted by relative confidence, tracking the
+true $\text{offset}(t)$ smoothly.
+
+### 11.5 Offline processing dissolves most of it — interpolate, don't extrapolate
+
+The "how long is a stale value good?" question is a **causal/real-time** worry:
+it bites only when all you have is the past. This pipeline is **post-hoc** — the
+whole log is on the host at reconcile time — so for essentially any instant you
+want to align, anchors exist on **both sides** of it. Evaluate $\text{offset}(t)$
+by **interpolating between the bracketing anchors** rather than extrapolating
+forward from a stale one; the residual is far smaller. Extrapolation (and hence
+"validity duration") only bites at the very ends of the log, or inside a gap with
+anchors on one side only.
+
+### 11.6 Where the code is, and the upgrade path
+
+`reconcile_nodes.py` today fits the **single global line** of §5 — the simplest
+point on this spectrum, correct for a minutes-long, stable-temperature capture.
+Extending to full-day records means replacing that one line with §11.4's
+**sliding-window fit or Kalman tracker**, seeded by the don anchor and fed by the
+incidental events of §11.3, then evaluated by the interpolation of §11.5. The
+per-event measurement, confidence gate, and windowed-lag machinery all already
+exist (`lag_and_confidence()`, `_windowed_lags()`, `_pearson_at_lag()`); what is
+new is carrying `offset`/`drift` as a **tracked state over the whole log** instead
+of two scalars. Robust fitting (§10.3) and GCC-PHAT (§10.2) compose with this
+directly — they sharpen and de-weight the individual samples the tracker consumes.
