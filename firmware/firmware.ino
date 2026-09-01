@@ -55,11 +55,15 @@
 //         Millisecond-resolution variant used for multi-node alignment.
 //   0x03  erase flash log
 //   0x04  begin log offload over A004 (IDLE only — rejected in other states)
+//   0x06  re-send a byte range over A004 for gap recovery (IDLE only) —
+//         payload: [0x06, offset_b0..b3, length_b0..b3]  (uint32 LE each)
 //
 // Offload protocol:
-//   Phone connects → reads A003 → if state == IDLE, sends 0x02 (time sync)
-//   then 0x04 (offload). Firmware streams flash in 200-byte chunks at 3ms
-//   pacing. Phone confirms receipt, then sends 0x03 (erase).
+//   Phone connects → reads A003 → if state == IDLE, sends a time sync (0x05,
+//   or legacy 0x02) then 0x04 (offload). Firmware streams flash in 200-byte
+//   chunks at 3ms pacing. If the phone detects dropped notifications it can
+//   request just the missing bytes with 0x06. Phone confirms receipt, then
+//   sends 0x03 (erase).
 //
 // Connection behavior:
 //   When no BLE central is connected, state handlers sleep via __WFE()
@@ -188,7 +192,6 @@
 #define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
 #endif
 #define DETECTOR_EXITED   2
-#define DETECTOR_ENTERED  1
 
 // ── BNO hub deep sleep (sh2_devSleep) ──────────────────────────────────────
 // devSleep is REQUIRED for low power: without it the hub stays awake at ~22mA
@@ -228,11 +231,12 @@
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
 #define IDLE_WAKE_SIGMOTION   2
-// CLASSIFIER (accel+gyro) so IDLE wakes on ROTATION too. The DETECTOR is
-// accelerometer-only and can miss pure rotation of a rigid body (little linear
-// accel), leaving the node stuck in IDLE with nothing logged. CLASSIFIER costs
-// higher idle current (no devSleep) — revisit for power once capture works;
-// flip back to IDLE_WAKE_DETECTOR if you specifically want the low-power path.
+// Active choice below: DETECTOR — the low-power path (accel-only, holds
+// devSleep). Its known limitation: being accelerometer-only it can miss pure
+// rotation of a rigid body (little linear accel), which can leave the node
+// stuck in IDLE with nothing logged. CLASSIFIER (accel+gyro) wakes on ROTATION
+// too and is reset-free, at the cost of higher idle current (no devSleep) —
+// flip to IDLE_WAKE_CLASSIFIER if missed-rotation wakeups become a problem.
 //
 // SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
 // low-power, one-shot wake-on-motion event. It is accel-based (so, per
@@ -281,7 +285,6 @@
 #define DEFAULT_ACTIVE_HZ           10
 #define STATIC_SAMPLE_INTERVAL_MS   5000
 #define BNO_RV_INTERVAL_MS          65
-#define DETECTOR_INTERVAL_MS        1000
 #define ACTIVE_STABILITY_MS         500
 // Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
 // Also the worst-case IDLE->ACTIVE motion-onset latency for that build (the
@@ -1691,12 +1694,6 @@ void i2cBusRecover() {
 
 void setup() {
   Serial.begin(115200);
-
-  // Timeout instead of blocking forever — remove entirely before deployment
-  unsigned long serialTimeout = millis();
-  while (!Serial && (millis() - serialTimeout < 3000)) {
-    delay(10);
-  }
 
   LOG("=== HULC Motion Shirt — Phase 3 + Flash ===");
   LOG("Initialising...");
