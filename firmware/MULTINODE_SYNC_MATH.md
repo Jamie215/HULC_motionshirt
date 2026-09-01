@@ -251,10 +251,9 @@ synthetic data; it is **not** a validation against hardware ground truth (§9).
 
 ---
 
-## 9. Academic basis and honest status
+## 9. Algorithm / Technique Justification
 
-The method is an assembly of **standard, well-established techniques**, not a
-novel algorithm:
+The method is an assembly of **standard techniques** mentioned below:
 
 - **Cross-correlation time-delay estimation** — the core. Classic reference:
   Knapp & Carter, *"The Generalized Correlation Method for Estimation of Time
@@ -266,10 +265,7 @@ novel algorithm:
   sensor-network clock synchronization.
 - **Parabolic peak interpolation** — textbook sub-sample estimation.
 
-**Status:** sound engineering built from reliable components, validated on
-synthetic data. It has **not** been benchmarked against a hardware ground truth.
-Trust the *approach*; do not treat a specific recovered *number* as calibrated
-until §10 is done.
+**Status:** Current implementation has **not** been benchmarked.
 
 ---
 
