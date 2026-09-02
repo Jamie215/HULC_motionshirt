@@ -109,7 +109,7 @@
 //                        one-shot. Lowest idle current (~8mA, bench-measured) but
 //                        LESS sensitive to slow, gradual movement. Motion = event
 //                        fires. See IDLE_WAKE_SOURCE.md.
-//   STATIC_POSTURE   — RV @ ~15Hz + Classifier, writes gated to 0.2Hz
+//   STATIC_POSTURE   — RV @ ~10Hz + Classifier, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
 //
 // Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
@@ -164,6 +164,13 @@
 #define UUID_STATUS    "A0010003-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_OFFLOAD   "A0010004-B0CE-4A4A-8F0B-0011223344FF"
 #define UUID_SYNCINFO  "A0010005-B0CE-4A4A-8F0B-0011223344FF"
+
+// Advertising interval. ArduinoBLE units are 0.625ms, so 1600 = 1000ms. The
+// radio powers up to advertise once per interval; a slow interval cuts that
+// radio-on time by ~10x vs the fast default. Offload is a deliberate, occasional,
+// IDLE-only action, so ~1s discovery latency is fine. Advertising is also gated
+// to IDLE (stopped in the RUNNING states) since offload is rejected outside IDLE.
+#define ADV_INTERVAL_UNITS    1600   // 1000ms in 0.625ms units
 
 // Offload transfer tuning
 #define OFFLOAD_CHUNK_SIZE    200    // max bytes per BLE notification (up from 20)
@@ -251,12 +258,67 @@
 
 
 // =============================================================================
+// SECTION 3b — Active Fusion Source (compile-time A/B switch)
+// =============================================================================
+// The RUNNING states (STATIC_POSTURE / ACTIVE_RECORDING) log an orientation
+// quaternion. Two BNO086 fusion reports can produce it, at different power and
+// with different semantics — flip this switch and reflash to A/B compare, the
+// same pattern as IDLE_WAKE_SOURCE. The 20-byte record format is IDENTICAL
+// either way (still [ts, qw, qx, qy, qz]), so flash log, offload, and the whole
+// data pipeline are untouched; ONLY the fusion source changes.
+//
+//   RV  — Rotation Vector (0x05): accel + gyro + MAGNETOMETER (9-axis). Yaw is
+//         absolute (referenced to magnetic north). Costs magnetometer power and
+//         is sensitive to magnetic disturbance — batteries, other on-body nodes,
+//         and nearby metal/electronics distort heading. Needs mag calibration.
+//   GRV — Game Rotation Vector (0x08): accel + gyro only (6-axis, NO mag). Pitch
+//         and roll stay gravity-referenced and solid; only YAW has no absolute
+//         reference and drifts slowly about vertical. Lower power, no mag cal,
+//         immune to magnetic interference. Good fit if segments are fused
+//         relative to each other rather than to compass heading.
+//
+// Default RV keeps current behavior. Decide GRV from real bench data — collect a
+// run on each build and compare drift/quality. See firmware/POWER_OPTIMIZATION.md.
+#define ACTIVE_FUSION_RV      0
+#define ACTIVE_FUSION_GRV     1
+#define ACTIVE_FUSION_SOURCE  ACTIVE_FUSION_RV
+
+#if   ACTIVE_FUSION_SOURCE == ACTIVE_FUSION_GRV
+  #define FUSION_NAME            "Game Rotation Vector (0x08, 6-axis, no mag)"
+  #define FUSION_REPORT_ID       SENSOR_REPORTID_GAME_ROTATION_VECTOR
+  #define enableFusionVector(ms) imu.enableGameRotationVector(ms)
+  #define fusionQuatI()          imu.getGameQuatI()
+  #define fusionQuatJ()          imu.getGameQuatJ()
+  #define fusionQuatK()          imu.getGameQuatK()
+  #define fusionQuatReal()       imu.getGameQuatReal()
+#elif ACTIVE_FUSION_SOURCE == ACTIVE_FUSION_RV
+  #define FUSION_NAME            "Rotation Vector (0x05, 9-axis, abs heading)"
+  #define FUSION_REPORT_ID       SENSOR_REPORTID_ROTATION_VECTOR
+  #define enableFusionVector(ms) imu.enableRotationVector(ms)
+  #define fusionQuatI()          imu.getQuatI()
+  #define fusionQuatJ()          imu.getQuatJ()
+  #define fusionQuatK()          imu.getQuatK()
+  #define fusionQuatReal()       imu.getQuatReal()
+#else
+  #error "ACTIVE_FUSION_SOURCE must be ACTIVE_FUSION_RV or ACTIVE_FUSION_GRV"
+#endif
+
+
+// =============================================================================
 // SECTION 4 — Sampling Rates
 // =============================================================================
 
 #define DEFAULT_ACTIVE_HZ           10
 #define STATIC_SAMPLE_INTERVAL_MS   5000
-#define BNO_RV_INTERVAL_MS          65
+// Rotation-vector report interval. Matched to the ACTIVE log period
+// (1000/DEFAULT_ACTIVE_HZ = 100ms → 10Hz) rather than run faster than we log.
+// The old 65ms (~15Hz) made the BNO compute and ship ~5 fusion samples/sec that
+// ACTIVE's activeHz gate discarded — each one an I2C read + nRF wake spent to
+// throw the sample away. 100ms removes that waste with no change to what we
+// record; it also drops STATIC_POSTURE (which shares this config, logging only
+// 0.2Hz) from ~15Hz to 10Hz. Power-optimization "Tier A"; see
+// firmware/POWER_OPTIMIZATION.md for the larger STATIC-specific slow-RV option.
+#define BNO_RV_INTERVAL_MS          100
 #define ACTIVE_STABILITY_MS         500
 // Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
 // Also the worst-case IDLE->ACTIVE motion-onset latency for that build (the
@@ -401,6 +463,7 @@ BLECharacteristic statChar(UUID_STATUS,     BLERead,     4);
 BLECharacteristic offloadChar(UUID_OFFLOAD, BLENotify,  OFFLOAD_CHUNK_SIZE);
 BLECharacteristic syncInfoChar(UUID_SYNCINFO, BLERead,  16);  // clock info for skew measurement
 bool              bleConnected     = false;
+bool              bleReady         = false;   // BLE.begin() succeeded — guards advertise()/stopAdvertise()
 bool              streaming        = false;
 
 // ── Node identity ──
@@ -1160,10 +1223,10 @@ void configureBNO_Running() {
     return;
   }
 
-  LOGF("BNO: configuring RUNNING mode (RV @ %dms, Classifier @ %dms)",
-       BNO_RV_INTERVAL_MS, ACTIVE_STABILITY_MS);
+  LOGF("BNO: configuring RUNNING mode (%s @ %dms, Classifier @ %dms)",
+       FUSION_NAME, BNO_RV_INTERVAL_MS, ACTIVE_STABILITY_MS);
 
-  imu.enableRotationVector(BNO_RV_INTERVAL_MS);
+  enableFusionVector(BNO_RV_INTERVAL_MS);   // RV or GRV — see Section 3b
   delay(50);   // let the SH-2 firmware ack each config frame before the next —
   imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);   // avoids the enableReport
   delay(50);   // command-buffer overload / premature reset (SparkFun issue #2)
@@ -1197,10 +1260,18 @@ void applyPendingTransition() {
   switch (currentState) {
     case STATE_IDLE:
       configureBNO_Idle();
+      // Offload is IDLE-only, so only make the node discoverable in IDLE.
+      // Re-advertise on IDLE entry (unless a central is still connected, in
+      // which case we're not advertising anyway).
+      if (bleReady && !bleConnected) BLE.advertise();
       break;
     case STATE_STATIC_POSTURE:
     case STATE_ACTIVE_RECORDING:
       configureBNO_Running();
+      // Stop advertising while recording — nobody should connect to offload
+      // outside IDLE, and this saves radio power at the IMU's peak draw. An
+      // already-connected central (e.g. debug stream) is unaffected.
+      if (bleReady) BLE.stopAdvertise();
       break;
   }
 
@@ -1426,12 +1497,12 @@ void handleStaticPosture() {
     uint8_t id  = imu.getSensorEventID();
     uint32_t now = millis();
 
-    if (id == SENSOR_REPORTID_ROTATION_VECTOR) {
+    if (id == FUSION_REPORT_ID) {
       bool timeToSample = (now - lastStaticSample >= STATIC_SAMPLE_INTERVAL_MS);
       if (timeToSample) {
         writeQuaternionSample(
-          imu.getQuatI(), imu.getQuatJ(),
-          imu.getQuatK(), imu.getQuatReal()
+          fusionQuatI(), fusionQuatJ(),
+          fusionQuatK(), fusionQuatReal()
         );
         lastStaticSample = now;
       }
@@ -1498,12 +1569,12 @@ void handleActiveRecording() {
     uint8_t id   = imu.getSensorEventID();
     uint32_t now = millis();
 
-    if (id == SENSOR_REPORTID_ROTATION_VECTOR) {
+    if (id == FUSION_REPORT_ID) {
       bool timeToSample = (now - lastActiveSample >= (1000u / activeHz));
       if (timeToSample) {
         writeQuaternionSample(
-          imu.getQuatI(), imu.getQuatJ(),
-          imu.getQuatK(), imu.getQuatReal()
+          fusionQuatI(), fusionQuatJ(),
+          fusionQuatK(), fusionQuatReal()
         );
         lastActiveSample = now;
       }
@@ -1607,6 +1678,14 @@ void setup() {
   LOG("=== HULC Motion Shirt — Phase 3 + Flash ===");
   LOG("Initialising...");
 
+  // Enable the nRF52840's internal DC/DC (buck) regulator for the main supply.
+  // It is far more efficient than the default LDO — especially with the radio
+  // active — and cuts current across every state. The XIAO nRF52840 populates
+  // the required REG1 inductor, so this is safe to enable here. This is a raw
+  // register write (the mbed/Cordio BLE stack this build uses does not manage
+  // it); measure before/after to confirm the saving on your board.
+  NRF_POWER->DCDCEN = 1;
+
   pinMode(PIN_LED_BLUE, OUTPUT);
   pinMode(PIN_LED_RED,  OUTPUT);
   digitalWrite(PIN_LED_BLUE, HIGH);   // LEDs are active-low on XIAO
@@ -1662,6 +1741,7 @@ void setup() {
   if (!BLE.begin()) {
     Serial.println("FAILED — BLE disabled, state machine runs without sync");
   } else {
+    bleReady = true;
     makeDeviceName();                    // unique per-board name (multi-node)
     BLE.setLocalName(g_deviceName);
     BLE.setDeviceName(g_deviceName);
@@ -1678,6 +1758,7 @@ void setup() {
     // alike. The central still has final say — this is a request, not a
     // guarantee. Must be set before advertise().
     BLE.setConnectionInterval(12, 24);
+    BLE.setAdvertisingInterval(ADV_INTERVAL_UNITS);   // slow advertising to save radio power
     BLE.setAdvertisedService(imuService);
     imuService.addCharacteristic(quatChar);
     imuService.addCharacteristic(ctrlChar);
@@ -1735,8 +1816,13 @@ void loop() {
 
     digitalWrite(PIN_LED_BLUE, HIGH);   // Blue LED off
     updateStatus();
-    BLE.advertise();
-    Serial.println("[BLE] Re-advertising...");
+    // Only re-advertise if IDLE — advertising is gated to IDLE (offload is
+    // IDLE-only). If disconnected mid-recording, stay dark until we're back
+    // in IDLE, where applyPendingTransition() re-advertises.
+    if (currentState == STATE_IDLE) {
+      BLE.advertise();
+      Serial.println("[BLE] Re-advertising...");
+    }
   }
 
   // ── BLE control command dispatch ──
