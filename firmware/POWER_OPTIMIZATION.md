@@ -2,9 +2,30 @@
 
 Power work on `firmware.ino` after the decision **not** to use a coordinated
 collection trigger. This tracks what has landed and the backlog of ideas still
-worth exploring, so nothing gets lost. Current baseline draw (from
+worth exploring, so nothing gets lost. Pre-optimization baseline (from
 `IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~8 mA IDLE (SIGMOTION), ~22 mA
 ACTIVE recording (full fusion).
+
+## Measured results (bench, DETECTOR idle wake source)
+
+After the "Landed" changes below:
+
+| Build | IDLE | ACTIVE |
+|---|---|---|
+| Baseline (pre-optimization) | ~12 mA | ~22 mA |
+| Optimized, Rotation Vector (default) | **~9 mA** | **~20–21 mA** |
+| Optimized, Game Rotation Vector | **~9 mA** | **~20 mA** |
+
+- **IDLE ~12 → ~9 mA (~25%)** — from the DC/DC regulator and the slower/gated
+  advertising. IDLE is identical across the RV and GRV builds, as expected: the
+  fusion source only affects the RUNNING states, so the `ACTIVE_FUSION` switch
+  cannot move idle (a useful confirmation the switch is scoped correctly).
+- **ACTIVE ~22 → ~20–21 mA** — from the DC/DC regulator and the report-rate match.
+- **GRV vs RV: no meaningful power difference** (~20 vs ~20–21 mA, within
+  measurement noise). Expected in hindsight — on the BNO08x the always-running
+  gyro and the fusion MotionEngine dominate; the magnetometer is comparatively
+  cheap, so dropping it saves little. **GRV is therefore a data-quality option,
+  not a power lever** (see item 4).
 
 ## Landed
 
@@ -14,8 +35,8 @@ machine's logic; each is commented at its site.
 1. **DC/DC regulator enabled** — `NRF_POWER->DCDCEN = 1` at the top of `setup()`.
    Switches the nRF52840's main supply from the default LDO to the internal buck
    converter (the XIAO populates the REG1 inductor). More efficient in every
-   state, most of all with the radio active. *Board-wide; bench-measure the
-   delta.*
+   state, most of all with the radio active. Board-wide; a large part of the
+   measured idle and active drop (see Measured results).
 
 2. **BLE advertising made cheap and IDLE-only.**
    - Advertising interval slowed to ~1 s (`ADV_INTERVAL_UNITS = 1600`, units of
@@ -36,13 +57,18 @@ machine's logic; each is commented at its site.
 4. **Game Rotation Vector A/B switch** — `ACTIVE_FUSION_SOURCE` (Section 3b),
    defaulting to `ACTIVE_FUSION_RV` so behavior is unchanged until flipped.
    `ACTIVE_FUSION_GRV` selects the 6-axis Game Rotation Vector (no magnetometer):
-   lower power, no mag calibration, immune to magnetic interference from
-   batteries / other on-body nodes / metal; the cost is slow yaw drift (pitch and
-   roll stay solid). The 20-byte record format is identical, so nothing
-   downstream changes. **This is a data-quality decision — collect a run on each
-   build and compare before committing to GRV.** When building the GRV path,
-   compile-check it against the installed SparkFun library version (the
-   `getGameQuat*` getter names follow the current API but were not compiled here).
+   no mag calibration, immune to magnetic interference from batteries / other
+   on-body nodes / metal; the cost is slow yaw drift (pitch and roll stay solid).
+   The 20-byte record format is identical, so nothing downstream changes.
+   **Bench-measured: GRV gives no meaningful power saving vs RV** (see Measured
+   results) — the gyro + fusion engine dominate, the magnetometer is cheap. So
+   **decide GRV purely on data quality**, not power: keep the default RV unless a
+   run of captured orientation data shows magnetometer-driven heading corruption
+   (likely once multiple nodes + batteries sit close together on the body), in
+   which case GRV trades absolute heading for cleaner, interference-free
+   orientation. When building the GRV path, compile-check it against the installed
+   SparkFun library version (the `getGameQuat*` getter names follow the current
+   API but were not compiled here).
 
 ## Backlog — worth exploring
 
