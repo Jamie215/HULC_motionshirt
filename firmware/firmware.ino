@@ -109,11 +109,8 @@
 //                        one-shot. Lowest idle current (~8mA, bench-measured) but
 //                        LESS sensitive to slow, gradual movement. Motion = event
 //                        fires. See IDLE_WAKE_SOURCE.md.
-//   STATIC_POSTURE   — RV @ ~1Hz (Tier B, slow) + Classifier @ 500ms, writes
-//                      gated to 0.2Hz. Slow fusion since STATIC only snapshots
-//                      posture; the Classifier still drives all transitions.
+//   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
-//                      (10Hz default)
 //
 // Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
 // =============================================================================
@@ -303,14 +300,10 @@
 // = 100ms) so the BNO doesn't fuse and ship samples we'd only discard. Tier A;
 // rationale and the STATIC-specific follow-up are in firmware/POWER_OPTIMIZATION.md.
 #define BNO_RV_INTERVAL_MS          100
-// STATIC-specific (slow) RV interval — Tier B. STATIC logs only 0.2Hz (every
-// STATIC_SAMPLE_INTERVAL_MS), so even the Tier A 10Hz RV ships ~50 reports per
-// logged sample, each a wasted I2C read + nRF wake. 1s (1Hz) cuts those RV
-// wakeups ~10x while still giving 5 orientation samples per logged snapshot, so
-// a logged posture is at most ~1s stale — negligible for a static hold. The
-// Classifier keeps running at ACTIVE_STABILITY_MS (see configureBNO_Running),
-// so it, not the RV, is now the STATIC wake floor and motion detection is
-// unchanged. See firmware/POWER_OPTIMIZATION.md.
+// STATIC-specific (slow) RV interval — Tier B. STATIC only snapshots posture at
+// 0.2Hz, so running the fusion vector slow saves the wasted reads the 10Hz rate
+// would discard. The Classifier stays at ACTIVE_STABILITY_MS, so motion
+// detection is unaffected. See firmware/POWER_OPTIMIZATION.md.
 #define BNO_RV_STATIC_INTERVAL_MS   1000
 #define ACTIVE_STABILITY_MS         500
 // Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
@@ -420,18 +413,14 @@ typedef enum {
   STATE_ACTIVE_RECORDING
 } SystemState;
 
-// Which running configuration the BNO currently holds (Tier B). The two RUNNING
-// states share configureBNO_Running() but request DIFFERENT fusion rates (ACTIVE
-// fast, STATIC slow), so a plain "in running mode" bool could not tell an
-// ACTIVE↔STATIC switch (rate must change) from a same-state re-entry (skip).
-// BNO_CFG_NONE means no running report is armed (IDLE, or just after a soft reset
-// that cleared all reports). Declared here in Section 10 — ahead of the first
-// function — so the Arduino auto-generated prototype for configureBNO_Running(),
-// which takes this type, sees it defined (same reason SystemState lives here).
+// Which fusion config the BNO currently holds. The two RUNNING states use
+// different fusion rates, so configureBNO_Running() needs to tell an ACTIVE↔STATIC
+// switch from a same-state re-entry. Kept here (not in Section 11) so it precedes
+// the auto-generated prototype of the function that takes it — as SystemState is.
 typedef enum {
-  BNO_CFG_NONE,     // not in a running mode (IDLE / post-reset)
+  BNO_CFG_NONE,     // no running report armed (IDLE / post-reset)
   BNO_CFG_ACTIVE,   // fusion @ BNO_RV_INTERVAL_MS (fast)
-  BNO_CFG_STATIC    // fusion @ BNO_RV_STATIC_INTERVAL_MS (slow) — Tier B
+  BNO_CFG_STATIC    // fusion @ BNO_RV_STATIC_INTERVAL_MS (slow)
 } BnoRunningCfg;
 
 const char* stateName(SystemState s) {
@@ -512,11 +501,7 @@ uint8_t      lastLoggedStability = 255;
 uint32_t     lastStabilityEvent  = 0;
 uint8_t      consecutiveResets   = 0;
 
-// ── BNO config guard ──
-// Which running configuration the BNO currently holds (BnoRunningCfg defined in
-// Section 10). Replaces the old bnoInRunningMode bool so an ACTIVE↔STATIC switch,
-// which changes only the fusion rate, is distinguishable from a same-state
-// re-entry. See configureBNO_Running().
+// ── BNO config guard (type in Section 10) ──
 BnoRunningCfg bnoRunningCfg      = BNO_CFG_NONE;
 
 volatile bool imuDataReady = false;
@@ -1265,50 +1250,32 @@ void configureBNO_Idle() {
   LOGF("BNO: IDLE %s armed as wake source", IDLE_WAKE_NAME);
 }
 
-// Configure the BNO for a RUNNING state. `desired` selects the fusion rate:
-// BNO_CFG_ACTIVE (fast, BNO_RV_INTERVAL_MS) or BNO_CFG_STATIC (slow, Tier B,
-// BNO_RV_STATIC_INTERVAL_MS). The classifier always runs at ACTIVE_STABILITY_MS
-// in both, so it, not the RV, drives all RUNNING-state transitions regardless of
-// the fusion rate.
-//
-// Two skip/apply cases, tracked by bnoRunningCfg:
-//   • already == desired → nothing changed, skip (same guard the old bool gave,
-//     so a same-state re-entry never re-issues enableReport).
-//   • coming from BNO_CFG_NONE (IDLE entry / post-reset, all reports cleared) →
-//     enable BOTH the fusion vector and the classifier.
-//   • ACTIVE↔STATIC switch (was a different running cfg) → ONLY the fusion rate
-//     changed, so re-issue just the fusion vector and leave the already-running
-//     classifier untouched. Re-issuing the fewest reports keeps this off the
-//     command-buffer-overload / premature-reset path (SparkFun issue #2); the
-//     delay(50) after each enableReport is the same ack guard used elsewhere.
+// Configure the BNO for a RUNNING state. ACTIVE uses the fast fusion rate,
+// STATIC the slow one; the classifier is identical in both. The delay(50) after
+// each enableReport lets the SH-2 firmware ack before the next command, avoiding
+// the buffer-overload/premature-reset seen without it (SparkFun issue #2).
 void configureBNO_Running(BnoRunningCfg desired) {
+  const char* name = (desired == BNO_CFG_STATIC) ? "STATIC" : "ACTIVE";
+
   if (bnoRunningCfg == desired) {
-    LOGF("BNO: already in %s running mode — skipping reconfiguration",
-         desired == BNO_CFG_STATIC ? "STATIC" : "ACTIVE");
+    LOGF("BNO: already in %s running mode — skipping reconfiguration", name);
     return;
   }
 
   uint16_t rvInterval = (desired == BNO_CFG_STATIC) ? BNO_RV_STATIC_INTERVAL_MS
                                                     : BNO_RV_INTERVAL_MS;
+  enableFusionVector(rvInterval);   // RV or GRV — see Section 3b
+  delay(50);
 
   if (bnoRunningCfg == BNO_CFG_NONE) {
-    // Fresh entry from IDLE or recovery after a soft reset: no running reports
-    // are armed, so enable both.
-    LOGF("BNO: configuring %s RUNNING mode (%s @ %dms, Classifier @ %dms)",
-         desired == BNO_CFG_STATIC ? "STATIC" : "ACTIVE",
-         FUSION_NAME, rvInterval, ACTIVE_STABILITY_MS);
-    enableFusionVector(rvInterval);   // RV or GRV — see Section 3b
-    delay(50);   // let the SH-2 firmware ack each config frame before the next —
-    imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);   // avoids the enableReport
-    delay(50);   // command-buffer overload / premature reset (SparkFun issue #2)
+    // From IDLE / post-reset the classifier isn't armed either; on an
+    // ACTIVE↔STATIC switch it's already running at the same rate, so skip it.
+    LOGF("BNO: configuring %s (%s @ %dms, Classifier @ %dms)",
+         name, FUSION_NAME, rvInterval, ACTIVE_STABILITY_MS);
+    imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);
+    delay(50);
   } else {
-    // ACTIVE↔STATIC: only the fusion rate changes. The classifier is already
-    // streaming at ACTIVE_STABILITY_MS from the prior running state — leave it
-    // alone and re-issue just the fusion vector at the new rate.
-    LOGF("BNO: switching to %s fusion rate (%s @ %dms, Classifier unchanged)",
-         desired == BNO_CFG_STATIC ? "STATIC" : "ACTIVE", FUSION_NAME, rvInterval);
-    enableFusionVector(rvInterval);   // RV or GRV — see Section 3b
-    delay(50);   // ack guard (SparkFun issue #2)
+    LOGF("BNO: switching to %s fusion rate (%s @ %dms)", name, FUSION_NAME, rvInterval);
   }
 
   bnoRunningCfg = desired;
@@ -1349,15 +1316,12 @@ void applyPendingTransition() {
       if (!bleConnected) qspiSleep();
       break;
     case STATE_STATIC_POSTURE:
-      // Tier B: STATIC runs the fusion vector at the slow rate (posture-only).
       configureBNO_Running(BNO_CFG_STATIC);
-      // No offload outside IDLE — stop advertising (an existing connection stays).
-      if (bleReady) BLE.stopAdvertise();
+      if (bleReady) BLE.stopAdvertise();   // no offload outside IDLE
       break;
     case STATE_ACTIVE_RECORDING:
       configureBNO_Running(BNO_CFG_ACTIVE);
-      // No offload outside IDLE — stop advertising (an existing connection stays).
-      if (bleReady) BLE.stopAdvertise();
+      if (bleReady) BLE.stopAdvertise();   // no offload outside IDLE
       break;
   }
 
@@ -1390,8 +1354,7 @@ void checkWatchdog() {
 
   imu.softReset();
   delay(150);
-  // Soft reset cleared every report — re-arm from scratch (NONE → both reports),
-  // at the fusion rate for whichever running state we're recovering.
+  // Soft reset cleared every report — re-arm from scratch for the current state.
   bnoRunningCfg = BNO_CFG_NONE;
   configureBNO_Running(currentState == STATE_STATIC_POSTURE ? BNO_CFG_STATIC
                                                             : BNO_CFG_ACTIVE);
