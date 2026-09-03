@@ -70,6 +70,17 @@ machine's logic; each is commented at its site.
    SparkFun library version (the `getGameQuat*` getter names follow the current
    API but were not compiled here).
 
+5. **External flash parked in deep power-down during IDLE.** The P25Q16H is put
+   into deep power-down (`0xB9`) whenever the node sits in unconnected IDLE, which
+   never touches flash, and released (`0xAB`) before any access — `qspiWake()` on
+   BLE connect (offload/erase arrive as control commands) and at the top of
+   `applyPendingTransition()` for the header write; `qspiSleep()` on IDLE entry,
+   on disconnect back into IDLE, and at end of `setup()`. **Expected saving is
+   small** — serial-NOR standby is ~tens of µA against the ~9 mA idle, likely
+   below meter resolution — so don't expect the idle figure to move; this is
+   completeness, not a big lever. The bigger related saving is the nRF QSPI
+   *peripheral* (see backlog), not the chip.
+
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
@@ -95,10 +106,14 @@ were deliberately left out of the safe batch above.
   would capture the power saving too. (Shares the reconfigure-safety concern
   above.)
 
-- **QSPI flash deep power-down during IDLE.** `qspiConfig()` leaves DPM disabled,
-  so the P25Q16H sits in standby current continuously — but IDLE never writes
-  flash. Issue the chip's deep-power-down on IDLE entry and wake it on ACTIVE
-  entry to remove flash standby draw across the whole idle period.
+- **Deactivate the nRF QSPI *peripheral* during IDLE.** The external-chip deep
+  power-down landed (item 5) but its saving is tiny; on the nRF52840 the QSPI
+  *peripheral* itself is the larger idle cost — once used it can keep drawing
+  until it is deactivated (`nrf_qspi_disable()` / the DEACTIVATE task, or
+  `nrfx_qspi_uninit()`), which must be undone (re-init/activate) before the next
+  flash access. Wiring that to the same IDLE park/wake points as item 5 is the
+  potentially measurable version of this idea, but it needs bench confirmation of
+  the delta and careful re-init sequencing (and interaction with the chip's DP).
 
 - **Sleep instead of spin while connected-idle.** In `waitForIMUData()`, the
   BLE-connected branch busy-loops on `BLE.poll()` for up to 100 ms with no sleep,
