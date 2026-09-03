@@ -70,31 +70,28 @@ machine's logic; each is commented at its site.
    SparkFun library version (the `getGameQuat*` getter names follow the current
    API but were not compiled here).
 
-5. **Flash powered down during IDLE — two layers.** `qspiSleep()` runs whenever
-   the node sits in unconnected IDLE (which never touches flash); `qspiWake()`
-   runs before any access — on BLE connect (offload/erase arrive as control
-   commands), at the top of `applyPendingTransition()` for the header write, and
-   at end of `setup()`; re-park on IDLE entry and on disconnect back into IDLE.
-   - **Layer 1 — external chip deep power-down** (`0xB9` / `0xAB`). Correct but
-     tiny: serial-NOR standby is ~tens of µA against the ~9 mA idle, below meter
-     resolution. Don't expect the idle figure to move for this alone.
-   - **Layer 2 — nRF QSPI *peripheral* deactivation** (`nrfx_qspi_uninit()` on
-     sleep, `nrfx_qspi_init()` + WREN on wake), gated by
-     `QSPI_DEACTIVATE_PERIPHERAL`. Wake ordering is deliberate: **re-init the
-     peripheral first, then release the chip, then re-assert WREN.**
-     **❌ Measured WORSE and disabled by default (flag = 0)** — see below.
+5. **External flash deep power-down during IDLE.** `qspiSleep()` puts the P25Q16H
+   into deep power-down (`0xB9`) whenever the node sits in unconnected IDLE (which
+   never touches flash); `qspiWake()` releases it (`0xAB`) before any access — on
+   BLE connect (offload/erase arrive as control commands), at the top of
+   `applyPendingTransition()` for the header write, and at end of `setup()`;
+   re-park on IDLE entry and on disconnect back into IDLE. **Saving is small** —
+   serial-NOR standby is ~tens of µA against the ~9 mA idle, below meter
+   resolution — so don't expect the idle figure to move; this is completeness,
+   not a lever.
 
-   **Bench result — layer 2 backfires on this core.** Enabling
-   `QSPI_DEACTIVATE_PERIPHERAL` raised idle **~9 mA → ~11 mA** (active unchanged
-   within noise, since the peripheral is never disabled while logging). Cause:
-   **nRF52840 Errata 122, "QSPI uses current after being disabled"** — a *disabled*
-   QSPI peripheral leaks ~1–2 mA unless Nordic's errata workaround (an extra write
-   to an undocumented power register) is applied, and the Seeed mbed core's nrfx
-   does not apply it. So `nrfx_qspi_uninit()` handed us the leak, not a saving.
-   Layer 2 is left in the code (correct logic, gated off) but **off by default**;
-   layer 1 stays on (harmless). To ever revisit, add the Errata 122 register
-   workaround after the disable and re-measure — but note idle here is dominated
-   by the BNO hub (~8 mA), so the ceiling on any QSPI-side win is small.
+   **Tried and reverted: nRF QSPI *peripheral* deactivation.** Also deactivating
+   the nRF's QSPI peripheral (`nrfx_qspi_uninit()` on sleep, re-init on wake) was
+   implemented and bench-tested, and it made idle **WORSE — ~9 mA → ~11 mA**.
+   Cause: **nRF52840 Errata 122, "QSPI uses current after being disabled"** — a
+   *disabled* QSPI peripheral leaks ~1–2 mA unless Nordic's errata workaround (an
+   extra write to an undocumented power register) is applied, and the Seeed mbed
+   core's nrfx does not apply it. So `nrfx_qspi_uninit()` handed us the leak, not
+   a saving. **That code was removed** for readability; only the harmless chip
+   deep-power-down above remains. If ever revisited, the peripheral disable must
+   be paired with the Errata 122 register workaround and re-measured — but idle
+   here is dominated by the BNO hub (~8 mA), so the ceiling on any QSPI-side win
+   is small regardless.
 
 ## Backlog — worth exploring
 
@@ -121,10 +118,10 @@ were deliberately left out of the safe batch above.
   would capture the power saving too. (Shares the reconfigure-safety concern
   above.)
 
-- **QSPI peripheral deactivation — tried, backfired (item 5 layer 2).** Measured
-  ~9 → ~11 mA idle from nRF52840 Errata 122; disabled by default. Only worth
-  revisiting with the Errata 122 register workaround applied after the disable,
-  and even then the BNO-dominated idle caps the win — low priority.
+- **QSPI peripheral deactivation — tried, backfired, removed (see item 5).**
+  Measured ~9 → ~11 mA idle from nRF52840 Errata 122; the code was removed. Only
+  worth revisiting with the Errata 122 register workaround applied after the
+  disable, and even then the BNO-dominated idle caps the win — low priority.
 
 - **Sleep instead of spin while connected-idle.** In `waitForIMUData()`, the
   BLE-connected branch busy-loops on `BLE.poll()` for up to 100 ms with no sleep,
