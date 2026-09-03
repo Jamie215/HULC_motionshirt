@@ -130,9 +130,13 @@ machine's logic; each is commented at its site.
 
 7. **Significant Motion (0x12) wake source — evaluated and dropped.** SIGMOTION
    was carried for a while as a third `IDLE_WAKE_SOURCE` option, on the belief
-   (from a single node-level bench read: ~8 mA SIGMOTION vs ~12 mA DETECTOR) that
-   it was the lowest-power idle. The BNO086 datasheet (Figure 6-18, per-sensor
-   chip current) says the opposite at the sensor level:
+   that it was the lowest-power idle. That rested on a ~8 mA figure recorded in an
+   earlier (AI-authored) docs commit that was **never reproduced on the bench**:
+   the best SIGMOTION reading actually taken was **~11 mA on the unoptimized
+   code** — only ~1 mA under the unoptimized detector's ~12 mA — and it was never
+   re-measured after the DC/DC optimization. The BNO086 datasheet (Figure 6-18,
+   per-sensor chip current) shows why there was so little to gain, and points the
+   other way at the sensor level:
 
    | Sensor | VDDIO | VDD | Total | Power |
    |---|---|---|---|---|
@@ -142,11 +146,11 @@ machine's logic; each is commented at its site.
 
    The detector draws **~8× less** than significant motion on the BNO and sits
    essentially at the idle floor. So SIGMOTION has **no chip-level power
-   advantage** — the ~8-vs-12 mA bench gap was a *system* effect (the detector's
-   ~1 Hz heartbeat + the ~6.6 s reboot churn waking the nRF; SIGMOTION being
-   one-shot avoids the heartbeat), not the sensor being cheaper. That gap is
-   sensor-independent hub-awake / nRF cost, and it was never re-measured against
-   this table.
+   advantage**; the small ~1 mA it showed unoptimized is a *system* effect (the
+   one-shot event avoids the detector's ~1 Hz heartbeat waking the nRF), not the
+   sensor being cheaper — and the datasheet says the sensor is actually costlier.
+   The larger ~8 mA once recorded here was never reproducible, and a ~1 mA gap is
+   what removing a 1 Hz heartbeat should look like anyway.
 
    Against that non-existent power win, SIGMOTION's real cost is that it is
    **less sensitive to slow, gradual movement** — it can miss exactly the slow

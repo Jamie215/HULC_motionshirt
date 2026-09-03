@@ -21,12 +21,14 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 ## Dropped: Significant Motion (0x12)
 
 A third option, `IDLE_WAKE_SIGMOTION` (the BNO08x's one-shot Significant Motion
-sensor, `0x12`), was carried here for a while as the "lowest-power idle" choice,
-based on a single node-level bench read (~8 mA vs the Detector's ~12 mA). The
-BNO086 datasheet later contradicted that at the sensor level — Significant Motion
-draws **~8× more chip current than the Stability Detector** (~0.48 mA vs
-~0.06 mA), so it has no power advantage; the bench gap was a system effect (no
-~1 Hz heartbeat waking the nRF), not a cheaper sensor. Combined with SigMotion
+sensor, `0x12`), was carried here for a while as the "lowest-power idle" choice.
+That was based on a ~8 mA figure recorded in an earlier docs commit that was
+**never reproduced** — the best SIGMOTION reading actually taken was ~11 mA on the
+unoptimized code, only ~1 mA under the unoptimized Detector's ~12 mA. The BNO086
+datasheet also contradicts it at the sensor level — Significant Motion draws
+**~8× more chip current than the Stability Detector** (~0.48 mA vs ~0.06 mA), so
+it has no power advantage; the small ~1 mA gap was a system effect (no ~1 Hz
+heartbeat waking the nRF), not a cheaper sensor. Combined with SigMotion
 being **less sensitive to slow, gradual movement** (it can miss stretches — the
 motions this device exists to log), it lost on both axes and was **removed from
 the firmware**. Full rationale and the datasheet table are in
