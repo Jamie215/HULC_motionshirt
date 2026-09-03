@@ -80,24 +80,21 @@ machine's logic; each is commented at its site.
      resolution. Don't expect the idle figure to move for this alone.
    - **Layer 2 — nRF QSPI *peripheral* deactivation** (`nrfx_qspi_uninit()` on
      sleep, `nrfx_qspi_init()` + WREN on wake), gated by
-     `QSPI_DEACTIVATE_PERIPHERAL` (default on). This is the potentially
-     measurable one — a used-but-enabled QSPI block can keep the MCU drawing
-     ~hundreds of µA. Wake ordering is deliberate: **re-init the peripheral
-     first, then release the chip, then re-assert WREN.**
+     `QSPI_DEACTIVATE_PERIPHERAL`. Wake ordering is deliberate: **re-init the
+     peripheral first, then release the chip, then re-assert WREN.**
+     **❌ Measured WORSE and disabled by default (flag = 0)** — see below.
 
-   **⚠ Layer 2 is unvalidated on hardware.** Before trusting it, bench-check that
-   flash still works across sleep/wake cycles — set `QSPI_DEACTIVATE_PERIPHERAL 0`
-   to fall back to chip-only if anything breaks:
-   1. **Logging** — move to wake ACTIVE, let it record, confirm records land
-      (serial `FLASH: checkpoint` lines advance; write pointer grows).
-   2. **Offload** — after an idle→record→idle cycle, connect and offload; verify
-      the byte count matches and data decodes.
-   3. **Erase** — send `0x03`; verify the log clears and re-initialises.
-   4. **Idle current** — measure IDLE with the flag on vs off; that delta is the
-      whole point of layer 2. If it's ~0, the peripheral wasn't the cost here and
-      the flag can go back off.
-   5. **Soak** — leave it cycling idle↔active for a while; confirm no QSPI errors
-      or lockups on serial (a bad re-init would surface as read/write failures).
+   **Bench result — layer 2 backfires on this core.** Enabling
+   `QSPI_DEACTIVATE_PERIPHERAL` raised idle **~9 mA → ~11 mA** (active unchanged
+   within noise, since the peripheral is never disabled while logging). Cause:
+   **nRF52840 Errata 122, "QSPI uses current after being disabled"** — a *disabled*
+   QSPI peripheral leaks ~1–2 mA unless Nordic's errata workaround (an extra write
+   to an undocumented power register) is applied, and the Seeed mbed core's nrfx
+   does not apply it. So `nrfx_qspi_uninit()` handed us the leak, not a saving.
+   Layer 2 is left in the code (correct logic, gated off) but **off by default**;
+   layer 1 stays on (harmless). To ever revisit, add the Errata 122 register
+   workaround after the disable and re-measure — but note idle here is dominated
+   by the BNO hub (~8 mA), so the ceiling on any QSPI-side win is small.
 
 ## Backlog — worth exploring
 
@@ -124,12 +121,10 @@ were deliberately left out of the safe batch above.
   would capture the power saving too. (Shares the reconfigure-safety concern
   above.)
 
-- **Validate / measure the QSPI peripheral deactivation (landed, item 5 layer 2).**
-  Now implemented behind `QSPI_DEACTIVATE_PERIPHERAL` but unvalidated on hardware
-  — run the item-5 checklist and record the measured idle delta here. If the
-  delta is ~0 (or flash gets flaky), turn the flag off and move it back to a pure
-  idea. If `nrfx_qspi_uninit()`/`init()` proves too heavy per transition, the
-  lower-level `nrf_qspi_disable()` + DEACTIVATE task is an alternative to try.
+- **QSPI peripheral deactivation — tried, backfired (item 5 layer 2).** Measured
+  ~9 → ~11 mA idle from nRF52840 Errata 122; disabled by default. Only worth
+  revisiting with the Errata 122 register workaround applied after the disable,
+  and even then the BNO-dominated idle caps the win — low priority.
 
 - **Sleep instead of spin while connected-idle.** In `waitForIMUData()`, the
   BLE-connected branch busy-loops on `BLE.poll()` for up to 100 ms with no sleep,

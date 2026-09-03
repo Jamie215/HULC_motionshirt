@@ -561,11 +561,11 @@ bool initQSPI() {
 //
 //   (1) External chip deep power-down (P25Q16H: 0xB9 enters, 0xAB releases).
 //       Tiny saving (~tens of uA) but harmless.
-//   (2) nRF52840 QSPI PERIPHERAL deactivation via nrfx_qspi_uninit(). This is
-//       the larger idle cost — a used-but-enabled QSPI block can keep the MCU
-//       drawing ~hundreds of uA. Gated by QSPI_DEACTIVATE_PERIPHERAL so it can
-//       be turned off instantly if it misbehaves (it needs the peripheral fully
-//       re-init'd before the next access, so airtight wake ordering matters).
+//   (2) nRF52840 QSPI PERIPHERAL deactivation via nrfx_qspi_uninit(). Intended
+//       to reclaim the peripheral's idle draw, but MEASURED WORSE on this core
+//       (Errata 122 — see below), so gated OFF by QSPI_DEACTIVATE_PERIPHERAL.
+//       When on, it needs the peripheral fully re-init'd before the next access,
+//       so wake ordering matters.
 //
 // Wake ordering is the whole game: bring the PERIPHERAL back FIRST (nothing can
 // talk to the chip without it), THEN release the CHIP (0xAB), then re-assert the
@@ -573,12 +573,14 @@ bool initQSPI() {
 // BLE control commands (connect handler wakes), and applyPendingTransition()
 // wakes for the header write on every transition.
 //
-// UNVALIDATED ON HARDWARE — layer (2) especially. Bench-check the checklist in
-// POWER_OPTIMIZATION.md (logging, offload, erase all still work across a
-// sleep/wake cycle) before trusting it; flip QSPI_DEACTIVATE_PERIPHERAL to 0 to
-// fall back to chip-only power-down.
+// BENCH RESULT: layer (2) made idle WORSE on this core — ~9mA → ~11mA. That is
+// nRF52840 Errata 122 ("QSPI uses current after being disabled"): the mbed core's
+// nrfx doesn't apply the errata workaround, so nrfx_qspi_uninit() leaks ~2mA
+// instead of saving. Layer (2) is therefore DISABLED by default; layer (1) (chip
+// deep power-down) stays — it's harmless. Only re-enable with the Errata 122
+// register workaround in place and re-measured. See POWER_OPTIMIZATION.md.
 // ---------------------------------------------------------------------------
-#define QSPI_DEACTIVATE_PERIPHERAL  1
+#define QSPI_DEACTIVATE_PERIPHERAL  0
 
 static bool qspiSimpleCmd(uint8_t opcode) {
   nrf_qspi_cinstr_conf_t cinstr = {
