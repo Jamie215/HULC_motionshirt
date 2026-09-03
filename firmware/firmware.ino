@@ -105,10 +105,6 @@
 //                        MotionEngine. Reset-FREE idle (fusion keeps the hub
 //                        active) at higher idle current. Motion = classifier ==
 //                        MOTION.
-//                      • SIGMOTION — Significant Motion (0x12), accel-only
-//                        one-shot. Lowest idle current (~8mA, bench-measured) but
-//                        LESS sensitive to slow, gradual movement. Motion = event
-//                        fires. See IDLE_WAKE_SOURCE.md.
 //   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
 //
@@ -198,9 +194,6 @@
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
 #endif
-#ifndef SH2_SIG_MOTION
-#define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
-#endif
 #define DETECTOR_EXITED   2
 
 // ── BNO hub power note ─────────────────────────────────────────────────────
@@ -224,7 +217,6 @@
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
-#define IDLE_WAKE_SIGMOTION   2
 // Active choice below: DETECTOR — the lowest-power working path (accel-only,
 // hub awake). Its known limitation: being accelerometer-only it can miss pure
 // rotation of a rigid body (little linear accel), which can leave the node
@@ -232,13 +224,10 @@
 // too and is reset-free, at the cost of higher idle current — flip to
 // IDLE_WAKE_CLASSIFIER if missed-rotation wakeups become a problem.
 //
-// SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
-// low-power, one-shot wake-on-motion event. It is accel-based (so, per
-// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms).
-// Bench-measured tradeoff vs the detector: LOWER idle current (~8mA vs ~12mA —
-// the one-shot event means no ~1Hz detector heartbeat waking the nRF), but LESS
-// sensitive to slow, gradual movement (gentle motion can wake IDLE→ACTIVE late).
-// Pick it for the lowest-power idle when slow-motion wake latency is acceptable.
+// Significant Motion (0x12) was evaluated as a third option and removed; see
+// firmware/POWER_OPTIMIZATION.md ("Significant Motion — evaluated and dropped")
+// for why (the datasheet puts it well above the detector on the BNO, and it
+// misses slow movements like stretches).
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
@@ -246,11 +235,8 @@
   #define IDLE_WAKE_SENSOR_ID SH2_STABILITY_DETECTOR
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER
   #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
-#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
-  #define IDLE_WAKE_NAME "Significant Motion (0x12)"
-  #define IDLE_WAKE_SENSOR_ID SH2_SIG_MOTION
 #else
-  #error "IDLE_WAKE_SOURCE must be DETECTOR, CLASSIFIER, or SIGMOTION"
+  #error "IDLE_WAKE_SOURCE must be DETECTOR or CLASSIFIER"
 #endif
 
 
@@ -1231,8 +1217,8 @@ void enableIdleReports() {
   // ACTIVE on MOTION.
   imu.enableStabilityClassifier(IDLE_STABILITY_MS);
 #else
-  // Accel-only wake (DETECTOR / SIGMOTION), hub awake: host stays in System-ON
-  // (__WFE) sleep and wakes on the sensor's INT pulse.
+  // Accel-only wake (DETECTOR), hub awake: host stays in System-ON (__WFE)
+  // sleep and wakes on the sensor's INT pulse.
   imu.enableReport(IDLE_WAKE_SENSOR_ID, IDLE_DETECTOR_INTERVAL_MS);    // ms!
 #endif
 }
@@ -1484,21 +1470,6 @@ void handleIdle() {
         requestTransition(STATE_ACTIVE_RECORDING);
         return;
       }
-    }
-#elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
-    // Significant Motion (0x12) is a ONE-SHOT wake event: its mere arrival means
-    // motion started, so there's no value to decode. The sensor auto-disables
-    // after firing; enableIdleReports() re-arms it on the next IDLE entry/reset.
-    if (id == SH2_SIG_MOTION) {
-      lastStabilityEvent = millis();
-      consecutiveResets  = 0;
-      LOGF("SIGMOTION: significant motion → ACTIVE_RECORDING");
-      activeHz         = DEFAULT_ACTIVE_HZ;
-      lastMotionTime   = millis();
-      onTableStartTime = 0;
-      lastActiveSample = 0;
-      requestTransition(STATE_ACTIVE_RECORDING);
-      return;
     }
 #else
     if (id == SH2_STABILITY_DETECTOR) {

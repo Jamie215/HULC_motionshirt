@@ -3,8 +3,8 @@
 Power work on `firmware.ino` after the decision **not** to use a coordinated
 collection trigger. This tracks what has landed and the backlog of ideas still
 worth exploring, so nothing gets lost. Pre-optimization baseline (from
-`IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~8 mA IDLE (SIGMOTION), ~22 mA
-ACTIVE recording (full fusion).
+`IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~22 mA ACTIVE recording (full
+fusion).
 
 ## Measured results (bench, DETECTOR idle wake source)
 
@@ -127,6 +127,37 @@ machine's logic; each is commented at its site.
    premature BNO reset across repeated ACTIVE↔STATIC transitions now that the
    fusion vector is re-issued on each. Update the Measured results table with the
    STATIC figure once taken.
+
+7. **Significant Motion (0x12) wake source — evaluated and dropped.** SIGMOTION
+   was carried for a while as a third `IDLE_WAKE_SOURCE` option, on the belief
+   (from a single node-level bench read: ~8 mA SIGMOTION vs ~12 mA DETECTOR) that
+   it was the lowest-power idle. The BNO086 datasheet (Figure 6-18, per-sensor
+   chip current) says the opposite at the sensor level:
+
+   | Sensor | VDDIO | VDD | Total | Power |
+   |---|---|---|---|---|
+   | Idle floor | 0.047 mA | 0.01 mA | ~0.06 mA | 0.17 mW |
+   | **Stability Detector** | 0.05 mA | 0.01 mA | **~0.06 mA** | 0.18 mW |
+   | **Significant Motion** | 0.34 mA | 0.14 mA | **~0.48 mA** | 1.66 mW |
+
+   The detector draws **~8× less** than significant motion on the BNO and sits
+   essentially at the idle floor. So SIGMOTION has **no chip-level power
+   advantage** — the ~8-vs-12 mA bench gap was a *system* effect (the detector's
+   ~1 Hz heartbeat + the ~6.6 s reboot churn waking the nRF; SIGMOTION being
+   one-shot avoids the heartbeat), not the sensor being cheaper. That gap is
+   sensor-independent hub-awake / nRF cost, and it was never re-measured against
+   this table.
+
+   Against that non-existent power win, SIGMOTION's real cost is that it is
+   **less sensitive to slow, gradual movement** — it can miss exactly the slow
+   deliberate motions (e.g. stretches) this device exists to capture, which for a
+   motion logger is a data-loss failure, not a minor degradation. Since the
+   detector is both lower chip-power **and** more sensitive, SIGMOTION lost on
+   every axis, so the option was removed from the firmware (the `IDLE_WAKE_SIGMOTION`
+   define, the `SH2_SIG_MOTION` id, and the `handleIdle()` one-shot branch).
+   `IDLE_WAKE_SOURCE` is now DETECTOR (default) or CLASSIFIER only. The real idle
+   floor is the hub-awake tax, which needs a hardware wake to beat (see the last
+   backlog item), not a wake-sensor swap.
 
 ## Backlog — worth exploring
 

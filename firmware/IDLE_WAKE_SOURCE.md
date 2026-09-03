@@ -15,41 +15,37 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 `firmware.ino`, Section 3:
 
 ```c
-#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER | SIGMOTION
+#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER
 ```
 
-## Third option: Significant Motion (0x12)
+## Dropped: Significant Motion (0x12)
 
-`IDLE_WAKE_SIGMOTION` arms the **Significant Motion** sensor (`0x12`), the
-BNO08x's purpose-built, low-power, **one-shot** wake-on-motion event: its mere
-arrival means motion started (no value to decode), and it auto-disables after
-firing, so `enableIdleReports()` re-arms it on each IDLE entry / reset.
+A third option, `IDLE_WAKE_SIGMOTION` (the BNO08x's one-shot Significant Motion
+sensor, `0x12`), was carried here for a while as the "lowest-power idle" choice,
+based on a single node-level bench read (~8 mA vs the Detector's ~12 mA). The
+BNO086 datasheet later contradicted that at the sensor level — Significant Motion
+draws **~8× more chip current than the Stability Detector** (~0.48 mA vs
+~0.06 mA), so it has no power advantage; the bench gap was a system effect (no
+~1 Hz heartbeat waking the nRF), not a cheaper sensor. Combined with SigMotion
+being **less sensitive to slow, gradual movement** (it can miss stretches — the
+motions this device exists to log), it lost on both axes and was **removed from
+the firmware**. Full rationale and the datasheet table are in
+`POWER_OPTIMIZATION.md` ("Significant Motion (0x12) wake source — evaluated and
+dropped"). `IDLE_WAKE_SOURCE` is now DETECTOR (default) or CLASSIFIER.
 
-Like the Detector it is **accel-based** and runs hub-awake, so the hub still
-self-reboots ~6.6 s in idle and re-arms — it is not a fix for the reboot.
-
-**Bench result (measured).** SigMotion idles at **~8 mA — lower than the
-Stability Detector's ~12 mA**: the one-shot event means there's no ~1 Hz
-detector heartbeat waking the nRF between reboots. The tradeoff is sensitivity —
-SigMotion is **less responsive to slow, gradual movement** than the Detector, so
-gentle motion can wake IDLE→ACTIVE late (or not until the movement sharpens).
-**Verdict:** keep it as the option for the **lowest-power idle** when slow-motion
-wake latency is acceptable; use the **Detector** (default) when catching slow,
-gradual movement matters, or the **Classifier** when a reset-free idle matters.
-
-To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_SIGMOTION` /
+To A/B the two remaining sources: build each of `IDLE_WAKE_DETECTOR` /
 `IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
 reliably transitions IDLE → ACTIVE_RECORDING (watch for the
-`SIGMOTION:` / `DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
+`DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
 
-| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) | `IDLE_WAKE_SIGMOTION` (alt) |
-|---|---|---|---|
-| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` | Significant Motion `0x12` |
-| Sensing | accelerometer only | accel + gyro (MotionEngine) | accelerometer only (one-shot) |
-| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active | **Yes, ~6.6 s** (inherent) |
-| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) | **~8 mA** (lowest) |
-| Slow-motion sensitivity | Good | Good | **Weakest** (gentle motion wakes late) |
-| Motion trigger | detector `EXITED` report | classifier value `== MOTION` | event fires (one-shot) |
+| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) |
+|---|---|---|
+| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
+| Sensing | accelerometer only | accel + gyro (MotionEngine) |
+| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active |
+| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) |
+| Slow-motion sensitivity | Good | Good |
+| Motion trigger | detector `EXITED` report | classifier value `== MOTION` |
 
 Selecting the classifier also unifies the motion definition: IDLE now wakes on
 the **same** `MOTION` classification that `STATIC_POSTURE` and
