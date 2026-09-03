@@ -15,39 +15,49 @@ wake sources are a compile-time A/B switch with matching instrumentation.
 `firmware.ino`, Section 3:
 
 ```c
-#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER
+#define IDLE_WAKE_SOURCE   IDLE_WAKE_DETECTOR   // DETECTOR | CLASSIFIER | SIGMOTION
 ```
 
-## Dropped: Significant Motion (0x12)
+## Third option: Significant Motion (0x12) — lowest power, but misses slow motion
 
-A third option, `IDLE_WAKE_SIGMOTION` (the BNO08x's one-shot Significant Motion
-sensor, `0x12`), was carried here for a while as the "lowest-power idle" choice.
-That was based on a ~8 mA figure recorded in an earlier docs commit that was
-**never reproduced** — the best SIGMOTION reading actually taken was ~11 mA on the
-unoptimized code, only ~1 mA under the unoptimized Detector's ~12 mA. The BNO086
-datasheet also contradicts it at the sensor level — Significant Motion draws
-**~8× more chip current than the Stability Detector** (~0.48 mA vs ~0.06 mA), so
-it has no power advantage; the small ~1 mA gap was a system effect (no ~1 Hz
-heartbeat waking the nRF), not a cheaper sensor. Combined with SigMotion
-being **less sensitive to slow, gradual movement** (it can miss stretches — the
-motions this device exists to log), it lost on both axes and was **removed from
-the firmware**. Full rationale and the datasheet table are in
-`POWER_OPTIMIZATION.md` ("Significant Motion (0x12) wake source — evaluated and
-dropped"). `IDLE_WAKE_SOURCE` is now DETECTOR (default) or CLASSIFIER.
+`IDLE_WAKE_SIGMOTION` arms the BNO08x's one-shot Significant Motion sensor
+(`0x12`): its mere arrival means motion started (no value to decode), and it
+auto-disables after firing, so `enableIdleReports()` re-arms it on each IDLE
+entry / reset.
 
-To A/B the two remaining sources: build each of `IDLE_WAKE_DETECTOR` /
-`IDLE_WAKE_CLASSIFIER`, shake on the bench with Serial open, and see which
+**Power (measured, optimized build): ~7.4 mA idle vs the detector's ~9 mA — a
+real ~1.6 mA (~18%) saving.** (An earlier ~8 mA figure in the docs was never
+reproducible; these are the current measured numbers.) The saving is a *system*
+effect — the one-shot event avoids the detector's ~1 Hz heartbeat and ~6.6 s
+reboot churn waking the nRF — not a cheaper sensor: the datasheet actually puts
+the SIGMOTION sensor *above* the detector at the chip level (~0.48 mA vs
+~0.06 mA).
+
+**Sensitivity is the blocker.** Bench testing: SIGMOTION fires on shaking /
+dropping the node, but does **nothing** when a held arm is slowly stretched.
+Significant Motion thresholds motion *energy* (Android semantics, to reject
+gentle handling); a slow stretch is low-energy, so it is below threshold by
+design — and the threshold is not exposed for tuning. It is therefore only
+suitable where slow-motion wake latency is acceptable (e.g. off-body standby),
+**not** as the default for a device that must catch slow deliberate motion. See
+`POWER_OPTIMIZATION.md` (Landed item 7 and the backlog "tunable low-power wake
+for slow rotation") for the analysis and the on-change-accel / Tilt-Detector
+alternatives being considered to keep the ~1.6 mA without the sensitivity gap.
+
+To A/B: build each of `IDLE_WAKE_DETECTOR` / `IDLE_WAKE_CLASSIFIER` /
+`IDLE_WAKE_SIGMOTION`, exercise on the bench with Serial open, and see which
 reliably transitions IDLE → ACTIVE_RECORDING (watch for the
-`DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` lines).
+`DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` / `SIGMOTION:` lines) — test slow
+motions, not just shakes.
 
-| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) |
-|---|---|---|
-| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` |
-| Sensing | accelerometer only | accel + gyro (MotionEngine) |
-| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active |
-| Idle current | ~12 mA (hub awake, accel-only) | Higher (gyro running) |
-| Slow-motion sensitivity | Good | Good |
-| Motion trigger | detector `EXITED` report | classifier value `== MOTION` |
+| | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` (alt) | `IDLE_WAKE_SIGMOTION` (alt) |
+|---|---|---|---|
+| Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` | Significant Motion `0x12` |
+| Sensing | accelerometer only | accel + gyro (MotionEngine) | accelerometer only (one-shot) |
+| Idle reset | **Yes, ~6.6 s** (inherent) | **No** — fusion keeps the hub active | **Yes, ~6.6 s** (inherent) |
+| Idle current | ~9 mA (hub awake, accel-only) | Higher (gyro running) | **~7.4 mA** (lowest) |
+| Slow-motion sensitivity | Good | Good | **Poor** — misses slow held-limb motion |
+| Motion trigger | detector `EXITED` report | classifier value `== MOTION` | event fires (one-shot) |
 
 Selecting the classifier also unifies the motion definition: IDLE now wakes on
 the **same** `MOTION` classification that `STATIC_POSTURE` and

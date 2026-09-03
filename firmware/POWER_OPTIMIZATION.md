@@ -128,45 +128,67 @@ machine's logic; each is commented at its site.
    fusion vector is re-issued on each. Update the Measured results table with the
    STATIC figure once taken.
 
-7. **Significant Motion (0x12) wake source — evaluated and dropped.** SIGMOTION
-   was carried for a while as a third `IDLE_WAKE_SOURCE` option, on the belief
-   that it was the lowest-power idle. That rested on a ~8 mA figure recorded in an
-   earlier (AI-authored) docs commit that was **never reproduced on the bench**:
-   the best SIGMOTION reading actually taken was **~11 mA on the unoptimized
-   code** — only ~1 mA under the unoptimized detector's ~12 mA — and it was never
-   re-measured after the DC/DC optimization. The BNO086 datasheet (Figure 6-18,
-   per-sensor chip current) shows why there was so little to gain, and points the
-   other way at the sensor level:
+7. **Significant Motion (0x12) wake source — retained as A/B option; blocked on
+   sensitivity, not power.** SIGMOTION is kept as a third `IDLE_WAKE_SOURCE`.
+   **Measured idle ~7.4 mA vs the detector's ~9 mA on the optimized build — a
+   real ~1.6 mA (~18%) saving.** (Ignore the ~8 mA figure once recorded in an
+   earlier AI-authored docs commit; it was never reproduced. The current numbers
+   are the measured ones.)
 
-   | Sensor | VDDIO | VDD | Total | Power |
-   |---|---|---|---|---|
-   | Idle floor | 0.047 mA | 0.01 mA | ~0.06 mA | 0.17 mW |
-   | **Stability Detector** | 0.05 mA | 0.01 mA | **~0.06 mA** | 0.18 mW |
-   | **Significant Motion** | 0.34 mA | 0.14 mA | **~0.48 mA** | 1.66 mW |
+   Note this *system* win coexists with the datasheet putting the SIGMOTION
+   sensor **above** the detector at the chip level (Figure 6-18): Significant
+   Motion ~0.48 mA vs Stability Detector ~0.06 mA. Both are true — the node saves
+   ~1.6 mA not because the sensor is cheaper (it isn't) but because the one-shot
+   event avoids the detector's ~1 Hz heartbeat and ~6.6 s reboot churn waking the
+   nRF. The system behavior dominates the tiny sensor delta.
 
-   The detector draws **~8× less** than significant motion on the BNO and sits
-   essentially at the idle floor. So SIGMOTION has **no chip-level power
-   advantage**; the small ~1 mA it showed unoptimized is a *system* effect (the
-   one-shot event avoids the detector's ~1 Hz heartbeat waking the nRF), not the
-   sensor being cheaper — and the datasheet says the sensor is actually costlier.
-   The larger ~8 mA once recorded here was never reproducible, and a ~1 mA gap is
-   what removing a 1 Hz heartbeat should look like anyway.
+   **The blocker is sensitivity, and it is a signal mismatch, not a threshold.**
+   Bench testing: SIGMOTION fires on shaking / dropping the node, but does
+   **nothing** when a held arm is slowly stretched — the exact slow, deliberate
+   motions this device exists to capture. Significant Motion is a high-pass
+   motion-*energy* detector (Android semantics) built to reject gentle handling;
+   a slow stretch is low-energy, so it is below threshold by design. Its
+   threshold is not exposed, and lowering motion-energy sensitivity would invite
+   false wakes (each false IDLE→ACTIVE runs full fusion ~20 mA for ~70 s before
+   timing back to IDLE, which erases the 1.6 mA saving and logs junk) without
+   reliably catching slow *rotation* — accel energy is simply the wrong axis for
+   slow limb movement. The detector (default) catches these because its
+   stability/tilt behavior responds to the slow gravity-vector reorientation a
+   stretch produces.
 
-   Against that non-existent power win, SIGMOTION's real cost is that it is
-   **less sensitive to slow, gradual movement** — it can miss exactly the slow
-   deliberate motions (e.g. stretches) this device exists to capture, which for a
-   motion logger is a data-loss failure, not a minor degradation. Since the
-   detector is both lower chip-power **and** more sensitive, SIGMOTION lost on
-   every axis, so the option was removed from the firmware (the `IDLE_WAKE_SIGMOTION`
-   define, the `SH2_SIG_MOTION` id, and the `handleIdle()` one-shot branch).
-   `IDLE_WAKE_SOURCE` is now DETECTOR (default) or CLASSIFIER only. The real idle
-   floor is the hub-awake tax, which needs a hardware wake to beat (see the last
-   backlog item), not a wake-sensor swap.
+   **Path forward (see backlog "tunable low-power wake for slow rotation").**
+   The signal a slow stretch *does* contain is the DC gravity vector rotating as
+   the limb tilts. Candidates that could keep near-SIGMOTION power while catching
+   that: an **on-change Accelerometer** report with a tuned `changeSensitivity`
+   (wake on gravity-direction change), or the SH-2 **Tilt Detector** if the BNO
+   exposes it. Both need a bench A/B (power + does-it-catch-a-stretch) before
+   replacing the detector default. Until one is proven, DETECTOR stays default and
+   SIGMOTION is the lowest-power option only where slow-motion wake latency is
+   acceptable (e.g. off-body standby).
 
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
 were deliberately left out of the safe batch above.
+
+- **Tunable low-power wake for slow rotation (chase the SIGMOTION ~1.6 mA
+  without losing slow-stretch capture).** SIGMOTION idles ~1.6 mA under the
+  detector but misses slow held-limb stretches because it thresholds motion
+  *energy*; a slow stretch is low-energy (see Landed item 7). The signal it
+  *does* carry is the DC gravity vector reorienting as the limb tilts. Two
+  accel-only candidates that should stay near SIGMOTION power while catching
+  that:
+  - **On-change Accelerometer** (`sh2_setSensorConfig` `changeSensitivity`):
+    wake when the gravity-direction reading changes by a tuned delta. Gives a
+    real power/sensitivity dial the fixed SIGMOTION threshold does not. Needs
+    custom wake logic (baseline compare) and re-measurement. Not exposed by the
+    SparkFun helper — likely a drop to the underlying `sh2` driver.
+  - **Tilt Detector** (SH-2) if the BNO exposes it — purpose-built to fire on
+    tilt past a threshold from a reference, i.e. exactly gravity reorientation.
+  Blind spot for both: motion purely about the vertical (yaw) doesn't move the
+  gravity projection and would still need gyro (classifier). Gate either on a
+  bench A/B: measure idle current AND confirm it catches representative slow
+  stretches on-body before it could replace the detector default.
 
 - **Reconfigure BNO rate on watermark throttle.** When flash fills,
   `writeQuaternionSample()` halves `activeHz` (10→5→2), but that only changes the
