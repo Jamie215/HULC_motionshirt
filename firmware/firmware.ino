@@ -556,13 +556,30 @@ bool initQSPI() {
 }
 
 // ---------------------------------------------------------------------------
-// External flash deep power-down (P25Q16H: 0xB9 enters, 0xAB releases). IDLE
-// never touches flash, so park the chip there and wake it before any access.
-// All IDLE-time flash access arrives via BLE control commands, so the connect
-// handler wakes the chip; applyPendingTransition() wakes it for the header
-// write on every transition. Saving is small (flash standby is ~tens of uA next
-// to the ~9mA idle) — see firmware/POWER_OPTIMIZATION.md.
+// Flash power-down while IDLE. IDLE never touches flash, so park it there and
+// wake it before any access. Two independent layers (see POWER_OPTIMIZATION.md):
+//
+//   (1) External chip deep power-down (P25Q16H: 0xB9 enters, 0xAB releases).
+//       Tiny saving (~tens of uA) but harmless.
+//   (2) nRF52840 QSPI PERIPHERAL deactivation via nrfx_qspi_uninit(). This is
+//       the larger idle cost — a used-but-enabled QSPI block can keep the MCU
+//       drawing ~hundreds of uA. Gated by QSPI_DEACTIVATE_PERIPHERAL so it can
+//       be turned off instantly if it misbehaves (it needs the peripheral fully
+//       re-init'd before the next access, so airtight wake ordering matters).
+//
+// Wake ordering is the whole game: bring the PERIPHERAL back FIRST (nothing can
+// talk to the chip without it), THEN release the CHIP (0xAB), then re-assert the
+// one-time WREN that initQSPI() set up. All IDLE-time flash access arrives via
+// BLE control commands (connect handler wakes), and applyPendingTransition()
+// wakes for the header write on every transition.
+//
+// UNVALIDATED ON HARDWARE — layer (2) especially. Bench-check the checklist in
+// POWER_OPTIMIZATION.md (logging, offload, erase all still work across a
+// sleep/wake cycle) before trusting it; flip QSPI_DEACTIVATE_PERIPHERAL to 0 to
+// fall back to chip-only power-down.
 // ---------------------------------------------------------------------------
+#define QSPI_DEACTIVATE_PERIPHERAL  1
+
 static bool qspiSimpleCmd(uint8_t opcode) {
   nrf_qspi_cinstr_conf_t cinstr = {
     .opcode    = opcode,
@@ -575,16 +592,49 @@ static bool qspiSimpleCmd(uint8_t opcode) {
   return nrfx_qspi_cinstr_xfer(&cinstr, NULL, NULL) == NRFX_SUCCESS;
 }
 
+#if QSPI_DEACTIVATE_PERIPHERAL
+// Re-init ONLY the nRF QSPI peripheral (pins + config) after an uninit — no
+// WREN here, because the chip may still be in deep power-down and would ignore
+// it. Mirrors initQSPI()'s nrfx_qspi_init() step without the serial print.
+static bool qspiPeripheralInit() {
+  nrfx_qspi_config_t cfg;
+  qspiConfig(&cfg);
+  return nrfx_qspi_init(&cfg, NULL, NULL) == NRFX_SUCCESS;
+}
+
+// Re-assert the one-time write-enable initQSPI() issues after nrfx_qspi_init().
+static void qspiSendWREN() {
+  nrf_qspi_cinstr_conf_t cinstr = {
+    .opcode    = 0x06,   // WREN
+    .length    = NRF_QSPI_CINSTR_LEN_1B,
+    .io2_level = true,
+    .io3_level = true,
+    .wipwait   = true,
+    .wren      = false
+  };
+  nrfx_qspi_cinstr_xfer(&cinstr, NULL, NULL);
+}
+#endif
+
 void qspiSleep() {
   if (!qspiReady || qspiAsleep) return;
-  qspiSimpleCmd(0xB9);            // Deep Power Down
+  qspiSimpleCmd(0xB9);             // (1) chip: enter deep power-down (peripheral still up)
+#if QSPI_DEACTIVATE_PERIPHERAL
+  nrfx_qspi_uninit();              // (2) nRF: power down the QSPI peripheral — the real saving
+#endif
   qspiAsleep = true;
 }
 
 void qspiWake() {
   if (!qspiReady || !qspiAsleep) return;
-  qspiSimpleCmd(0xAB);           // Release from Deep Power Down
-  delayMicroseconds(30);         // tRES: let the chip settle before any access
+#if QSPI_DEACTIVATE_PERIPHERAL
+  qspiPeripheralInit();            // (2) nRF: bring the peripheral back BEFORE touching the chip
+#endif
+  qspiSimpleCmd(0xAB);             // (1) chip: release deep power-down
+  delayMicroseconds(30);           // tRES: let the chip settle before any access
+#if QSPI_DEACTIVATE_PERIPHERAL
+  qspiSendWREN();                  // restore the write-enable a fresh peripheral init expects
+#endif
   qspiAsleep = false;
 }
 

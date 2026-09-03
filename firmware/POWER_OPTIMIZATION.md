@@ -70,16 +70,34 @@ machine's logic; each is commented at its site.
    SparkFun library version (the `getGameQuat*` getter names follow the current
    API but were not compiled here).
 
-5. **External flash parked in deep power-down during IDLE.** The P25Q16H is put
-   into deep power-down (`0xB9`) whenever the node sits in unconnected IDLE, which
-   never touches flash, and released (`0xAB`) before any access — `qspiWake()` on
-   BLE connect (offload/erase arrive as control commands) and at the top of
-   `applyPendingTransition()` for the header write; `qspiSleep()` on IDLE entry,
-   on disconnect back into IDLE, and at end of `setup()`. **Expected saving is
-   small** — serial-NOR standby is ~tens of µA against the ~9 mA idle, likely
-   below meter resolution — so don't expect the idle figure to move; this is
-   completeness, not a big lever. The bigger related saving is the nRF QSPI
-   *peripheral* (see backlog), not the chip.
+5. **Flash powered down during IDLE — two layers.** `qspiSleep()` runs whenever
+   the node sits in unconnected IDLE (which never touches flash); `qspiWake()`
+   runs before any access — on BLE connect (offload/erase arrive as control
+   commands), at the top of `applyPendingTransition()` for the header write, and
+   at end of `setup()`; re-park on IDLE entry and on disconnect back into IDLE.
+   - **Layer 1 — external chip deep power-down** (`0xB9` / `0xAB`). Correct but
+     tiny: serial-NOR standby is ~tens of µA against the ~9 mA idle, below meter
+     resolution. Don't expect the idle figure to move for this alone.
+   - **Layer 2 — nRF QSPI *peripheral* deactivation** (`nrfx_qspi_uninit()` on
+     sleep, `nrfx_qspi_init()` + WREN on wake), gated by
+     `QSPI_DEACTIVATE_PERIPHERAL` (default on). This is the potentially
+     measurable one — a used-but-enabled QSPI block can keep the MCU drawing
+     ~hundreds of µA. Wake ordering is deliberate: **re-init the peripheral
+     first, then release the chip, then re-assert WREN.**
+
+   **⚠ Layer 2 is unvalidated on hardware.** Before trusting it, bench-check that
+   flash still works across sleep/wake cycles — set `QSPI_DEACTIVATE_PERIPHERAL 0`
+   to fall back to chip-only if anything breaks:
+   1. **Logging** — move to wake ACTIVE, let it record, confirm records land
+      (serial `FLASH: checkpoint` lines advance; write pointer grows).
+   2. **Offload** — after an idle→record→idle cycle, connect and offload; verify
+      the byte count matches and data decodes.
+   3. **Erase** — send `0x03`; verify the log clears and re-initialises.
+   4. **Idle current** — measure IDLE with the flag on vs off; that delta is the
+      whole point of layer 2. If it's ~0, the peripheral wasn't the cost here and
+      the flag can go back off.
+   5. **Soak** — leave it cycling idle↔active for a while; confirm no QSPI errors
+      or lockups on serial (a bad re-init would surface as read/write failures).
 
 ## Backlog — worth exploring
 
@@ -106,14 +124,12 @@ were deliberately left out of the safe batch above.
   would capture the power saving too. (Shares the reconfigure-safety concern
   above.)
 
-- **Deactivate the nRF QSPI *peripheral* during IDLE.** The external-chip deep
-  power-down landed (item 5) but its saving is tiny; on the nRF52840 the QSPI
-  *peripheral* itself is the larger idle cost — once used it can keep drawing
-  until it is deactivated (`nrf_qspi_disable()` / the DEACTIVATE task, or
-  `nrfx_qspi_uninit()`), which must be undone (re-init/activate) before the next
-  flash access. Wiring that to the same IDLE park/wake points as item 5 is the
-  potentially measurable version of this idea, but it needs bench confirmation of
-  the delta and careful re-init sequencing (and interaction with the chip's DP).
+- **Validate / measure the QSPI peripheral deactivation (landed, item 5 layer 2).**
+  Now implemented behind `QSPI_DEACTIVATE_PERIPHERAL` but unvalidated on hardware
+  — run the item-5 checklist and record the measured idle delta here. If the
+  delta is ~0 (or flash gets flaky), turn the flag off and move it back to a pure
+  idea. If `nrfx_qspi_uninit()`/`init()` proves too heavy per transition, the
+  lower-level `nrf_qspi_disable()` + DEACTIVATE task is an alternative to try.
 
 - **Sleep instead of spin while connected-idle.** In `waitForIMUData()`, the
   BLE-connected branch busy-loops on `BLE.poll()` for up to 100 ms with no sleep,
