@@ -93,30 +93,55 @@ machine's logic; each is commented at its site.
    here is dominated by the BNO hub (~8 mA), so the ceiling on any QSPI-side win
    is small regardless.
 
+6. **Tier B: STATIC-specific slow RV.** The RUNNING config is no longer shared
+   at one rate — `configureBNO_Running()` now takes a `BnoRunningCfg`
+   (`BNO_CFG_ACTIVE` / `BNO_CFG_STATIC`) and STATIC arms the fusion vector at
+   `BNO_RV_STATIC_INTERVAL_MS` (1000 ms, ~1 Hz) instead of the ACTIVE 100 ms
+   (~10 Hz). STATIC logs only 0.2 Hz, so even the Tier A 10 Hz RV shipped ~50
+   reports per logged sample — each a wasted I²C read + nRF wake; ~1 Hz cuts
+   those RV wakeups ~10× while still giving 5 orientation samples per logged
+   snapshot (a logged posture is at most ~1 s stale, negligible for a static
+   hold). **The Classifier is untouched — it keeps running at
+   `ACTIVE_STABILITY_MS` (500 ms) in both RUNNING states, so it (not the RV)
+   still drives every transition and motion detection out of STATIC is
+   unchanged.** No change to the recorded data format or the 0.2 Hz log rate.
+
+   Structural notes (this was the "needs careful validation" backlog item):
+   - The old `bnoInRunningMode` bool couldn't tell an ACTIVE↔STATIC switch (rate
+     must change) from a same-state re-entry (skip). It's replaced by the
+     `BnoRunningCfg` enum (`NONE`/`ACTIVE`/`STATIC`), so same-state re-entry is
+     still skipped, a fresh entry from IDLE / post-reset (`NONE`) enables *both*
+     reports, and an ACTIVE↔STATIC switch re-issues *only* the fusion vector at
+     the new rate — the fewest `enableReport`s, to stay off the command-buffer /
+     premature-reset path (SparkFun issue #2). The `delay(50)` ack guard is kept.
+   - The enum type lives in Section 10 (with `SystemState`), ahead of the first
+     function, so the Arduino auto-generated prototype for the now-typed
+     `configureBNO_Running(BnoRunningCfg)` sees it defined.
+   - The classifier-floor point: because the Classifier still wakes the nRF at
+     ~2 Hz in STATIC, the STATIC wake rate drops from ~12 Hz (10 RV + 2 clf) to
+     ~3 Hz (1 RV + 2 clf) — a ~4× cut in nRF wakeups, not the full 10× the RV
+     alone changes by. Taking the RV below the classifier's 2 Hz would buy little.
+
+   **Bench measurement still pending** (developed without hardware in the loop):
+   verify the STATIC current drop, and — per the issue-#2 caution — watch for any
+   premature BNO reset across repeated ACTIVE↔STATIC transitions now that the
+   fusion vector is re-issued on each. Update the Measured results table with the
+   STATIC figure once taken.
+
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
 were deliberately left out of the safe batch above.
 
-- **Tier B: STATIC-specific slow RV.** STATIC logs only 0.2 Hz but (even after
-  Tier A) runs fusion at 10 Hz — still ~50 reports read and discarded per logged
-  sample. Dropping STATIC's RV to 1–2 Hz would cut its wakeups ~5–10× more. The
-  catch is structural: `configureBNO_Running()` is shared and guarded by
-  `bnoInRunningMode`, which skips reconfiguration on ACTIVE↔STATIC re-entry, so
-  this needs a STATIC-specific config path (extend the guard to distinguish
-  "running-active" vs "running-static", apply once per transition, reuse the
-  existing `delay(50)`-guarded enable sequence). Re-issuing `enableReport` on
-  every transition is exactly what risked the premature-reset behavior seen
-  before (SparkFun issue #2), so this one needs careful validation. Transitions
-  are driven by the classifier (500 ms), not the RV, so a slow STATIC RV only
-  affects posture-snapshot freshness, not motion detection.
-
 - **Reconfigure BNO rate on watermark throttle.** When flash fills,
   `writeQuaternionSample()` halves `activeHz` (10→5→2), but that only changes the
   software gate — the BNO keeps emitting 10 Hz, so the throttle saves flash but
   not IMU/nRF power. Reconfiguring the RV report rate when `activeHz` changes
-  would capture the power saving too. (Shares the reconfigure-safety concern
-  above.)
+  would capture the power saving too. Now cheaper to do safely: Landed item 6
+  (Tier B) added the per-transition fusion-only reconfigure path
+  (`configureBNO_Running(BnoRunningCfg)`), so this could re-issue just the fusion
+  vector at the throttled rate the same way (mind the same SparkFun issue #2
+  re-issue caution).
 
 - **QSPI peripheral deactivation — tried, backfired, removed (see item 5).**
   Measured ~9 → ~11 mA idle from nRF52840 Errata 122; the code was removed. Only
