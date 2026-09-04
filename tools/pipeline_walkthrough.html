@@ -1,0 +1,433 @@
+<title>Motion Shirt Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper:   #eef0f3;
+    --surface: #ffffff;
+    --surface2:#f6f8fa;
+    --ink:     #16202b;
+    --muted:   #5a6672;
+    --faint:   #8a95a1;
+    --line:    #d7dde4;
+    --line2:   #e6eaef;
+    --accent:  #0e83a0;
+    --accent-ink:#0a6076;
+    --accent-soft:#dcf0f5;
+    --built:   #1a7f54;
+    --built-soft:#dcefe4;
+    --planned: #a76500;
+    --planned-soft:#f6ead4;
+    --shadow:  0 1px 2px rgba(22,32,43,.06), 0 6px 20px rgba(22,32,43,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:   #0d131a;
+      --surface: #151d26;
+      --surface2:#111922;
+      --ink:     #e7edf3;
+      --muted:   #9aa7b4;
+      --faint:   #6c7885;
+      --line:    #26313b;
+      --line2:   #1e2831;
+      --accent:  #35c1de;
+      --accent-ink:#8fe0f0;
+      --accent-soft:#0e2c34;
+      --built:   #3ecf8e;
+      --built-soft:#12281f;
+      --planned: #e0a44a;
+      --planned-soft:#2c2114;
+      --shadow:  0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:   #0d131a;
+    --surface: #151d26;
+    --surface2:#111922;
+    --ink:     #e7edf3;
+    --muted:   #9aa7b4;
+    --faint:   #6c7885;
+    --line:    #26313b;
+    --line2:   #1e2831;
+    --accent:  #35c1de;
+    --accent-ink:#8fe0f0;
+    --accent-soft:#0e2c34;
+    --built:   #3ecf8e;
+    --built-soft:#12281f;
+    --planned: #e0a44a;
+    --planned-soft:#2c2114;
+    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  .mono { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace; }
+
+  /* ---- header ---- */
+  header { margin-bottom: 30px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent-ink); margin: 0 0 10px;
+  }
+  h1 {
+    font-size: 31px; font-weight: 700; letter-spacing: -.02em;
+    margin: 0 0 10px; text-wrap: balance;
+  }
+  .lede { font-size: 16.5px; color: var(--muted); margin: 0; max-width: 62ch; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.built { background: var(--built); }
+  .dot.planned { background: var(--planned); }
+  .dot.next { background: var(--accent); }
+
+  /* ---- glance rail ---- */
+  .glance {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
+    margin: 26px 0 8px; padding: 0; list-style: none;
+  }
+  .glance li {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+    padding: 9px 8px 10px; display: flex; flex-direction: column; gap: 5px;
+    position: relative; overflow: hidden;
+  }
+  .glance li::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  }
+  .glance li.b::before { background: var(--built); }
+  .glance li.n::before { background: var(--accent); }
+  .glance li.p::before { background: var(--planned); }
+  .glance .gi { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--faint); }
+  .glance .gn { font-size: 11.5px; font-weight: 600; line-height: 1.25; }
+  @media (max-width: 680px) {
+    .glance { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---- pipeline ---- */
+  .pipe { margin-top: 26px; }
+  .stage { display: grid; grid-template-columns: 44px 1fr; column-gap: 16px; }
+  .rail { display: flex; flex-direction: column; align-items: center; }
+  .idx {
+    width: 34px; height: 34px; border-radius: 9px; flex: none;
+    display: grid; place-items: center;
+    font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 14px;
+    background: var(--surface); border: 1px solid var(--line); color: var(--ink);
+  }
+  .stage.b .idx { border-color: var(--built); color: var(--built); }
+  .stage.n .idx { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+  .stage.p .idx { border-style: dashed; color: var(--faint); }
+  .stem { width: 2px; flex: 1 1 auto; background: var(--line); margin: 6px 0; min-height: 18px; }
+  .stage.p .stem { background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 10px); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 14px; box-shadow: var(--shadow);
+  }
+  .card h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; padding: 3px 8px; border-radius: 999px; font-weight: 600;
+  }
+  .badge.built { background: var(--built-soft); color: var(--built); }
+  .badge.next { background: var(--accent-soft); color: var(--accent-ink); }
+  .badge.planned { background: var(--planned-soft); color: var(--planned); }
+  .card p { margin: 10px 0 0; color: var(--muted); font-size: 14.5px; }
+  .card p b { color: var(--ink); font-weight: 600; }
+  .tool {
+    display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 12.5px;
+    color: var(--accent-ink); background: var(--surface2);
+    border: 1px solid var(--line2); border-radius: 6px; padding: 1px 7px;
+  }
+
+  /* data handoff chip between stages */
+  .flow {
+    grid-column: 2; display: flex; align-items: center; gap: 10px;
+    margin: -6px 0 8px; padding-left: 2px;
+  }
+  .flow svg { flex: none; color: var(--faint); }
+  .datachip {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted);
+    background: var(--surface2); border: 1px dashed var(--line); border-radius: 7px;
+    padding: 5px 10px; overflow-x: auto; white-space: nowrap; max-width: 100%;
+  }
+  .datachip b { color: var(--accent-ink); font-weight: 600; }
+
+  /* data-shape detail block inside a card */
+  .shape {
+    margin-top: 12px; border: 1px solid var(--line2); border-radius: 8px;
+    background: var(--surface2); padding: 10px 12px; overflow-x: auto;
+  }
+  .shape .lbl {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 6px;
+  }
+  .shape pre { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px;
+    line-height: 1.5; color: var(--ink); white-space: pre; }
+  .shape pre .k { color: var(--accent-ink); }
+  .shape pre .c { color: var(--faint); }
+
+  /* you-are-here divider */
+  .here {
+    grid-column: 2; display: flex; align-items: center; gap: 10px; margin: 4px 0 14px;
+    color: var(--accent-ink); font-size: 13px; font-weight: 600;
+  }
+  .here .rule { height: 1px; flex: 1; background: linear-gradient(90deg, var(--accent), transparent); }
+
+  /* worked example */
+  .example { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 30px; }
+  .example h2 { font-size: 20px; margin: 0 0 6px; letter-spacing: -.01em; }
+  .example > p { color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 680px) { .cols { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+  .panel .head {
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; letter-spacing: .06em;
+    padding: 9px 12px; border-bottom: 1px solid var(--line2);
+    background: var(--surface2); color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel .body { padding: 12px; }
+  .panel pre { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 12px;
+    line-height: 1.6; white-space: pre; overflow-x: auto; }
+  .row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px dotted var(--line2); }
+  .row:last-child { border-bottom: 0; }
+  .row .t { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); flex: 1; }
+  .yes { color: var(--built); font-weight: 600; }
+  .no  { color: var(--faint); }
+  .mark { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+
+  footer { margin-top: 40px; color: var(--faint); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; }
+  a { color: var(--accent-ink); }
+  @media (prefers-reduced-motion: no-preference) { .idx { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">HULC Motion Shirt · data pipeline</p>
+    <h1>From node quaternions to range of motion</h1>
+    <p class="lede">Seven stages turn raw orientation logs off each IMU node into
+      per-joint motion metrics. Four exist today; calibration is next; the metric
+      and interface layers are still on paper. Each handoff below names the tool
+      that runs it and the exact data it passes on.</p>
+    <div class="legend">
+      <span><i class="dot built"></i> Built &amp; working</span>
+      <span><i class="dot next"></i> Next up</span>
+      <span><i class="dot planned"></i> Planned</span>
+    </div>
+  </header>
+
+  <ol class="glance">
+    <li class="b"><span class="gi">01</span><span class="gn">Capture</span></li>
+    <li class="b"><span class="gi">02</span><span class="gn">Offload</span></li>
+    <li class="b"><span class="gi">03</span><span class="gn">Reconcile</span></li>
+    <li class="b"><span class="gi">04</span><span class="gn">Montage &amp; resolve</span></li>
+    <li class="n"><span class="gi">05</span><span class="gn">Calibrate</span></li>
+    <li class="p"><span class="gi">06</span><span class="gn">Metrics</span></li>
+    <li class="p"><span class="gi">07</span><span class="gn">Interface</span></li>
+  </ol>
+
+  <div class="pipe">
+
+    <!-- 1 -->
+    <div class="stage b">
+      <div class="rail"><div class="idx">01</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Capture <span class="badge built">Built</span></h3>
+        <p><b>Each IMU node logs its own segment's orientation.</b> A BNO086 on a
+          XIAO nRF52840, one per body segment, advertising as
+          <span class="tool">HULC-IMU-XXXX</span>. The onboard stability
+          classifier drives the state machine — IDLE → STATIC_POSTURE →
+          ACTIVE_RECORDING — and quaternions are written to flash at ~10&nbsp;Hz,
+          with a 0.2&nbsp;Hz heartbeat while still so stillness is recorded, not
+          left as a gap.</p>
+        <div class="shape">
+          <div class="lbl">On-flash record · 20 bytes, little-endian</div>
+          <pre><span class="k">uint32</span> timestamp_ms  <span class="k">float</span> qw  <span class="k">float</span> qx  <span class="k">float</span> qy  <span class="k">float</span> qz</pre>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">one <b>.bin</b> log per node, timestamped on each node's own <b>millis()</b> clock</div>
+    </div>
+
+    <!-- 2 -->
+    <div class="stage b">
+      <div class="rail"><div class="idx">02</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Offload <span class="badge built">Built</span></h3>
+        <p><b>Bulk-transfer each node's log to a central over BLE</b> after the
+          session — no live streaming. A well-behaved central (phone / BlueZ)
+          honors a fast connection interval and pulls ~20&nbsp;KB/s, so a full
+          flash comes off in minutes. Each node's log lands in its own file.</p>
+        <div class="shape">
+          <div class="lbl">Per-node files</div>
+          <pre>HULC-IMU-D067.bin   HULC-IMU-A1B2.bin   HULC-IMU-C3D4.bin  <span class="c">…</span></pre>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">N independent logs, <b>not</b> yet on a shared clock</div>
+    </div>
+
+    <!-- 3 -->
+    <div class="stage b">
+      <div class="rail"><div class="idx">03</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Reconcile &amp; time-align <span class="badge built">Built</span></h3>
+        <p><b>Put every node on one timeline.</b>
+          <span class="tool">reconcile_nodes.py</span> reduces each node to its
+          mounting-invariant <b>angular speed</b>, cross-correlates the streams to
+          recover the clock offset (and optional drift), and resamples all
+          quaternions onto a shared grid. A Pearson <b>r</b> confidence (≥&nbsp;0.40)
+          flags pairs that shared too little motion — the case a start-of-session
+          sync gesture exists to cover.</p>
+        <div class="shape">
+          <div class="lbl">aligned.csv · one shared clock, per-node columns</div>
+          <pre><span class="k">t_common_ms</span>, n0_qw,n0_qx,n0_qy,n0_qz, n1_qw,n1_qx,n1_qy,n1_qz, <span class="c">…</span></pre>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">aligned streams keyed by column <b>n0, n1, …</b> — but which body part is each?</div>
+    </div>
+
+    <!-- 4 -->
+    <div class="stage b">
+      <div class="rail"><div class="idx">04</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Montage &amp; capability resolve <span class="badge built">Built</span></h3>
+        <p><b>Bind each column to a body segment, then resolve what's computable.</b>
+          A <span class="tool">montage.json</span> maps each <span class="mono">n{i}</span>
+          column to a segment (with an optional landmark label and a calibrated
+          flag). <span class="tool">motion_capabilities.py</span> reads it and
+          reports which joints and metrics the placement supports — and blocks the
+          rest, naming the missing node. A joint needs <b>both</b> its adjacent
+          segments; bilateral activity asymmetry needs only a matching L/R pair.</p>
+        <div class="shape">
+          <div class="lbl">montage node entry</div>
+          <pre>{ <span class="k">"column"</span>:"n1", <span class="k">"segment"</span>:"upper_arm_r", <span class="k">"landmark"</span>:"right humerus", <span class="k">"calibrated"</span>:true }</pre>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">a capability report: computable joints &amp; metrics, each with its trust gates</div>
+    </div>
+
+    <div class="here"><span>You are here — calibration is the next build</span><span class="rule"></span></div>
+
+    <!-- 5 -->
+    <div class="stage n">
+      <div class="rail"><div class="idx">05</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Calibrate <span class="badge next">Next up</span></h3>
+        <p><b>Turn relative orientation into anatomical angles.</b> A node reports
+          orientation in its own mounting frame, offset from anatomy by however the
+          strap sat. A static <b>neutral / N-pose</b> (optionally plus a known
+          functional move) defines each segment's anatomical frame. Until this
+          exists, every angle the resolver lists is flagged <b>relative-only</b> —
+          a real number, but not a clinical one. This is what gates ROM.</p>
+        <div class="shape">
+          <div class="lbl">emits · calibration.json (per segment)</div>
+          <pre><span class="c"># quaternion offset: mounting frame → anatomical frame</span>
+upper_arm_r → q_anat_offset,  neutral captured @ t_common_ms [1000,4000]</pre>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">aligned streams + segment map + anatomical zero — enough to compute a clinical angle</div>
+    </div>
+
+    <!-- 6 -->
+    <div class="stage p">
+      <div class="rail"><div class="idx">06</div><div class="stem"></div></div>
+      <div class="card">
+        <h3>Metric plugins <span class="badge planned">Planned</span></h3>
+        <p><b>Functions over the aligned + calibrated stream.</b> Each metric the
+          resolver declared becomes a small plugin: joint <b>angle series</b> and
+          <b>ROM</b>, movement <b>smoothness</b>, <b>activity asymmetry</b> (which
+          arm is used more), <b>posture dwell</b>, <b>rep count</b>. ROM is just the
+          first — the contract is already fixed, so adding one is filling in a
+          function, not reworking the pipeline. Every value ships with its quality
+          gates: <span class="mono">dropout</span>, <span class="mono">sync_confidence</span>,
+          <span class="mono">sensor_cal</span>.</p>
+      </div>
+    </div>
+    <div class="flow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 1v12M3 9l4 4 4-4"/></svg>
+      <div class="datachip">metric values + trust flags, per joint / per segment / per window</div>
+    </div>
+
+    <!-- 7 -->
+    <div class="stage p">
+      <div class="rail"><div class="idx">07</div></div>
+      <div class="card">
+        <h3>Interface &amp; visualization <span class="badge planned">Planned</span></h3>
+        <p><b>The thing all of this feeds.</b> Two modes: a <b>live</b> skeleton
+          driven by the quaternions to sanity-check placement before a capture, and
+          a <b>post-hoc</b> view — per-joint ROM arcs and angle traces, an
+          upper-extremity heatmap, left/right asymmetry, posture-dwell histograms.
+          Every value is rendered next to its confidence, so a low-trust number
+          never reads as a clean one.</p>
+      </div>
+    </div>
+
+  </div><!-- /pipe -->
+
+  <!-- worked example -->
+  <section class="example">
+    <h2>Worked example — the sparse two-node case</h2>
+    <p>Two nodes, one on each upper arm, no torso; the left arm is worked hard, the
+      right barely moves. This is exactly where alignment struggles and most joint
+      metrics can't form — here's what stages 3–4 actually say about it.</p>
+    <div class="cols">
+      <div class="panel">
+        <div class="head"><span>montage.json</span><span>2 nodes</span></div>
+        <div class="body">
+<pre>n0 → <span class="mono">upper_arm_l</span>   (left, active)
+n1 → <span class="mono">upper_arm_r</span>   (right, still)
+torso → <span class="no">absent</span></pre>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head"><span>capability report</span><span>resolved</span></div>
+        <div class="body">
+          <div class="row"><span class="t">shoulder_l / _r (ROM)</span><span class="mark no">✗ needs torso</span></div>
+          <div class="row"><span class="t">elbow / wrist (ROM)</span><span class="mark no">✗ needs forearm/hand</span></div>
+          <div class="row"><span class="t">per-arm elevation, speed</span><span class="mark yes">✓ segment</span></div>
+          <div class="row"><span class="t">activity_asymmetry_upper_arm</span><span class="mark yes">✓ derived</span></div>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:16px">The reconcile step returns a <b>low-confidence</b>
+      offset here — the two arms share almost no motion to lock onto — so no joint
+      angle would be trustworthy even with a torso node. But <b>activity
+      asymmetry</b> is a session aggregate that doesn't need the sides time-aligned,
+      so "the left arm is used far more than the right" survives as the one solid,
+      useful answer this montage can give.</p>
+  </section>
+
+  <footer>
+    Reference for the HULC Motion Shirt analysis pipeline · stages 1–4 in
+    <span class="mono">firmware/</span> and <span class="mono">tools/</span>,
+    stages 5–7 in design. Orientation-only by design — no endpoint position
+    without a separate forward-kinematics layer.
+  </footer>
+</div>
