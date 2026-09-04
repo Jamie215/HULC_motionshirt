@@ -1,31 +1,9 @@
 # Firmware Power Optimization
 
-Power work on `firmware.ino` after the decision **not** to use a coordinated
-collection trigger. This tracks what has landed and the backlog of ideas still
-worth exploring, so nothing gets lost. Pre-optimization baseline (from
-`IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~22 mA ACTIVE recording (full
-fusion).
-
-## Measured results (bench, DETECTOR idle wake source)
-
-After the "Landed" changes below:
-
-| Build | IDLE | ACTIVE |
-|---|---|---|
-| Baseline (pre-optimization) | ~12 mA | ~22 mA |
-| Optimized, Rotation Vector (default) | **~9 mA** | **~20–21 mA** |
-| Optimized, Game Rotation Vector | **~9 mA** | **~20 mA** |
-
-- **IDLE ~12 → ~9 mA (~25%)** — from the DC/DC regulator and the slower/gated
-  advertising. IDLE is identical across the RV and GRV builds, as expected: the
-  fusion source only affects the RUNNING states, so the `ACTIVE_FUSION` switch
-  cannot move idle (a useful confirmation the switch is scoped correctly).
-- **ACTIVE ~22 → ~20–21 mA** — from the DC/DC regulator and the report-rate match.
-- **GRV vs RV: no meaningful power difference** (~20 vs ~20–21 mA, within
-  measurement noise). Expected in hindsight — on the BNO08x the always-running
-  gyro and the fusion MotionEngine dominate; the magnetometer is comparatively
-  cheap, so dropping it saves little. **GRV is therefore a data-quality option,
-  not a power lever** (see item 4).
+Power work on `firmware.ino`. This document tracks what has landed and 
+the backlog of ideas still worth exploring, so nothing gets lost. Pre-optimization
+baseline (from `IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~22 mA ACTIVE 
+recording (full fusion).
 
 ## Landed
 
@@ -121,12 +99,6 @@ machine's logic; each is commented at its site.
      ~2 Hz in STATIC, the STATIC wake rate drops from ~12 Hz (10 RV + 2 clf) to
      ~3 Hz (1 RV + 2 clf) — a ~4× cut in nRF wakeups, not the full 10× the RV
      alone changes by. Taking the RV below the classifier's 2 Hz would buy little.
-
-   **Bench measurement still pending** (developed without hardware in the loop):
-   verify the STATIC current drop, and — per the issue-#2 caution — watch for any
-   premature BNO reset across repeated ACTIVE↔STATIC transitions now that the
-   fusion vector is re-issued on each. Update the Measured results table with the
-   STATIC figure once taken.
 
 7. **IDLE wake source — DETECTOR (default), CLASSIFIER, SIGMOTION.** Three
    selectable wake sources (Section 3). Measured on the optimized build:
