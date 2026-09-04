@@ -199,8 +199,8 @@
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
 #endif
-#ifndef SH2_SIG_MOTION
-#define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
+#ifndef SH2_SIGNIFICANT_MOTION
+#define SH2_SIGNIFICANT_MOTION 0x12  // mirrors the sh2 driver enum (sh2.h, sh2_SensorId_e) — one-shot wake-on-motion
 #endif
 #define DETECTOR_EXITED   2
 
@@ -246,7 +246,7 @@
   #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
   #define IDLE_WAKE_NAME "Significant Motion (0x12)"
-  #define IDLE_WAKE_SENSOR_ID SH2_SIG_MOTION
+  #define IDLE_WAKE_SENSOR_ID SH2_SIGNIFICANT_MOTION
 #else
   #error "IDLE_WAKE_SOURCE must be DETECTOR, CLASSIFIER, or SIGMOTION"
 #endif
@@ -1500,7 +1500,7 @@ void handleIdle() {
     // Significant Motion (0x12) is a ONE-SHOT wake event: its mere arrival means
     // motion started, so there's no value to decode. The sensor auto-disables
     // after firing; enableIdleReports() re-arms it on the next IDLE entry/reset.
-    if (id == SH2_SIG_MOTION) {
+    if (id == SH2_SIGNIFICANT_MOTION) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
       LOGF("SIGMOTION: significant motion → ACTIVE_RECORDING");
