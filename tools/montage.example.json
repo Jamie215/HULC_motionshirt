@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "subject": {
+    "id": "S01",
+    "notes": ""
+  },
+  "session": {
+    "id": "2026-09-04-A",
+    "aligned_csv": "aligned.csv"
+  },
+  "calibration": {
+    "neutral_pose": "N-pose",
+    "captured": true,
+    "t_window_ms": [
+      1000,
+      4000
+    ],
+    "functional": []
+  },
+  "nodes": [
+    {
+      "node_id": "HULC-IMU-D067",
+      "column": "n0",
+      "segment": "torso",
+      "calibrated": true
+    },
+    {
+      "node_id": "HULC-IMU-A1B2",
+      "column": "n1",
+      "segment": "upper_arm_r",
+      "calibrated": true
+    },
+    {
+      "node_id": "HULC-IMU-C3D4",
+      "column": "n2",
+      "segment": "forearm_r",
+      "calibrated": false
+    },
+    {
+      "node_id": "HULC-IMU-E5F6",
+      "column": "n3",
+      "segment": "hand_r",
+      "calibrated": true
+    }
+  ]
+}
