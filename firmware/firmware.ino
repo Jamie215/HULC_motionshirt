@@ -223,10 +223,15 @@
 //              STATIC_POSTURE/ACTIVE act on.
 // SIGMOTION  — Significant Motion (0x12), accelerometer-only one-shot. Lowest
 //              idle (~7.4mA) and does not self-reset, but fires only on energetic
-//              motion (shake/pickup), NOT slow held-limb stretches — its trigger
-//              is a fixed, non-exposed motion-ENERGY threshold. Suitable only
-//              where slow-motion wake latency is acceptable (e.g. off-body
-//              standby), not for on-body capture.
+//              motion (shake/pickup), NOT slow held-limb stretches — it is an
+//              energy-over-a-window detector (Android-style significant motion).
+//              Its accel threshold + window ARE tunable via the FRS record
+//              SIG_MOTION_DETECT_CONFIG (0xC274), but the SparkFun library exposes
+//              no FRS-write path, so we cannot set it today (see IDLE_WAKE_SOURCE.md
+//              "Tuning SIGMOTION" for the investigation). Even tuned, its energy/
+//              window nature is a poor fit for slow motion. Suitable only where
+//              slow-motion wake latency is acceptable (e.g. off-body standby), not
+//              for on-body capture.
 //
 // See firmware/IDLE_WAKE_SOURCE.md and state_machine_test/FINDINGS.md for the
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
