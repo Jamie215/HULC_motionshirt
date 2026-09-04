@@ -1,15 +1,5 @@
 # IDLE Wake Source — Detector, Classifier, Significant Motion
 
-Follow-up to `state_machine_test/FINDINGS.md`. The investigation proved the
-periodic ~6.6 s IDLE reset is gated by the BNO086's **fusion engine**
-(MotionEngine): accelerometer-only sensors self-reboot in idle; anything that
-runs fusion (gyro involved) does not. The **Stability Classifier (0x13)** runs
-accel+gyro through the MotionEngine and did **not** reset in the test harness.
-
-This change carries that finding into the production firmware (`firmware.ino`):
-the Stability Classifier can now be the IDLE state-changing flag, and the two
-wake sources are a compile-time A/B switch with matching instrumentation.
-
 ## The switch
 
 `firmware.ino`, Section 3:
