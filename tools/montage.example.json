@@ -22,24 +22,28 @@
       "node_id": "HULC-IMU-D067",
       "column": "n0",
       "segment": "torso",
+      "landmark": "sternum",
       "calibrated": true
     },
     {
       "node_id": "HULC-IMU-A1B2",
       "column": "n1",
       "segment": "upper_arm_r",
+      "landmark": "right humerus",
       "calibrated": true
     },
     {
       "node_id": "HULC-IMU-C3D4",
       "column": "n2",
       "segment": "forearm_r",
+      "landmark": "right forearm",
       "calibrated": false
     },
     {
       "node_id": "HULC-IMU-E5F6",
       "column": "n3",
       "segment": "hand_r",
+      "landmark": "right hand",
       "calibrated": true
     }
   ]

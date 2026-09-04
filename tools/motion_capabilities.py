@@ -96,6 +96,54 @@ SEGMENTS = {
 }
 
 
+def _seg_base(seg: str) -> str:
+    """Segment key without its side suffix ('upper_arm_l' -> 'upper_arm')."""
+    return seg[:-2] if seg.endswith(("_l", "_r")) else seg
+
+
+def _seg_side(seg: str) -> Optional[str]:
+    """'l' / 'r' side of a segment key, or None for a midline segment."""
+    return seg[-1] if seg.endswith(("_l", "_r")) else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1a. Landmark labels — how a user names where a node sits vs the SEGMENT it
+#     resolves to. Nodes are placed around anatomical landmarks; a landmark that
+#     names a SEGMENT (humerus, forearm, torso, hand) maps cleanly, but a
+#     landmark that names a JOINT (shoulder, elbow, wrist) is AMBIGUOUS — it
+#     spans two segments — so `segment` stays authoritative and we only warn.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Substring -> segment base for the unambiguous, segment-naming landmarks.
+LANDMARK_SEGMENT_HINT = {
+    "humerus": "upper_arm", "upper arm": "upper_arm", "upperarm": "upper_arm",
+    "forearm": "forearm", "radius": "forearm", "ulna": "forearm",
+    "torso": "torso", "trunk": "torso", "sternum": "torso", "chest": "torso",
+    "hand": "hand", "dorsum": "hand", "metacarpal": "hand",
+}
+
+# Landmarks that name a JOINT, not a segment — inherently ambiguous.
+AMBIGUOUS_LANDMARKS = ("shoulder", "elbow", "wrist")
+
+
+def landmark_hint(landmark: str):
+    """Parse a free-text landmark label.
+
+    Returns (segment_base | None, side | None, is_joint). segment_base is None
+    when the label names a joint or nothing recognizable; is_joint flags a
+    joint-named (ambiguous) landmark.
+    """
+    s = landmark.lower()
+    side = "l" if "left" in s else ("r" if "right" in s else None)
+    is_joint = any(a in s for a in AMBIGUOUS_LANDMARKS)
+    base = None
+    for kw, seg in LANDMARK_SEGMENT_HINT.items():
+        if kw in s:
+            base = seg
+            break
+    return base, side, is_joint
+
+
 @dataclass(frozen=True)
 class DOF:
     """One resolvable degree of freedom of a joint (a clinical angle)."""
@@ -287,6 +335,38 @@ def validate_montage(montage: dict) -> list:
     return errors
 
 
+def montage_warnings(montage: dict) -> list:
+    """Advisory (non-fatal) notes about node landmark labels vs their segment.
+
+    A `landmark` is the user's human description of where a node sits. It does
+    not drive resolution — `segment` does — but a landmark that names a JOINT is
+    ambiguous, and one that disagrees with its segment is likely a mislabel.
+    """
+    warns = []
+    for i, n in enumerate(montage.get("nodes", [])):
+        lm = n.get("landmark")
+        seg = n.get("segment")
+        if not lm:
+            continue
+        base, side, is_joint = landmark_hint(lm)
+        if is_joint and base is None:
+            warns.append(
+                f"nodes[{i}] landmark '{lm}' names a JOINT, which spans two "
+                f"segments — a node sits on one bone, so '{seg}' is what it "
+                f"actually represents.")
+            continue
+        if base and seg and _seg_base(seg) != base:
+            warns.append(
+                f"nodes[{i}] landmark '{lm}' suggests segment '{base}' but is "
+                f"mapped to '{seg}' — check the placement/mapping.")
+        if side and seg and _seg_side(seg) and side != _seg_side(seg):
+            said = "left" if side == "l" else "right"
+            warns.append(
+                f"nodes[{i}] landmark '{lm}' says {said}, but segment '{seg}' "
+                f"is the other side.")
+    return warns
+
+
 def _calibrated(montage: dict, segment: str) -> bool:
     """Is the node on `segment` anatomically calibrated (and cal captured)?"""
     cal = montage.get("calibration", {})
@@ -347,7 +427,8 @@ def resolve(montage: dict) -> list:
         caps.append(cap)
 
     # 3c. Derived capabilities (need a set of joints/segments).
-    #     Bilateral symmetry: both sides of a joint computable.
+    #     Bilateral JOINT symmetry: both sides of a joint computable (angle/ROM
+    #     level — needs the two-node pair on each side).
     for base in ("shoulder", "elbow", "wrist"):
         l, r = f"{base}_l", f"{base}_r"
         if l in computable_joints and r in computable_joints:
@@ -355,6 +436,26 @@ def resolve(montage: dict) -> list:
                 kind="derived", target=f"symmetry_{base}",
                 name=f"{base.title()} L/R symmetry", computable=True,
                 metrics=["symmetry_index", "rom_ratio"], requires=[l, r]))
+
+    #     Bilateral ACTIVITY asymmetry: a matching L/R SEGMENT pair (one node
+    #     each side). This is the "which arm is used more" comparison — it needs
+    #     no joint and no torso, only the two segment nodes. Its metrics are
+    #     session AGGREGATES of activity (integrated angular travel, active-time
+    #     fraction), so they are robust even when reconcile cannot time-align the
+    #     two sides — independent-limb motion (the low-confidence sync case)
+    #     still yields a valid asymmetry number.
+    for base in ("upper_arm", "forearm", "hand"):
+        l, r = f"{base}_l", f"{base}_r"
+        if l in present and r in present:
+            caps.append(Capability(
+                kind="derived", target=f"activity_asymmetry_{base}",
+                name=f"{base.replace('_', ' ').title()} L/R activity asymmetry",
+                computable=True,
+                metrics=["asymmetry_index", "use_ratio", "active_time_ratio"],
+                requires=[l, r],
+                warnings=["aggregate over the session — does not need the two "
+                          "sides time-aligned, so it holds even when their sync "
+                          "confidence is low (independent motion)"]))
 
     #     Inter-joint coordination: any 2+ computable joints on a side.
     for side in ("l", "r"):
@@ -381,7 +482,7 @@ def resolve(montage: dict) -> list:
 # 4. Reporting
 # ─────────────────────────────────────────────────────────────────────────────
 
-def to_dict(caps: list) -> dict:
+def to_dict(caps: list, montage: Optional[dict] = None) -> dict:
     """Machine-readable capability report (for a UI to consume)."""
     def cap_d(c: Capability) -> dict:
         d = {"kind": c.kind, "target": c.target, "name": c.name,
@@ -392,12 +493,15 @@ def to_dict(caps: list) -> dict:
         if c.decomposition:  d["decomposition"] = c.decomposition
         if c.warnings:       d["warnings"] = c.warnings
         return d
-    return {
+    out = {
         "schema_version": SCHEMA_VERSION,
         "segments": [cap_d(c) for c in caps if c.kind == "segment"],
         "joints":   [cap_d(c) for c in caps if c.kind == "joint"],
         "derived":  [cap_d(c) for c in caps if c.kind == "derived"],
     }
+    if montage is not None:
+        out["montage_warnings"] = montage_warnings(montage)
+    return out
 
 
 def print_report(montage: dict, caps: list) -> None:
@@ -407,6 +511,11 @@ def print_report(montage: dict, caps: list) -> None:
     print(f"Montage — subject {subj}, session {sess}")
     print(f"  nodes: {len(montage.get('nodes', []))}   "
           f"calibration captured: {bool(cal.get('captured'))}")
+    mw = montage_warnings(montage)
+    if mw:
+        print("  labeling notes:")
+        for w in mw:
+            print(f"    ! {w}")
     print()
 
     joints = [c for c in caps if c.kind == "joint"]
@@ -436,9 +545,11 @@ def print_report(montage: dict, caps: list) -> None:
     print(f"DERIVED  ({len(derived)} available)")
     for c in derived:
         print(f"  ✓ {c.target:<24} {c.name}: {', '.join(c.metrics)}")
+        for w in c.warnings:
+            print(f"       ! {w}")
     if not derived:
-        print("  (none — add the missing nodes above to unlock symmetry / "
-              "coordination / compensation)")
+        print("  (none — add the missing nodes above to unlock asymmetry / "
+              "symmetry / coordination / compensation)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -454,10 +565,10 @@ def example_montage() -> dict:
         "calibration": {"neutral_pose": "N-pose", "captured": True,
                         "t_window_ms": [1000, 4000], "functional": []},
         "nodes": [
-            {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "calibrated": True},
-            {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "calibrated": True},
-            {"node_id": "HULC-IMU-C3D4", "column": "n2", "segment": "forearm_r",   "calibrated": False},
-            {"node_id": "HULC-IMU-E5F6", "column": "n3", "segment": "hand_r",      "calibrated": True},
+            {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "landmark": "sternum",        "calibrated": True},
+            {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "landmark": "right humerus",  "calibrated": True},
+            {"node_id": "HULC-IMU-C3D4", "column": "n2", "segment": "forearm_r",   "landmark": "right forearm",  "calibrated": False},
+            {"node_id": "HULC-IMU-E5F6", "column": "n3", "segment": "hand_r",      "landmark": "right hand",     "calibrated": True},
         ],
     }
 
@@ -508,6 +619,41 @@ def selftest() -> None:
     assert any("already assigned" in e for e in validate_montage(bad))
     print("[selftest] duplicate-segment montage rejected — OK")
 
+    # Bilateral activity asymmetry: two upper-arm nodes (no torso, no joints)
+    # still unlock the "which arm is used more" comparison. This is the sparse
+    # left/right montage of case 1.
+    bilat = {"schema_version": SCHEMA_VERSION, "subject": {"id": "S"},
+             "session": {"id": "bilat"}, "calibration": {"captured": False},
+             "nodes": [
+                 {"node_id": "L", "column": "n0", "segment": "upper_arm_l"},
+                 {"node_id": "R", "column": "n1", "segment": "upper_arm_r"}]}
+    assert not validate_montage(bilat)
+    bcaps = resolve(bilat)
+    assert not any(c.computable for c in bcaps if c.kind == "joint"), \
+        "no torso/adjacent nodes → no joints"
+    dk = {c.target for c in bcaps if c.kind == "derived"}
+    assert "activity_asymmetry_upper_arm" in dk, dk
+    print("[selftest] two upper-arm nodes → activity_asymmetry_upper_arm "
+          "(no joints needed) — OK")
+
+    # Landmark labels: a joint-named landmark is flagged ambiguous; a landmark
+    # that disagrees with its segment is flagged as a likely mislabel.
+    lm = {"schema_version": SCHEMA_VERSION, "subject": {"id": "S"},
+          "session": {"id": "lm"}, "calibration": {"captured": False},
+          "nodes": [
+              {"node_id": "A", "column": "n0", "segment": "forearm_l",
+               "landmark": "left wrist"},              # joint → ambiguous
+              {"node_id": "B", "column": "n1", "segment": "upper_arm_r",
+               "landmark": "right forearm"}]}          # base mismatch
+    w = montage_warnings(lm)
+    assert any("names a JOINT" in x for x in w), w
+    assert any("suggests segment 'forearm'" in x for x in w), w
+    # The example montage's clean labels raise no warnings.
+    assert not montage_warnings(example_montage()), montage_warnings(
+        example_montage())
+    print("[selftest] landmark labels: joint→ambiguous & mismatch flagged, "
+          "clean labels silent — OK")
+
     print("\n[selftest] all checks passed.")
 
 
@@ -544,7 +690,7 @@ def main() -> None:
 
     caps = resolve(montage)
     if args.json:
-        print(json.dumps(to_dict(caps), indent=2))
+        print(json.dumps(to_dict(caps, montage), indent=2))
     else:
         print_report(montage, caps)
 
