@@ -156,39 +156,51 @@ machine's logic; each is commented at its site.
    stability/tilt behavior responds to the slow gravity-vector reorientation a
    stretch produces.
 
-   **Path forward (see backlog "tunable low-power wake for slow rotation").**
-   The signal a slow stretch *does* contain is the DC gravity vector rotating as
-   the limb tilts. Candidates that could keep near-SIGMOTION power while catching
-   that: an **on-change Accelerometer** report with a tuned `changeSensitivity`
-   (wake on gravity-direction change), or the SH-2 **Tilt Detector** if the BNO
-   exposes it. Both need a bench A/B (power + does-it-catch-a-stretch) before
-   replacing the detector default. Until one is proven, DETECTOR stays default and
-   SIGMOTION is the lowest-power option only where slow-motion wake latency is
-   acceptable (e.g. off-body standby).
+   **Path forward (see backlog "tunable low-power wake that keeps slow-stretch
+   capture").** The real goal is the detector's sensitivity without its ~1 Hz
+   heartbeat. Candidates: an **on-change Accelerometer** (`changeSensitivity`)
+   that stays silent when still but wakes on any accel change (tilt or movement
+   transient), or the **detector reported on-change** rather than at 1 Hz. Both
+   need a bench A/B (power + does-it-catch-a-slow-stretch) before replacing the
+   detector default. Until one is proven, DETECTOR stays default and SIGMOTION is
+   the lowest-power option only where slow-motion wake latency is acceptable
+   (e.g. off-body standby).
 
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
 were deliberately left out of the safe batch above.
 
-- **Tunable low-power wake for slow rotation (chase the SIGMOTION ~1.6 mA
-  without losing slow-stretch capture).** SIGMOTION idles ~1.6 mA under the
-  detector but misses slow held-limb stretches because it thresholds motion
-  *energy*; a slow stretch is low-energy (see Landed item 7). The signal it
-  *does* carry is the DC gravity vector reorienting as the limb tilts. Two
-  accel-only candidates that should stay near SIGMOTION power while catching
-  that:
-  - **On-change Accelerometer** (`sh2_setSensorConfig` `changeSensitivity`):
-    wake when the gravity-direction reading changes by a tuned delta. Gives a
-    real power/sensitivity dial the fixed SIGMOTION threshold does not. Needs
-    custom wake logic (baseline compare) and re-measurement. Not exposed by the
-    SparkFun helper — likely a drop to the underlying `sh2` driver.
-  - **Tilt Detector** (SH-2) if the BNO exposes it — purpose-built to fire on
-    tilt past a threshold from a reference, i.e. exactly gravity reorientation.
-  Blind spot for both: motion purely about the vertical (yaw) doesn't move the
-  gravity projection and would still need gyro (classifier). Gate either on a
-  bench A/B: measure idle current AND confirm it catches representative slow
-  stretches on-body before it could replace the detector default.
+- **Tunable low-power wake that keeps slow-stretch capture (chase SIGMOTION's
+  ~1.6 mA).** SIGMOTION idles ~1.6 mA under the detector purely because it stays
+  silent when still — no ~1 Hz heartbeat waking the nRF (see Landed item 7) — but
+  it misses slow held-limb stretches (it thresholds motion *energy*, and a slow
+  stretch is low-energy). The detector already catches those stretches on
+  accelerometer alone, so the real goal is "detector sensitivity, minus the
+  heartbeat." Candidates, all needing a bench A/B (idle current AND
+  does-it-catch-a-slow-stretch on-body):
+  - **On-change Accelerometer** (`sh2_setSensorConfig` `changeSensitivity`): wake
+    when the acceleration reading moves by a tuned delta. It watches the *whole*
+    accel vector, so it catches both a slow tilt (gravity direction shifting) and
+    the start/stop transients of any real limb movement — the same two signals the
+    detector uses — while staying silent when still. Gives a real
+    power/sensitivity dial the fixed SIGMOTION threshold does not. Needs custom
+    wake logic (baseline compare) and likely a drop to the `sh2` driver (not
+    exposed by the SparkFun helper).
+  - **Detector reported on-change instead of at 1 Hz** — same proven sensor, just
+    stop the heartbeat so it only pokes the nRF on a stability change. Lowest
+    effort, but validate hard: the detector's EXITED ("motion started") event was
+    historically flaky to deliver unless the sensor was kept chattering (the
+    devSleep saga), so going silent risks missing a real wake.
+
+  Narrow blind spot (largely theoretical for a body-worn sensor): a *pure*,
+  constant-speed rotation about the vertical, with the node sitting exactly on the
+  rotation axis, moves neither gravity nor produces linear accel — only a gyro
+  (classifier) would catch it. On a limb the node is off-axis, so real movement
+  always produces some accel (that the accel-only detector already catches
+  stretches is the proof), so this rarely bites. The SH-2 Tilt Detector would be a
+  clean fit but is **not** in the BNO086 sensor list (datasheet Fig 6-18) — don't
+  count on it.
 
 - **Reconfigure BNO rate on watermark throttle.** When flash fills,
   `writeQuaternionSample()` halves `activeHz` (10→5→2), but that only changes the
