@@ -189,9 +189,14 @@ were deliberately left out of the safe batch above.
     exposed by the SparkFun helper).
   - **Detector reported on-change instead of at 1 Hz** — same proven sensor, just
     stop the heartbeat so it only pokes the nRF on a stability change. Lowest
-    effort, but validate hard: the detector's EXITED ("motion started") event was
-    historically flaky to deliver unless the sensor was kept chattering (the
-    devSleep saga), so going silent risks missing a real wake.
+    effort. **Under test now** via `IDLE_DETECTOR_QUIET` (Section 4): the interval
+    is stretched to 60 s so the detector is effectively silent-when-still while
+    EXITED still fires immediately on motion. The old warnings against this — a
+    stretched interval worsening the self-reset toward the ~1 s floor, and dropped
+    motion wakes — both date from the removed devSleep path, so they are being
+    re-measured hub-awake, not assumed. `handleIdle()` now logs ms-since-last-reset
+    so the bench shows immediately whether the reset stays ~6.5 s (good) or falls
+    toward ~1 s (abandon); the slow-stretch wake must also still fire.
 
   Narrow blind spot (largely theoretical for a body-worn sensor): a *pure*,
   constant-speed rotation about the vertical, with the node sitting exactly on the

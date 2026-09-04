@@ -315,10 +315,27 @@
 
 // IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
 // The detector runs hub-awake and STREAMS a heartbeat report at this interval;
-// each report wakes the nRF, so this rate trades idle power against motion-onset
-// responsiveness. enableReport() takes MILLISECONDS. 1s matches the original
-// working firmware's responsive detector heartbeat.
-#define IDLE_DETECTOR_INTERVAL_MS   1000UL       // hub-awake enableReport() path, milliseconds
+// each report wakes the nRF. enableReport() takes MILLISECONDS.
+//
+// EXPERIMENT — drop the heartbeat (IDLE_DETECTOR_QUIET). The detector is a
+// change/event sensor: it fires EXITED the moment motion breaks stability
+// regardless of this interval, so the periodic report is only a heartbeat. A
+// long interval makes it effectively silent-when-still (like SIGMOTION) to see
+// if idle current drops toward SIGMOTION's ~7.4 mA WITHOUT SIGMOTION's
+// slow-motion blind spot (the detector still catches slow stretches).
+//
+// The old warning that a long interval worsens the ~6.5 s self-reset (→ ~1 s
+// floor) and drops motion wakes came from the removed devSleep path, so it is
+// being RE-TESTED hub-awake. Watch the serial "IDLE: BNO reset — <ms> since
+// last" line: if the reset interval stays ~6.5 s and a slow stretch still wakes
+// IDLE→ACTIVE, quiet mode wins the saving. Flip to 0 to A/B against the ~1 Hz
+// heartbeat. See firmware/POWER_OPTIMIZATION.md.
+#define IDLE_DETECTOR_QUIET         1            // 1 = drop heartbeat (report on-change), 0 = ~1Hz heartbeat
+#if IDLE_DETECTOR_QUIET
+  #define IDLE_DETECTOR_INTERVAL_MS 60000UL      // effectively on-change: 60s keepalive, EXITED still immediate
+#else
+  #define IDLE_DETECTOR_INTERVAL_MS 1000UL       // ~1Hz heartbeat (original responsive default)
+#endif
 
 
 // =============================================================================
@@ -1451,7 +1468,18 @@ void handleIdle() {
   if (imu.wasReset()) {
     // Periodic idle self-reboot (inherent — see Section 3). Re-arm the
     // detector and drain the post-reset advertisement the hub emits on boot.
-    LOGF("IDLE: BNO reset — re-arming detector");
+    // Log ms-since-last-reset so the heartbeat-drop experiment (Section 4,
+    // IDLE_DETECTOR_QUIET) can be read straight off serial: ~6.5s = still on the
+    // benign ceiling; a drop toward ~1s = the reset race bit, abandon quiet mode.
+    static uint32_t lastIdleResetMs = 0;
+    uint32_t nowReset = millis();
+    if (lastIdleResetMs) {
+      LOGF("IDLE: BNO reset — %lums since last reset — re-arming detector",
+           nowReset - lastIdleResetMs);
+    } else {
+      LOGF("IDLE: BNO reset (first) — re-arming detector");
+    }
+    lastIdleResetMs = nowReset;
     bnoRunningCfg = BNO_CFG_NONE;
     enableIdleReports();
 
