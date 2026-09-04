@@ -112,11 +112,13 @@ machine's logic; each is commented at its site.
    **DETECTOR is the default** because it reliably wakes on slow, deliberate
    motion (held-limb stretches). **SIGMOTION idles ~1.4 mA lower** — as a one-shot
    event it does not run the detector's ~6.7 s self-reset — **but it only fires on
-   energetic motion (shake/pickup) and misses slow stretches** (its trigger is a
-   fixed, non-exposed motion-energy threshold). So SIGMOTION suits only cases
-   where slow-motion wake latency is acceptable (e.g. off-body standby), not
-   on-body capture. CLASSIFIER also avoids the reset but runs the gyro/MotionEngine
-   at higher idle current.
+   energetic motion (shake/pickup) and misses slow stretches** (it is an
+   energy-over-a-window detector; its accel threshold + window are tunable via the
+   FRS record `SIG_MOTION_DETECT_CONFIG` (0xC274) but the SparkFun library exposes
+   no FRS-write path, so we cannot set it today — see `IDLE_WAKE_SOURCE.md`).
+   So SIGMOTION suits only cases where slow-motion wake latency is acceptable
+   (e.g. off-body standby), not on-body capture. CLASSIFIER also avoids the reset
+   but runs the gyro/MotionEngine at higher idle current.
 
    The ~1.4 mA detector↔SIGMOTION gap is the self-reset cycle. That reset is
    inherent to a non-fusion continuous sensor, is unaffected by report rate, and

@@ -64,3 +64,38 @@ sensitivity. Use the **classifier** when a reset-free, robust idle matters more
 than the current — it removes the periodic reboot (and with it the small risk of
 a reset landing mid-I²C transaction and stalling the bus), at higher idle
 current. The `i2cBusRecover()` insurance in `setup()` stays valuable in any case.
+
+## Tuning SIGMOTION sensitivity (potential future investigation — NOT done)
+
+Open question: could SIGMOTION be made sensitive enough for on-body slow-motion
+wake, giving us its ~7.4 mA (reset-free, ~1.4 mA under the detector) without
+losing slow held-limb stretches? Findings so far, from the SH-2 driver headers
+and the SH-2 Reference Manual (the manual PDF was not fully read — the exact
+record byte layout is still TODO):
+
+- **A threshold DOES exist.** Earlier notes calling it a "fixed, non-exposed"
+  threshold were wrong. The sh2 driver defines an FRS configuration record
+  `SIG_MOTION_DETECT_CONFIG` (0xC274); the manual describes it as holding an
+  **acceleration threshold** to trigger and a **timeout/window**, as 32-bit
+  integer / fixed-point words.
+- **The SparkFun library can't write it.** `SparkFun_BNO08x_Arduino_Library`
+  exposes no public FRS-write method (its `frs*` helpers are commented-out and
+  private). `enableReport(sensor, interval_us, sensorSpecific)` exposes a
+  `sensorSpecific` config word — reachable at zero cost and worth a bench probe —
+  but detector thresholds normally live in the FRS record, not that word, so it
+  is likely a no-op for SIGMOTION.
+- **Even tuned, it may be the wrong tool.** Significant Motion is an
+  energy-over-a-window detector (Android-style). Slow held-limb stretches are
+  low-acceleration and may not sustain across the window, so they can be missed
+  even at a low threshold; lowering the threshold far enough to catch them risks
+  false wakes on tiny vibration/noise, defeating the low-power purpose.
+
+If pursued, the work is: (1) get the exact `0xC274` record layout (word order,
+units, defaults) from the SH-2 Reference Manual figure "Significant Motion
+Detector Configuration Record"; (2) add an FRS-write path (extend the SparkFun
+library, or drive the CEVA `sh2_setFrs()` HAL directly); (3) bench-sweep the
+threshold against real slow held-limb motion vs. false-wake rate. Until then,
+CLASSIFIER remains the recommended reset-free on-body source.
+
+Sources: sh2 driver `sh2.h` (FRS record IDs); SH-2 Reference Manual (CEVA),
+"Significant Motion Detector Configuration Record".

@@ -199,8 +199,8 @@
 #ifndef SH2_STABILITY_DETECTOR
 #define SH2_STABILITY_DETECTOR 0x1C
 #endif
-#ifndef SH2_SIG_MOTION
-#define SH2_SIG_MOTION 0x12          // Significant Motion — one-shot wake-on-motion
+#ifndef SH2_SIGNIFICANT_MOTION
+#define SH2_SIGNIFICANT_MOTION 0x12  // mirrors the sh2 driver enum (sh2.h, sh2_SensorId_e) — one-shot wake-on-motion
 #endif
 #define DETECTOR_EXITED   2
 
@@ -223,10 +223,15 @@
 //              STATIC_POSTURE/ACTIVE act on.
 // SIGMOTION  — Significant Motion (0x12), accelerometer-only one-shot. Lowest
 //              idle (~7.4mA) and does not self-reset, but fires only on energetic
-//              motion (shake/pickup), NOT slow held-limb stretches — its trigger
-//              is a fixed, non-exposed motion-ENERGY threshold. Suitable only
-//              where slow-motion wake latency is acceptable (e.g. off-body
-//              standby), not for on-body capture.
+//              motion (shake/pickup), NOT slow held-limb stretches — it is an
+//              energy-over-a-window detector (Android-style significant motion).
+//              Its accel threshold + window ARE tunable via the FRS record
+//              SIG_MOTION_DETECT_CONFIG (0xC274), but the SparkFun library exposes
+//              no FRS-write path, so we cannot set it today (see IDLE_WAKE_SOURCE.md
+//              "Tuning SIGMOTION" for the investigation). Even tuned, its energy/
+//              window nature is a poor fit for slow motion. Suitable only where
+//              slow-motion wake latency is acceptable (e.g. off-body standby), not
+//              for on-body capture.
 //
 // See firmware/IDLE_WAKE_SOURCE.md and state_machine_test/FINDINGS.md for the
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
@@ -246,7 +251,7 @@
   #define IDLE_WAKE_NAME "Stability Classifier (0x13)"
 #elif IDLE_WAKE_SOURCE == IDLE_WAKE_SIGMOTION
   #define IDLE_WAKE_NAME "Significant Motion (0x12)"
-  #define IDLE_WAKE_SENSOR_ID SH2_SIG_MOTION
+  #define IDLE_WAKE_SENSOR_ID SH2_SIGNIFICANT_MOTION
 #else
   #error "IDLE_WAKE_SOURCE must be DETECTOR, CLASSIFIER, or SIGMOTION"
 #endif
@@ -1500,7 +1505,7 @@ void handleIdle() {
     // Significant Motion (0x12) is a ONE-SHOT wake event: its mere arrival means
     // motion started, so there's no value to decode. The sensor auto-disables
     // after firing; enableIdleReports() re-arms it on the next IDLE entry/reset.
-    if (id == SH2_SIG_MOTION) {
+    if (id == SH2_SIGNIFICANT_MOTION) {
       lastStabilityEvent = millis();
       consecutiveResets  = 0;
       LOGF("SIGMOTION: significant motion → ACTIVE_RECORDING");
