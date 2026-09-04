@@ -3,8 +3,8 @@
 Power work on `firmware.ino` after the decision **not** to use a coordinated
 collection trigger. This tracks what has landed and the backlog of ideas still
 worth exploring, so nothing gets lost. Pre-optimization baseline (from
-`IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~8 mA IDLE (SIGMOTION), ~22 mA
-ACTIVE recording (full fusion).
+`IDLE_WAKE_SOURCE.md`): ~12 mA IDLE (DETECTOR), ~22 mA ACTIVE recording (full
+fusion).
 
 ## Measured results (bench, DETECTOR idle wake source)
 
@@ -93,30 +93,90 @@ machine's logic; each is commented at its site.
    here is dominated by the BNO hub (~8 mA), so the ceiling on any QSPI-side win
    is small regardless.
 
+6. **Tier B: STATIC-specific slow RV.** The RUNNING config is no longer shared
+   at one rate — `configureBNO_Running()` now takes a `BnoRunningCfg`
+   (`BNO_CFG_ACTIVE` / `BNO_CFG_STATIC`) and STATIC arms the fusion vector at
+   `BNO_RV_STATIC_INTERVAL_MS` (1000 ms, ~1 Hz) instead of the ACTIVE 100 ms
+   (~10 Hz). STATIC logs only 0.2 Hz, so even the Tier A 10 Hz RV shipped ~50
+   reports per logged sample — each a wasted I²C read + nRF wake; ~1 Hz cuts
+   those RV wakeups ~10× while still giving 5 orientation samples per logged
+   snapshot (a logged posture is at most ~1 s stale, negligible for a static
+   hold). **The Classifier is untouched — it keeps running at
+   `ACTIVE_STABILITY_MS` (500 ms) in both RUNNING states, so it (not the RV)
+   still drives every transition and motion detection out of STATIC is
+   unchanged.** No change to the recorded data format or the 0.2 Hz log rate.
+
+   Structural notes (this was the "needs careful validation" backlog item):
+   - The old `bnoInRunningMode` bool couldn't tell an ACTIVE↔STATIC switch (rate
+     must change) from a same-state re-entry (skip). It's replaced by the
+     `BnoRunningCfg` enum (`NONE`/`ACTIVE`/`STATIC`), so same-state re-entry is
+     still skipped, a fresh entry from IDLE / post-reset (`NONE`) enables *both*
+     reports, and an ACTIVE↔STATIC switch re-issues *only* the fusion vector at
+     the new rate — the fewest `enableReport`s, to stay off the command-buffer /
+     premature-reset path (SparkFun issue #2). The `delay(50)` ack guard is kept.
+   - The enum type lives in Section 10 (with `SystemState`), ahead of the first
+     function, so the Arduino auto-generated prototype for the now-typed
+     `configureBNO_Running(BnoRunningCfg)` sees it defined.
+   - The classifier-floor point: because the Classifier still wakes the nRF at
+     ~2 Hz in STATIC, the STATIC wake rate drops from ~12 Hz (10 RV + 2 clf) to
+     ~3 Hz (1 RV + 2 clf) — a ~4× cut in nRF wakeups, not the full 10× the RV
+     alone changes by. Taking the RV below the classifier's 2 Hz would buy little.
+
+   **Bench measurement still pending** (developed without hardware in the loop):
+   verify the STATIC current drop, and — per the issue-#2 caution — watch for any
+   premature BNO reset across repeated ACTIVE↔STATIC transitions now that the
+   fusion vector is re-issued on each. Update the Measured results table with the
+   STATIC figure once taken.
+
+7. **IDLE wake source — DETECTOR (default), CLASSIFIER, SIGMOTION.** Three
+   selectable wake sources (Section 3). Measured on the optimized build:
+
+   | Source | Idle | Self-reset | Catches slow held-limb motion? |
+   |---|---|---|---|
+   | Stability Detector (default) | ~8.8 mA | ~6.7 s (benign) | Yes |
+   | Significant Motion | ~7.4 mA | none | No — energetic motion only |
+   | Stability Classifier | higher (gyro) | none | Yes |
+
+   **DETECTOR is the default** because it reliably wakes on slow, deliberate
+   motion (held-limb stretches). **SIGMOTION idles ~1.4 mA lower** — as a one-shot
+   event it does not run the detector's ~6.7 s self-reset — **but it only fires on
+   energetic motion (shake/pickup) and misses slow stretches** (its trigger is a
+   fixed, non-exposed motion-energy threshold). So SIGMOTION suits only cases
+   where slow-motion wake latency is acceptable (e.g. off-body standby), not
+   on-body capture. CLASSIFIER also avoids the reset but runs the gyro/MotionEngine
+   at higher idle current.
+
+   The ~1.4 mA detector↔SIGMOTION gap is the self-reset cycle. That reset is
+   inherent to a non-fusion continuous sensor, is unaffected by report rate, and
+   is only removed by running the fusion engine (the classifier's cost) — so
+   **~8.8 mA is the detector's floor for slow-motion capture**; going lower while
+   keeping that capture needs a hardware wake (see the last backlog item). At the
+   chip level the datasheet (Fig 6-18) puts the SIGMOTION sensor above the detector
+   (~0.48 mA vs ~0.06 mA); SIGMOTION is still lower at the node level purely
+   because it avoids the reset.
+
+8. **Detector reported on-change (no ~1 Hz heartbeat).** The Stability Detector
+   fires EXITED the instant motion breaks stability regardless of its report
+   interval, so `IDLE_DETECTOR_INTERVAL_MS` is set long (60 s keepalive) and the
+   detector stays silent while still instead of waking the nRF ~1×/s. Measured
+   ~0.2 mA idle trim, with the ~6.7 s self-reset cadence and slow-motion
+   sensitivity both unchanged. `handleIdle()` logs ms-since-last-reset as a field
+   diagnostic of that cadence.
+
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
 were deliberately left out of the safe batch above.
 
-- **Tier B: STATIC-specific slow RV.** STATIC logs only 0.2 Hz but (even after
-  Tier A) runs fusion at 10 Hz — still ~50 reports read and discarded per logged
-  sample. Dropping STATIC's RV to 1–2 Hz would cut its wakeups ~5–10× more. The
-  catch is structural: `configureBNO_Running()` is shared and guarded by
-  `bnoInRunningMode`, which skips reconfiguration on ACTIVE↔STATIC re-entry, so
-  this needs a STATIC-specific config path (extend the guard to distinguish
-  "running-active" vs "running-static", apply once per transition, reuse the
-  existing `delay(50)`-guarded enable sequence). Re-issuing `enableReport` on
-  every transition is exactly what risked the premature-reset behavior seen
-  before (SparkFun issue #2), so this one needs careful validation. Transitions
-  are driven by the classifier (500 ms), not the RV, so a slow STATIC RV only
-  affects posture-snapshot freshness, not motion detection.
-
 - **Reconfigure BNO rate on watermark throttle.** When flash fills,
   `writeQuaternionSample()` halves `activeHz` (10→5→2), but that only changes the
   software gate — the BNO keeps emitting 10 Hz, so the throttle saves flash but
   not IMU/nRF power. Reconfiguring the RV report rate when `activeHz` changes
-  would capture the power saving too. (Shares the reconfigure-safety concern
-  above.)
+  would capture the power saving too. Now cheaper to do safely: Landed item 6
+  (Tier B) added the per-transition fusion-only reconfigure path
+  (`configureBNO_Running(BnoRunningCfg)`), so this could re-issue just the fusion
+  vector at the throttled rate the same way (mind the same SparkFun issue #2
+  re-issue caution).
 
 - **QSPI peripheral deactivation — tried, backfired, removed (see item 5).**
   Measured ~9 → ~11 mA idle from nRF52840 Errata 122; the code was removed. Only
@@ -149,8 +209,11 @@ were deliberately left out of the safe batch above.
   held on for the whole connection — could be dropped or briefly blinked during
   long offloads.
 
-- **Below hub-awake idle needs hardware.** Per `IDLE_WAKE_SOURCE.md`, the BNO's
-  own devSleep suppresses the motion wake, so idle floor on this chip is
-  hub-awake accel-only. Going lower would need a separate low-power motion
-  interrupt waking the nRF, which then powers the BNO — a hardware change, out of
-  scope for firmware alone.
+- **Below the detector's slow-motion floor needs hardware.** With the detector
+  (the only wake source that catches slow held-limb motion), idle floors at
+  ~8.8 mA — the remaining ~1.4 mA to SIGMOTION's ~7.4 mA is the detector's
+  inherent ~6.7 s self-reset, which only running the fusion engine removes (at
+  higher current) and which no report-rate change affects. Going lower while
+  keeping slow-motion capture would need a separate low-power motion sensor with
+  its own interrupt waking the nRF, which then powers the BNO — a hardware change,
+  out of scope for firmware alone.

@@ -99,18 +99,19 @@
 //                      All sources run the hub AWAKE (the BNO's own devSleep was
 //                      dropped — it suppressed the motion wake; see Section 3):
 //                      • DETECTOR (default) — Stability Detector (0x1C), accel
-//                        only. ~12mA idle, self-reboots ~6.6s (inherent, benign
-//                        re-arm). Most sensitive to slow motion. Motion = EXITED.
+//                        only, reported on-change. ~8.8mA idle; self-resets ~6.7s
+//                        (inherent, benign re-arm). Catches slow motion including
+//                        held-limb stretches. Motion = EXITED.
 //                      • CLASSIFIER — Stability Classifier (0x13), accel+gyro /
 //                        MotionEngine. Reset-FREE idle (fusion keeps the hub
 //                        active) at higher idle current. Motion = classifier ==
 //                        MOTION.
 //                      • SIGMOTION — Significant Motion (0x12), accel-only
-//                        one-shot. Lowest idle current (~8mA, bench-measured) but
-//                        LESS sensitive to slow, gradual movement. Motion = event
-//                        fires. See IDLE_WAKE_SOURCE.md.
-//   STATIC_POSTURE   — RV @ ~10Hz + Classifier, writes gated to 0.2Hz
-//   ACTIVE_RECORDING — Same BNO config, writes gated to activeHz (10Hz default)
+//                        one-shot. Lowest idle (~7.4mA, no self-reset) but only
+//                        fires on energetic motion (shake/pickup), NOT slow
+//                        held-limb stretches. Motion = event fires.
+//   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, writes gated to 0.2Hz
+//   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
 //
 // Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
 // =============================================================================
@@ -212,33 +213,30 @@
 // low-power accel/motion interrupt waking the nRF), not the BNO's own devSleep.
 
 // ── IDLE wake source (compile-time A/B switch) ─────────────────────────────
-// DETECTOR   — Stability Detector (0x1C), accelerometer only. Runs hub-awake
-//              (~12mA idle) and self-reboots every ~6.6s (inherent — a benign
-//              re-arm; IDLE logs nothing). Lowest power of the working configs.
+// DETECTOR   — Stability Detector (0x1C), accelerometer only, reported on-change.
+//              ~8.8mA idle; self-resets every ~6.7s (inherent — a benign re-arm;
+//              IDLE logs nothing). Catches slow motion, including held-limb
+//              stretches. Default.
 // CLASSIFIER — Stability Classifier (0x13), accel+gyro through the MotionEngine.
-//              No idle reboot (fusion keeps the hub active), so idle current is
-//              higher. Reset-free middle ground; wakes IDLE on the same MOTION
-//              classification STATIC_POSTURE/ACTIVE act on.
+//              No idle reset (fusion keeps the hub active), at higher idle
+//              current. Wakes IDLE on the same MOTION classification
+//              STATIC_POSTURE/ACTIVE act on.
+// SIGMOTION  — Significant Motion (0x12), accelerometer-only one-shot. Lowest
+//              idle (~7.4mA) and does not self-reset, but fires only on energetic
+//              motion (shake/pickup), NOT slow held-limb stretches — its trigger
+//              is a fixed, non-exposed motion-ENERGY threshold. Suitable only
+//              where slow-motion wake latency is acceptable (e.g. off-body
+//              standby), not for on-body capture.
 //
 // See firmware/IDLE_WAKE_SOURCE.md and state_machine_test/FINDINGS.md for the
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
 #define IDLE_WAKE_SIGMOTION   2
-// Active choice below: DETECTOR — the lowest-power working path (accel-only,
-// hub awake). Its known limitation: being accelerometer-only it can miss pure
-// rotation of a rigid body (little linear accel), which can leave the node
-// stuck in IDLE with nothing logged. CLASSIFIER (accel+gyro) wakes on ROTATION
-// too and is reset-free, at the cost of higher idle current — flip to
-// IDLE_WAKE_CLASSIFIER if missed-rotation wakeups become a problem.
-//
-// SIGMOTION (Significant Motion 0x12) is a THIRD option: a purpose-built,
-// low-power, one-shot wake-on-motion event. It is accel-based (so, per
-// FINDINGS.md, the hub still self-reboots ~6.6s in idle and re-arms).
-// Bench-measured tradeoff vs the detector: LOWER idle current (~8mA vs ~12mA —
-// the one-shot event means no ~1Hz detector heartbeat waking the nRF), but LESS
-// sensitive to slow, gradual movement (gentle motion can wake IDLE→ACTIVE late).
-// Pick it for the lowest-power idle when slow-motion wake latency is acceptable.
+// DETECTOR is the default: it catches slow, deliberate motion (held-limb
+// stretches) at ~8.8mA. SIGMOTION idles ~1.4mA lower because it does not run the
+// detector's ~6.7s self-reset, but misses those slow motions, so it is not a
+// drop-in replacement. CLASSIFIER is the reset-free option at higher current.
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
@@ -300,6 +298,11 @@
 // = 100ms) so the BNO doesn't fuse and ship samples we'd only discard. Tier A;
 // rationale and the STATIC-specific follow-up are in firmware/POWER_OPTIMIZATION.md.
 #define BNO_RV_INTERVAL_MS          100
+// STATIC-specific (slow) RV interval — Tier B. STATIC only snapshots posture at
+// 0.2Hz, so running the fusion vector slow saves the wasted reads the 10Hz rate
+// would discard. The Classifier stays at ACTIVE_STABILITY_MS, so motion
+// detection is unaffected. See firmware/POWER_OPTIMIZATION.md.
+#define BNO_RV_STATIC_INTERVAL_MS   1000
 #define ACTIVE_STABILITY_MS         500
 // Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
 // Also the worst-case IDLE->ACTIVE motion-onset latency for that build (the
@@ -307,11 +310,13 @@
 #define IDLE_STABILITY_MS           1000
 
 // IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
-// The detector runs hub-awake and STREAMS a heartbeat report at this interval;
-// each report wakes the nRF, so this rate trades idle power against motion-onset
-// responsiveness. enableReport() takes MILLISECONDS. 1s matches the original
-// working firmware's responsive detector heartbeat.
-#define IDLE_DETECTOR_INTERVAL_MS   1000UL       // hub-awake enableReport() path, milliseconds
+// enableReport() takes MILLISECONDS. The detector is a change/event sensor: it
+// fires EXITED the instant motion breaks stability regardless of this interval,
+// so the periodic report is only a keepalive. It is set long (on-change) so the
+// detector stays silent while still instead of waking the nRF ~1×/s — a small
+// idle-current trim with no loss of motion sensitivity and no effect on the
+// detector's inherent ~6.7s self-reset. See firmware/POWER_OPTIMIZATION.md.
+#define IDLE_DETECTOR_INTERVAL_MS   60000UL      // on-change: 60s keepalive, EXITED fires immediately
 
 
 // =============================================================================
@@ -408,6 +413,16 @@ typedef enum {
   STATE_ACTIVE_RECORDING
 } SystemState;
 
+// Which fusion config the BNO currently holds. The two RUNNING states use
+// different fusion rates, so configureBNO_Running() needs to tell an ACTIVE↔STATIC
+// switch from a same-state re-entry. Kept here (not in Section 11) so it precedes
+// the auto-generated prototype of the function that takes it — as SystemState is.
+typedef enum {
+  BNO_CFG_NONE,     // no running report armed (IDLE / post-reset)
+  BNO_CFG_ACTIVE,   // fusion @ BNO_RV_INTERVAL_MS (fast)
+  BNO_CFG_STATIC    // fusion @ BNO_RV_STATIC_INTERVAL_MS (slow)
+} BnoRunningCfg;
+
 const char* stateName(SystemState s) {
   switch (s) {
     case STATE_IDLE:             return "IDLE";
@@ -486,8 +501,8 @@ uint8_t      lastLoggedStability = 255;
 uint32_t     lastStabilityEvent  = 0;
 uint8_t      consecutiveResets   = 0;
 
-// ── BNO config guard ──
-bool         bnoInRunningMode    = false;
+// ── BNO config guard (type in Section 10) ──
+BnoRunningCfg bnoRunningCfg      = BNO_CFG_NONE;
 
 volatile bool imuDataReady = false;
 
@@ -1228,27 +1243,42 @@ void configureBNO_Idle() {
   delay(150);
 
   enableIdleReports();
-  bnoInRunningMode = false;
+  bnoRunningCfg = BNO_CFG_NONE;
 
   imu.wasReset();
 
   LOGF("BNO: IDLE %s armed as wake source", IDLE_WAKE_NAME);
 }
 
-void configureBNO_Running() {
-  if (bnoInRunningMode) {
-    LOGF("BNO: already in running mode — skipping reconfiguration");
+// Configure the BNO for a RUNNING state. ACTIVE uses the fast fusion rate,
+// STATIC the slow one; the classifier is identical in both. The delay(50) after
+// each enableReport lets the SH-2 firmware ack before the next command, avoiding
+// the buffer-overload/premature-reset seen without it (SparkFun issue #2).
+void configureBNO_Running(BnoRunningCfg desired) {
+  const char* name = (desired == BNO_CFG_STATIC) ? "STATIC" : "ACTIVE";
+
+  if (bnoRunningCfg == desired) {
+    LOGF("BNO: already in %s running mode — skipping reconfiguration", name);
     return;
   }
 
-  LOGF("BNO: configuring RUNNING mode (%s @ %dms, Classifier @ %dms)",
-       FUSION_NAME, BNO_RV_INTERVAL_MS, ACTIVE_STABILITY_MS);
+  uint16_t rvInterval = (desired == BNO_CFG_STATIC) ? BNO_RV_STATIC_INTERVAL_MS
+                                                    : BNO_RV_INTERVAL_MS;
+  enableFusionVector(rvInterval);   // RV or GRV — see Section 3b
+  delay(50);
 
-  enableFusionVector(BNO_RV_INTERVAL_MS);   // RV or GRV — see Section 3b
-  delay(50);   // let the SH-2 firmware ack each config frame before the next —
-  imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);   // avoids the enableReport
-  delay(50);   // command-buffer overload / premature reset (SparkFun issue #2)
-  bnoInRunningMode = true;
+  if (bnoRunningCfg == BNO_CFG_NONE) {
+    // From IDLE / post-reset the classifier isn't armed either; on an
+    // ACTIVE↔STATIC switch it's already running at the same rate, so skip it.
+    LOGF("BNO: configuring %s (%s @ %dms, Classifier @ %dms)",
+         name, FUSION_NAME, rvInterval, ACTIVE_STABILITY_MS);
+    imu.enableStabilityClassifier(ACTIVE_STABILITY_MS);
+    delay(50);
+  } else {
+    LOGF("BNO: switching to %s fusion rate (%s @ %dms)", name, FUSION_NAME, rvInterval);
+  }
+
+  bnoRunningCfg = desired;
 }
 
 
@@ -1286,10 +1316,12 @@ void applyPendingTransition() {
       if (!bleConnected) qspiSleep();
       break;
     case STATE_STATIC_POSTURE:
+      configureBNO_Running(BNO_CFG_STATIC);
+      if (bleReady) BLE.stopAdvertise();   // no offload outside IDLE
+      break;
     case STATE_ACTIVE_RECORDING:
-      configureBNO_Running();
-      // No offload outside IDLE — stop advertising (an existing connection stays).
-      if (bleReady) BLE.stopAdvertise();
+      configureBNO_Running(BNO_CFG_ACTIVE);
+      if (bleReady) BLE.stopAdvertise();   // no offload outside IDLE
       break;
   }
 
@@ -1322,8 +1354,10 @@ void checkWatchdog() {
 
   imu.softReset();
   delay(150);
-  bnoInRunningMode = false;
-  configureBNO_Running();
+  // Soft reset cleared every report — re-arm from scratch for the current state.
+  bnoRunningCfg = BNO_CFG_NONE;
+  configureBNO_Running(currentState == STATE_STATIC_POSTURE ? BNO_CFG_STATIC
+                                                            : BNO_CFG_ACTIVE);
 
   lastStabilityEvent = millis();
 }
@@ -1415,8 +1449,19 @@ void handleIdle() {
   if (imu.wasReset()) {
     // Periodic idle self-reboot (inherent — see Section 3). Re-arm the
     // detector and drain the post-reset advertisement the hub emits on boot.
-    LOGF("IDLE: BNO reset — re-arming detector");
-    bnoInRunningMode = false;
+    // Log ms-since-last-reset. The detector's inherent idle self-reset runs
+    // ~6.7s apart (benign — IDLE logs nothing and re-arms); a useful field
+    // diagnostic if that cadence ever changes.
+    static uint32_t lastIdleResetMs = 0;
+    uint32_t nowReset = millis();
+    if (lastIdleResetMs) {
+      LOGF("IDLE: BNO reset — %lums since last reset — re-arming detector",
+           nowReset - lastIdleResetMs);
+    } else {
+      LOGF("IDLE: BNO reset (first) — re-arming detector");
+    }
+    lastIdleResetMs = nowReset;
+    bnoRunningCfg = BNO_CFG_NONE;
     enableIdleReports();
 
     delay(50);
@@ -1477,9 +1522,9 @@ void handleIdle() {
       uint8_t val = imu.getStabilityClassifier();
 
       // DIAGNOSTIC: print the raw value on EVERY 0x1C event (not just EXITED),
-      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If
-      // the heartbeats stream a steady non-2 value even while shaking, the
-      // detector isn't delivering the EXITED edge on the channel we read.
+      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If a
+      // 0x1C event reports a steady non-2 value even while shaking, the detector
+      // isn't delivering the EXITED edge on the channel we read.
       LOGF("DETECTOR: 0x1C val=%u (ENTERED=1 EXITED=2)", val);
 
       if (val == DETECTOR_EXITED) {
@@ -1504,8 +1549,8 @@ void handleIdle() {
 void handleStaticPosture() {
   if (imu.wasReset()) {
     LOGF("IMU: reset in STATIC_POSTURE — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
-    bnoInRunningMode = false;
-    configureBNO_Running();
+    bnoRunningCfg = BNO_CFG_NONE;
+    configureBNO_Running(BNO_CFG_STATIC);
     lastStabilityEvent = millis();
   }
 
@@ -1576,8 +1621,8 @@ void handleStaticPosture() {
 void handleActiveRecording() {
   if (imu.wasReset()) {
     LOGF("IMU: reset in ACTIVE_RECORDING — reason: %u — reconfiguring", (unsigned)imu.getResetReason());
-    bnoInRunningMode = false;
-    configureBNO_Running();
+    bnoRunningCfg = BNO_CFG_NONE;
+    configureBNO_Running(BNO_CFG_ACTIVE);
     lastStabilityEvent = millis();
   }
 
