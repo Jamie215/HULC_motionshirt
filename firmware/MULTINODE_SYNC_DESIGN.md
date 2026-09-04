@@ -114,62 +114,21 @@ artifact).
 
 ## Coordinated trigger (Req 1, the non-alignment half)
 
-Today each node runs its **own** stability detector and transitions
+Each node runs its **own** stability detector and transitions
 independently. Risk: a **low-motion body segment** (e.g. torso) may not trip its
 own detector, so it stays in IDLE and misses the event.
 
-Plan: a **shared "any node detected motion → everyone record" trigger**,
+Proposal: a **shared "any node detected motion → everyone record" trigger**,
 distributed over BLE by the central, plus a short **pre-roll buffer** (keep the
 last ~1 s of samples) so the boundary isn't lost. Because samples are
 timestamped and analysis is offline, the trigger's BLE latency (hundreds of ms)
 is acceptable — it does **not** need ms-level distribution.
 
-**Whether to build the shared trigger at all is still open** (the coverage
-failure may be rare enough not to justify it). The subsection below is **not**
-that decision — it records a constraint that shapes any coverage fix, wireless
-trigger or not.
+**Implementation decision**
 
-### Constraint: the trigger has no sensitivity knob, and adding one costs idle power
-
-A tempting cheaper alternative to a shared trigger is "just make each node's
-local detector more sensitive so the quiet segment trips on its own." That knob
-**does not exist as-is.** The wake/trigger runs off the BNO086's **Stability
-Detector / Classifier** (`0x1C` / `0x13`), which emits a **discrete
-classification** (`Stable` vs `Motion`) from the MotionEngine — the sensitivity
-is baked into the fusion firmware and is not exposed as a numeric threshold we
-can lower.
-
-To get a real, tunable sensitivity knob we would have to compute our **own**
-software motion metric — e.g. angular speed from the rotation vector / gyro (the
-same feature `reconcile_nodes.py` already uses offline) — and threshold that
-ourselves. The catch is a coupling to power: computing angular speed means
-running **fusion (gyro)**, i.e. the classifier-style config, which raises idle
-current above the accel-only detector's ~12 mA. The low-power **accel-only**
-detector is precisely the one that gives us *no* threshold. **Trigger
-sensitivity and idle power are therefore coupled** — you cannot make local
-detection tunable without leaving the cheap idle path. (See `IDLE_WAKE_SOURCE.md`
-for the detector/classifier trade.)
-
-Consequences for any coverage fix:
-
-- **Cheap, no new knob:** a **pre-roll buffer + post-motion hangover** (stay in
-  ACTIVE for N seconds after the classifier returns to `Stable`) catches motion
-  the classifier under-called on its edges — but does nothing for a segment that
-  *never* leaves `Stable`.
-- **Cheap, closes the epistemic gap:** keep the **slow keep-alive log** (the
-  ~0.2 Hz STATIC_POSTURE heartbeat) running in the quiet states so a `Stable`
-  segment is **positively recorded as still**, not left as a gap that can't be
-  told apart from a missed trigger or a dropout.
-- **Real sensitivity, real cost:** only a software angular-speed trigger gives a
-  tunable threshold, and it charges the fusion/idle-power tax above. Reach for it
-  only if bench data shows real segments genuinely missing meaningful motion.
-
-## GPIO shared pulse — demoted
-
-With "no wires" as a constraint, a shared GPIO line is **not** the production
-sync mechanism. It remains useful only as an **optional, temporary bench tool**
-to ground-truth that the wireless offline-sync method actually hits the 25–50 ms
-target. Not on the critical path.
+After discussion with the PIs, the node's idle state when there isn't a significant 
+motion was sufficient for the purpose of the project given implementing such measure
+can heavily cost the flexibility in design, battery life and flash storage.
 
 ## Open risks / next steps
 
@@ -183,7 +142,6 @@ target. Not on the critical path.
    `--selftest` validates the math with no hardware: recovers a known offset to
    ~15–18 ms, inside the 25–50 ms target. Next: run it on real offloaded logs
    from a shared-motion capture to confirm on-hardware.
-3. **Shared trigger + pre-roll** — add the coordinated-record path and buffer.
 4. **Confirm sync latency on iOS** — measure clock-offset read latency from a
    mobile/BlueZ central (should be ~tens of ms) to verify the 25–50 ms target
    is reachable.
