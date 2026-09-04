@@ -128,84 +128,45 @@ machine's logic; each is commented at its site.
    fusion vector is re-issued on each. Update the Measured results table with the
    STATIC figure once taken.
 
-7. **Significant Motion (0x12) wake source — retained as A/B option; blocked on
-   sensitivity, not power.** SIGMOTION is kept as a third `IDLE_WAKE_SOURCE`.
-   **Measured idle ~7.4 mA vs the detector's ~9 mA on the optimized build — a
-   real ~1.6 mA (~18%) saving.** (Ignore the ~8 mA figure once recorded in an
-   earlier AI-authored docs commit; it was never reproduced. The current numbers
-   are the measured ones.)
+7. **IDLE wake source — DETECTOR (default), CLASSIFIER, SIGMOTION.** Three
+   selectable wake sources (Section 3). Measured on the optimized build:
 
-   Note this *system* win coexists with the datasheet putting the SIGMOTION
-   sensor **above** the detector at the chip level (Figure 6-18): Significant
-   Motion ~0.48 mA vs Stability Detector ~0.06 mA. Both are true — the node saves
-   ~1.6 mA not because the sensor is cheaper (it isn't) but because the one-shot
-   event avoids the detector's ~1 Hz heartbeat and ~6.6 s reboot churn waking the
-   nRF. The system behavior dominates the tiny sensor delta.
+   | Source | Idle | Self-reset | Catches slow held-limb motion? |
+   |---|---|---|---|
+   | Stability Detector (default) | ~8.8 mA | ~6.7 s (benign) | Yes |
+   | Significant Motion | ~7.4 mA | none | No — energetic motion only |
+   | Stability Classifier | higher (gyro) | none | Yes |
 
-   **The blocker is sensitivity, and it is a signal mismatch, not a threshold.**
-   Bench testing: SIGMOTION fires on shaking / dropping the node, but does
-   **nothing** when a held arm is slowly stretched — the exact slow, deliberate
-   motions this device exists to capture. Significant Motion is a high-pass
-   motion-*energy* detector (Android semantics) built to reject gentle handling;
-   a slow stretch is low-energy, so it is below threshold by design. Its
-   threshold is not exposed, and lowering motion-energy sensitivity would invite
-   false wakes (each false IDLE→ACTIVE runs full fusion ~20 mA for ~70 s before
-   timing back to IDLE, which erases the 1.6 mA saving and logs junk) without
-   reliably catching slow *rotation* — accel energy is simply the wrong axis for
-   slow limb movement. The detector (default) catches these because its
-   stability/tilt behavior responds to the slow gravity-vector reorientation a
-   stretch produces.
+   **DETECTOR is the default** because it reliably wakes on slow, deliberate
+   motion (held-limb stretches). **SIGMOTION idles ~1.4 mA lower** — as a one-shot
+   event it does not run the detector's ~6.7 s self-reset — **but it only fires on
+   energetic motion (shake/pickup) and misses slow stretches** (its trigger is a
+   fixed, non-exposed motion-energy threshold). So SIGMOTION suits only cases
+   where slow-motion wake latency is acceptable (e.g. off-body standby), not
+   on-body capture. CLASSIFIER also avoids the reset but runs the gyro/MotionEngine
+   at higher idle current.
 
-   **Path forward (see backlog "tunable low-power wake that keeps slow-stretch
-   capture").** The real goal is the detector's sensitivity without its ~1 Hz
-   heartbeat. Candidates: an **on-change Accelerometer** (`changeSensitivity`)
-   that stays silent when still but wakes on any accel change (tilt or movement
-   transient), or the **detector reported on-change** rather than at 1 Hz. Both
-   need a bench A/B (power + does-it-catch-a-slow-stretch) before replacing the
-   detector default. Until one is proven, DETECTOR stays default and SIGMOTION is
-   the lowest-power option only where slow-motion wake latency is acceptable
-   (e.g. off-body standby).
+   The ~1.4 mA detector↔SIGMOTION gap is the self-reset cycle. That reset is
+   inherent to a non-fusion continuous sensor, is unaffected by report rate, and
+   is only removed by running the fusion engine (the classifier's cost) — so
+   **~8.8 mA is the detector's floor for slow-motion capture**; going lower while
+   keeping that capture needs a hardware wake (see the last backlog item). At the
+   chip level the datasheet (Fig 6-18) puts the SIGMOTION sensor above the detector
+   (~0.48 mA vs ~0.06 mA); SIGMOTION is still lower at the node level purely
+   because it avoids the reset.
+
+8. **Detector reported on-change (no ~1 Hz heartbeat).** The Stability Detector
+   fires EXITED the instant motion breaks stability regardless of its report
+   interval, so `IDLE_DETECTOR_INTERVAL_MS` is set long (60 s keepalive) and the
+   detector stays silent while still instead of waking the nRF ~1×/s. Measured
+   ~0.2 mA idle trim, with the ~6.7 s self-reset cadence and slow-motion
+   sensitivity both unchanged. `handleIdle()` logs ms-since-last-reset as a field
+   diagnostic of that cadence.
 
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
 were deliberately left out of the safe batch above.
-
-- **Tunable low-power wake that keeps slow-stretch capture (chase SIGMOTION's
-  ~1.6 mA).** SIGMOTION idles ~1.6 mA under the detector purely because it stays
-  silent when still — no ~1 Hz heartbeat waking the nRF (see Landed item 7) — but
-  it misses slow held-limb stretches (it thresholds motion *energy*, and a slow
-  stretch is low-energy). The detector already catches those stretches on
-  accelerometer alone, so the real goal is "detector sensitivity, minus the
-  heartbeat." Candidates, all needing a bench A/B (idle current AND
-  does-it-catch-a-slow-stretch on-body):
-  - **On-change Accelerometer** (`sh2_setSensorConfig` `changeSensitivity`): wake
-    when the acceleration reading moves by a tuned delta. It watches the *whole*
-    accel vector, so it catches both a slow tilt (gravity direction shifting) and
-    the start/stop transients of any real limb movement — the same two signals the
-    detector uses — while staying silent when still. Gives a real
-    power/sensitivity dial the fixed SIGMOTION threshold does not. Needs custom
-    wake logic (baseline compare) and likely a drop to the `sh2` driver (not
-    exposed by the SparkFun helper).
-  - **Detector reported on-change instead of at 1 Hz** — same proven sensor, just
-    stop the heartbeat so it only pokes the nRF on a stability change. Lowest
-    effort. **Under test now** via `IDLE_DETECTOR_QUIET` (Section 4): the interval
-    is stretched to 60 s so the detector is effectively silent-when-still while
-    EXITED still fires immediately on motion. The old warnings against this — a
-    stretched interval worsening the self-reset toward the ~1 s floor, and dropped
-    motion wakes — both date from the removed devSleep path, so they are being
-    re-measured hub-awake, not assumed. `handleIdle()` now logs ms-since-last-reset
-    so the bench shows immediately whether the reset stays ~6.5 s (good) or falls
-    toward ~1 s (abandon); the slow-stretch wake must also still fire.
-
-  Narrow blind spot (largely theoretical for a body-worn sensor): a *pure*,
-  constant-speed rotation about the vertical, with the node sitting exactly on the
-  rotation axis, moves neither gravity nor produces linear accel — only a gyro
-  (classifier) would catch it. On a limb the node is off-axis, so real movement
-  always produces some accel (that the accel-only detector already catches
-  stretches is the proof), so this rarely bites. The SH-2 Tilt Detector would be a
-  clean fit but is **not** in the BNO086 sensor list (datasheet Fig 6-18) — don't
-  count on it.
 
 - **Reconfigure BNO rate on watermark throttle.** When flash fills,
   `writeQuaternionSample()` halves `activeHz` (10→5→2), but that only changes the
@@ -248,8 +209,11 @@ were deliberately left out of the safe batch above.
   held on for the whole connection — could be dropped or briefly blinked during
   long offloads.
 
-- **Below hub-awake idle needs hardware.** Per `IDLE_WAKE_SOURCE.md`, the BNO's
-  own devSleep suppresses the motion wake, so idle floor on this chip is
-  hub-awake accel-only. Going lower would need a separate low-power motion
-  interrupt waking the nRF, which then powers the BNO — a hardware change, out of
-  scope for firmware alone.
+- **Below the detector's slow-motion floor needs hardware.** With the detector
+  (the only wake source that catches slow held-limb motion), idle floors at
+  ~8.8 mA — the remaining ~1.4 mA to SIGMOTION's ~7.4 mA is the detector's
+  inherent ~6.7 s self-reset, which only running the fusion engine removes (at
+  higher current) and which no report-rate change affects. Going lower while
+  keeping slow-motion capture would need a separate low-power motion sensor with
+  its own interrupt waking the nRF, which then powers the BNO — a hardware change,
+  out of scope for firmware alone.

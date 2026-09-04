@@ -99,16 +99,17 @@
 //                      All sources run the hub AWAKE (the BNO's own devSleep was
 //                      dropped — it suppressed the motion wake; see Section 3):
 //                      • DETECTOR (default) — Stability Detector (0x1C), accel
-//                        only. ~12mA idle, self-reboots ~6.6s (inherent, benign
-//                        re-arm). Most sensitive to slow motion. Motion = EXITED.
+//                        only, reported on-change. ~8.8mA idle; self-resets ~6.7s
+//                        (inherent, benign re-arm). Catches slow motion including
+//                        held-limb stretches. Motion = EXITED.
 //                      • CLASSIFIER — Stability Classifier (0x13), accel+gyro /
 //                        MotionEngine. Reset-FREE idle (fusion keeps the hub
 //                        active) at higher idle current. Motion = classifier ==
 //                        MOTION.
 //                      • SIGMOTION — Significant Motion (0x12), accel-only
-//                        one-shot. Lowest idle (~7.4mA) but only fires on
-//                        energetic motion (shake/drop), NOT slow held-limb
-//                        stretches. Motion = event fires. See IDLE_WAKE_SOURCE.md.
+//                        one-shot. Lowest idle (~7.4mA, no self-reset) but only
+//                        fires on energetic motion (shake/pickup), NOT slow
+//                        held-limb stretches. Motion = event fires.
 //   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, writes gated to 0.2Hz
 //   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
 //
@@ -212,35 +213,30 @@
 // low-power accel/motion interrupt waking the nRF), not the BNO's own devSleep.
 
 // ── IDLE wake source (compile-time A/B switch) ─────────────────────────────
-// DETECTOR   — Stability Detector (0x1C), accelerometer only. Runs hub-awake
-//              (~12mA idle) and self-reboots every ~6.6s (inherent — a benign
-//              re-arm; IDLE logs nothing). Lowest power of the working configs.
+// DETECTOR   — Stability Detector (0x1C), accelerometer only, reported on-change.
+//              ~8.8mA idle; self-resets every ~6.7s (inherent — a benign re-arm;
+//              IDLE logs nothing). Catches slow motion, including held-limb
+//              stretches. Default.
 // CLASSIFIER — Stability Classifier (0x13), accel+gyro through the MotionEngine.
-//              No idle reboot (fusion keeps the hub active), so idle current is
-//              higher. Reset-free middle ground; wakes IDLE on the same MOTION
-//              classification STATIC_POSTURE/ACTIVE act on.
+//              No idle reset (fusion keeps the hub active), at higher idle
+//              current. Wakes IDLE on the same MOTION classification
+//              STATIC_POSTURE/ACTIVE act on.
+// SIGMOTION  — Significant Motion (0x12), accelerometer-only one-shot. Lowest
+//              idle (~7.4mA) and does not self-reset, but fires only on energetic
+//              motion (shake/pickup), NOT slow held-limb stretches — its trigger
+//              is a fixed, non-exposed motion-ENERGY threshold. Suitable only
+//              where slow-motion wake latency is acceptable (e.g. off-body
+//              standby), not for on-body capture.
 //
 // See firmware/IDLE_WAKE_SOURCE.md and state_machine_test/FINDINGS.md for the
 // full investigation. Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
 #define IDLE_WAKE_SIGMOTION   2
-// Active choice below: DETECTOR — the lowest-power working path (accel-only,
-// hub awake). Its known limitation: being accelerometer-only it can miss pure
-// rotation of a rigid body (little linear accel), which can leave the node
-// stuck in IDLE with nothing logged. CLASSIFIER (accel+gyro) wakes on ROTATION
-// too and is reset-free, at the cost of higher idle current — flip to
-// IDLE_WAKE_CLASSIFIER if missed-rotation wakeups become a problem.
-//
-// SIGMOTION (Significant Motion 0x12) is a one-shot wake event and the
-// lowest-measured idle (~7.4mA vs the detector's ~9mA on the optimized build).
-// BUT its trigger is a high-pass motion-ENERGY threshold tuned to reject gentle
-// handling: bench testing fired it on shaking / dropping the node, but NOT on
-// slowly stretching a held arm — the exact slow, deliberate motions this device
-// must catch. Its threshold is not exposed (fixed Android semantics), and
-// lowering motion-energy sensitivity invites false wakes without reliably
-// catching slow rotation. Keep it only where slow-motion wake latency is
-// acceptable. See firmware/POWER_OPTIMIZATION.md.
+// DETECTOR is the default: it catches slow, deliberate motion (held-limb
+// stretches) at ~8.8mA. SIGMOTION idles ~1.4mA lower because it does not run the
+// detector's ~6.7s self-reset, but misses those slow motions, so it is not a
+// drop-in replacement. CLASSIFIER is the reset-free option at higher current.
 #define IDLE_WAKE_SOURCE      IDLE_WAKE_DETECTOR
 
 #if   IDLE_WAKE_SOURCE == IDLE_WAKE_DETECTOR
@@ -314,28 +310,13 @@
 #define IDLE_STABILITY_MS           1000
 
 // IDLE arms the Stability DETECTOR (0x1C) as the wake source (see Section 3).
-// The detector runs hub-awake and STREAMS a heartbeat report at this interval;
-// each report wakes the nRF. enableReport() takes MILLISECONDS.
-//
-// EXPERIMENT — drop the heartbeat (IDLE_DETECTOR_QUIET). The detector is a
-// change/event sensor: it fires EXITED the moment motion breaks stability
-// regardless of this interval, so the periodic report is only a heartbeat. A
-// long interval makes it effectively silent-when-still (like SIGMOTION) to see
-// if idle current drops toward SIGMOTION's ~7.4 mA WITHOUT SIGMOTION's
-// slow-motion blind spot (the detector still catches slow stretches).
-//
-// The old warning that a long interval worsens the ~6.5 s self-reset (→ ~1 s
-// floor) and drops motion wakes came from the removed devSleep path, so it is
-// being RE-TESTED hub-awake. Watch the serial "IDLE: BNO reset — <ms> since
-// last" line: if the reset interval stays ~6.5 s and a slow stretch still wakes
-// IDLE→ACTIVE, quiet mode wins the saving. Flip to 0 to A/B against the ~1 Hz
-// heartbeat. See firmware/POWER_OPTIMIZATION.md.
-#define IDLE_DETECTOR_QUIET         1            // 1 = drop heartbeat (report on-change), 0 = ~1Hz heartbeat
-#if IDLE_DETECTOR_QUIET
-  #define IDLE_DETECTOR_INTERVAL_MS 60000UL      // effectively on-change: 60s keepalive, EXITED still immediate
-#else
-  #define IDLE_DETECTOR_INTERVAL_MS 1000UL       // ~1Hz heartbeat (original responsive default)
-#endif
+// enableReport() takes MILLISECONDS. The detector is a change/event sensor: it
+// fires EXITED the instant motion breaks stability regardless of this interval,
+// so the periodic report is only a keepalive. It is set long (on-change) so the
+// detector stays silent while still instead of waking the nRF ~1×/s — a small
+// idle-current trim with no loss of motion sensitivity and no effect on the
+// detector's inherent ~6.7s self-reset. See firmware/POWER_OPTIMIZATION.md.
+#define IDLE_DETECTOR_INTERVAL_MS   60000UL      // on-change: 60s keepalive, EXITED fires immediately
 
 
 // =============================================================================
@@ -1468,9 +1449,9 @@ void handleIdle() {
   if (imu.wasReset()) {
     // Periodic idle self-reboot (inherent — see Section 3). Re-arm the
     // detector and drain the post-reset advertisement the hub emits on boot.
-    // Log ms-since-last-reset so the heartbeat-drop experiment (Section 4,
-    // IDLE_DETECTOR_QUIET) can be read straight off serial: ~6.5s = still on the
-    // benign ceiling; a drop toward ~1s = the reset race bit, abandon quiet mode.
+    // Log ms-since-last-reset. The detector's inherent idle self-reset runs
+    // ~6.7s apart (benign — IDLE logs nothing and re-arms); a useful field
+    // diagnostic if that cadence ever changes.
     static uint32_t lastIdleResetMs = 0;
     uint32_t nowReset = millis();
     if (lastIdleResetMs) {
@@ -1541,9 +1522,9 @@ void handleIdle() {
       uint8_t val = imu.getStabilityClassifier();
 
       // DIAGNOSTIC: print the raw value on EVERY 0x1C event (not just EXITED),
-      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If
-      // the heartbeats stream a steady non-2 value even while shaking, the
-      // detector isn't delivering the EXITED edge on the channel we read.
+      // so a bench shake shows whether val ever reaches DETECTOR_EXITED(2). If a
+      // 0x1C event reports a steady non-2 value even while shaking, the detector
+      // isn't delivering the EXITED edge on the channel we read.
       LOGF("DETECTOR: 0x1C val=%u (ENTERED=1 EXITED=2)", val);
 
       if (val == DETECTOR_EXITED) {
