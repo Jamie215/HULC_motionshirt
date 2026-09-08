@@ -1,9 +1,11 @@
 # Setup & Calibration — Design Plan (pipeline stages 5–7)
 
-Planning doc for the **not-yet-built** stages of the analysis pipeline, and the
-record of the design decisions behind them. Stages 1–4 (capture → offload →
-reconcile → montage/resolve) exist in `firmware/` and `tools/`; this covers what
-comes after, in build order:
+Planning doc for the later stages of the analysis pipeline, and the record of the
+design decisions behind them. Stages 1–4 (capture → offload → reconcile →
+montage/resolve) exist in `firmware/` and `tools/`; **stage 5 (calibration) is now
+built** — `calibrate_segments.py` implements §4 below (the sensor→segment solve
+with the cache-and-verify contract). This doc covers stage 5 and what still comes
+after, in build order:
 
 - **§2 Configuration & node identity** — how a node knows/records where it is.
 - **§3 Time offset vs. mounting calibration** — two different quantities, two
@@ -104,6 +106,13 @@ because power-up resets the clocks.
 
 ## 4. Calibration (stage 5) — the sensor→segment solve
 
+> **Built:** `calibrate_segments.py` (`calibrate` / `verify` / `selftest`). It
+> reads the reconcile `aligned.csv` + a montage, solves the per-segment mounting
+> offset over the neutral-pose window, and emits `calibration.json` with the
+> consistency baseline. `verify` runs the reuse-vs-re-pose check below against a
+> cached calibration. Anatomy (segments, joint adjacency) is imported from
+> `motion_capabilities.py` so there is one body model.
+
 **What it computes:** the mounting offset for each node — the rotation from the
 sensor's frame to its segment's anatomical frame. The mag-referenced world frame
 is *given*, so this is a sensor-to-segment calibration, **not** a "resting
@@ -165,9 +174,10 @@ neutral pose is how you *see* whether calibration worked.**
 
 ## 6. Build order
 
-1. **Stage 5 calibration** with the cache-and-verify contract (§4) — the gate for
-   every clinical angle.
+1. ~~**Stage 5 calibration** with the cache-and-verify contract (§4)~~ — **done**
+   (`calibrate_segments.py`). The gate for every clinical angle.
 2. **Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.
+   *(next up — the calibrated orientation stream now exists to drive it.)*
 3. **Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
    logs, montage auto-populated.
 4. **Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
