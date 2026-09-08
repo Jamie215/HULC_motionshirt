@@ -337,16 +337,18 @@
       <div class="rail"><div class="idx">05</div><div class="stem"></div></div>
       <div class="card">
         <h3>Calibrate <span class="badge next">Next up</span></h3>
-        <p><b>Turn relative orientation into anatomical angles.</b> A node reports
-          orientation in its own mounting frame, offset from anatomy by however the
-          strap sat. A static <b>neutral / N-pose</b> (optionally plus a known
-          functional move) defines each segment's anatomical frame. Until this
-          exists, every angle the resolver lists is flagged <b>relative-only</b> —
-          a real number, but not a clinical one. This is what gates ROM.</p>
+        <p><b>Solve each sensor→segment mounting offset.</b> The mag-referenced
+          Rotation Vector already puts every node in a shared world frame, so the
+          one unknown left is how the sensor sits on the bone. A static
+          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero.
+          Validity is <b>per-don</b> — re-wearing shifts the straps — so the
+          result is <b>cached and verified</b>: reuse it if a quick still-pose
+          check passes, re-pose only when it drifts. Until it exists, every angle
+          is flagged <b>relative-only</b>. This gates ROM.</p>
         <div class="shape">
           <div class="lbl">emits · calibration.json (per segment)</div>
-          <pre><span class="c"># quaternion offset: mounting frame → anatomical frame</span>
-upper_arm_r → q_anat_offset,  neutral captured @ t_common_ms [1000,4000]</pre>
+          <pre><span class="c"># sensor→segment offset + a staleness check for the next don</span>
+upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency_baseline</pre>
         </div>
       </div>
     </div>

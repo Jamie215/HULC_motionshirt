@@ -141,19 +141,39 @@ consistent. Conventions follow the ISB recommendations (Wu et al., 2005).
 
 A raw relative quaternion between two nodes is a valid *relative* orientation,
 but its decomposition into flexion/abduction/rotation is meaningless until each
-segment's **anatomical frame** is known — the BNO reports orientation in its
-own mounting frame, offset from anatomy by however the strap sat.
+segment's **anatomical frame** is known. The BNO reports the **full Rotation
+Vector** (report `0x05`, magnetometer-referenced), so every node's orientation
+already lives in a **shared world frame** (gravity + magnetic north) — the
+cross-node *spatial* frame is largely given, not something calibration must
+build. What calibration solves is the remaining unknown: the **sensor→segment
+mounting offset** — how the sensor housing sits rotated/tilted on the bone,
+which the world frame says nothing about.
 
-So every calibration-dependent metric (all joint angles/ROM, posture dwell)
-is gated on `calibration.captured` **and** the relevant nodes'
-`calibrated` flag. When either is false the resolver still lists the metric
-but attaches a **relative-only** warning, so a UI can show the trace without
-claiming a clinical number. Uncalibrated segments propagate: an uncalibrated
-`forearm_r` flags both `elbow_r` and `wrist_r`.
+So calibration here is a **sensor-to-segment** calibration, not a "record the
+resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
 
-Minimum: a static **neutral/N-pose** zeroes each segment. Better: add a
-**functional** movement (a known single-DOF motion) to fix axis directions —
-recorded in `calibration.functional`.
+1. **Solves the mounting offset** — comparing the *known* anatomy of the pose
+   against the sensor reading recovers sensor→segment for each node.
+2. **Sets the anatomical zero** — "this configuration = 0°."
+3. **Heading co-registration fallback** — the mag usually ties the nodes'
+   headings together for free, but degrades near metal; the pose is a robust
+   on-body backup. (Optionally add a **functional** move — a known single-DOF
+   motion — to fix axis directions, recorded in `calibration.functional`.)
+
+Every calibration-dependent metric (all joint angles/ROM, posture dwell) is
+gated on `calibration.captured` **and** the relevant nodes' `calibrated` flag.
+When either is false the resolver still lists the metric but attaches a
+**relative-only** warning, so a UI can show the trace without claiming a
+clinical number. Uncalibrated segments propagate: an uncalibrated `forearm_r`
+flags both `elbow_r` and `wrist_r`.
+
+**Validity is per-don, and cached-with-verify** — the mounting offset is a
+property of *this* wear, so it must be refreshed each time the garment is put
+back on (re-donning shifts the straps; a power cycle for charging alone does
+**not** invalidate it). It is cacheable: reuse the last calibration if a quick
+still-pose consistency check passes, re-pose only when it drifts. This is
+distinct from the **time offset**, a different quantity with a different
+lifetime — see `SETUP_AND_CALIBRATION_PLAN.md` §3.
 
 ---
 
