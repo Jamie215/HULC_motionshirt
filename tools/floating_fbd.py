@@ -10,13 +10,19 @@ reconcile → (optional) calibrate stream into a single self-contained HTML
 viewer that draws each placed segment as its own oriented bar, floating at a
 fixed slot, tilting/rolling as the subject moves.
 
-Why "floating" (the honest caveat, made visual)
------------------------------------------------
-Orientation is MEASURED; position/connection is MODELED. A node tells you which
-way its bone points, not where the bone is. So this first-tier FBD deliberately
-does NOT connect segments into a skeleton — each body floats at a fixed anchor
-and only its ORIENTATION is real. (The joint/chain tiers that add modeled
-connection come later; see SETUP_AND_CALIBRATION_PLAN.md §5.)
+Two layouts (toggle in the viewer)
+----------------------------------
+* FLOATING — each segment floats at a fixed slot, only its ORIENTATION real.
+  The honest first-tier view: orientation is MEASURED, position is not, so the
+  bodies are drawn apart on purpose.
+* SKELETON — the same measured orientations, now connected into a stickman by
+  forward kinematics (SETUP_AND_CALIBRATION_PLAN.md §5, joint/chain tier): root
+  the torso, place each segment's proximal end at its parent's joint, orient the
+  bone by its quaternion, step down the chain. The CONNECTIVITY is real (the
+  montage's kinematic chain, from motion_capabilities.JOINTS); the bone LENGTHS
+  and joint offsets are ASSUMED anatomy (the `ANAT` table in the viewer). A
+  segment whose parent node is absent falls back to a nominal root and draws
+  dashed, so "modeled" never masquerades as "measured".
 
 What it shows — and why it validates stages 5-6
 -----------------------------------------------
@@ -66,7 +72,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calibrate_segments import (  # noqa: E402
     load_aligned, load_montage, qmul, qnorm, _q_list,
 )
-from motion_capabilities import SEGMENTS  # noqa: E402
+from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
 IDENTITY_Q = [1.0, 0.0, 0.0, 0.0]
@@ -81,6 +87,24 @@ def _stride_for(n, max_frames):
     if max_frames <= 0 or n <= max_frames:
         return 1
     return int(np.ceil(n / float(max_frames)))
+
+
+def _parent_map(present):
+    """Kinematic parent per present segment (the connectivity for the skeleton).
+
+    The chain is REAL — it is the joint adjacency from the body model
+    (motion_capabilities.JOINTS: proximal->distal), not a viewer guess. A
+    segment's parent is the proximal side of a joint whose BOTH ends are placed
+    this session; a segment with no present proximal (the torso, or an orphan
+    whose parent node is missing) maps to None and becomes a root the viewer
+    anchors nominally. Only the bone LENGTHS and joint offsets are assumed
+    anatomy — those live in the viewer, clearly labeled as modeled.
+    """
+    parents = {s: None for s in present}
+    for j in JOINTS.values():
+        if j.distal in present and j.proximal in present:
+            parents[j.distal] = j.proximal
+    return parents
 
 
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES):
@@ -121,6 +145,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             neutral_window = [float(nw[0]), float(nw[1])]
 
     has_cal = any(s["calibrated"] for s in segments)
+    parents = _parent_map(set(seg_quats))
     return {
         "schema_version": SCHEMA_VERSION,
         "meta": {
@@ -137,7 +162,9 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "t0_ms": float(t_keep[0]),
             "t1_ms": float(t_keep[-1]),
             "neutral_window_ms": neutral_window,
+            "has_root": "torso" in seg_quats,
         },
+        "parents": parents,
         "segments": segments,
         "t_ms": [round(float(t), 1) for t in t_keep],
         "frames": frames,
@@ -320,8 +347,18 @@ def selftest():
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
-    print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline + the "
-          f"raw↔calibrated promise the viewer renders.")
+    # (6) Kinematic chain baked for the skeleton layout: the parent map is the
+    #     real joint adjacency — forearm hangs off upper arm, upper arm off
+    #     torso, and the torso roots (no parent).
+    par = scene["parents"]
+    check(par.get("forearm_r") == "upper_arm_r"
+          and par.get("upper_arm_r") == "torso"
+          and par.get("torso") is None
+          and scene["meta"]["has_root"] is True,
+          f"skeleton chain: {par}")
+
+    print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
+          f"raw↔calibrated promise, and the skeleton kinematic chain.")
     return 0 if ok else 1
 
 
@@ -438,20 +475,26 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <div class="eyebrow">Stage 7 &middot; segment tier</div>
   <h1>Floating-segment free-body diagram</h1>
   <div class="sub" id="sub">&mdash;</div>
-  <div class="stage">Each bar is one segment, oriented by its measured
-    quaternion and floating at a fixed slot. <b>Orientation is measured;
-    position is not</b> &mdash; the bodies are drawn apart on purpose, because a
-    node reports which way a bone points, not where it is. Drag to orbit &middot;
-    scroll to zoom.</div>
+  <div class="stage" id="stage"><b>Skeleton</b> connects the segments into a
+    stickman by forward kinematics: root the torso, hang each bone from its
+    parent's joint, orient it by the measured quaternion. The connectivity is
+    real (the montage's kinematic chain); the bone lengths and joint spots are
+    <b>assumed anatomy</b>. <b>Floating</b> drops the connection entirely &mdash;
+    each bar orients in place, the honest "orientation measured, position not"
+    view. Drag to orbit &middot; scroll to zoom.</div>
 </header>
 <main>
   <canvas id="view"></canvas>
   <div class="legend"><h2>Segments</h2><div id="legend"></div></div>
-  <div class="hint">world up = gravity (Z, blue axis) &middot; north = Y (green)
-    &middot; each bar carries a small local triad so roll is visible</div>
+  <div class="hint" id="hint">world up = gravity (Z, blue axis) &middot; north =
+    Y (green)</div>
 </main>
 <footer>
   <button id="play" class="primary">&#9654; Play</button>
+  <div class="toggle" id="layout">
+    <button data-layout="skeleton">Skeleton</button>
+    <button data-layout="floating">Floating</button>
+  </div>
   <div class="toggle" id="mode">
     <button data-mode="raw">Raw</button>
     <button data-mode="cal">Calibrated</button>
@@ -500,9 +543,32 @@ function qrot(q,v){
   return add(add(v,scl(t,w)), cross(u,t));
 }
 
+// ---- ASSUMED anatomy for the connected (skeleton) layout ----
+// The connectivity (PARENTS, baked from the montage/body model) is real; the
+// numbers here are MODELED: nominal bone length, the bone's direction in the
+// calibrated frame at neutral (torso runs up +Z; a hanging arm runs down -Z),
+// and where a parent hands off to its child (`sockets` — only the torso has a
+// lateral one: the shoulders sit near its top corners). Change these to fit a
+// subject; they never touch the measured orientation, only where a bar is drawn.
+const ANAT = {
+  torso:       {len:.50, dir:[0,0,1],  thick:.075, sockets:{
+                  upper_arm_r:[-.21,0,.44], upper_arm_l:[.21,0,.44]}},
+  upper_arm_r: {len:.30, dir:[0,0,-1], thick:.05},
+  upper_arm_l: {len:.30, dir:[0,0,-1], thick:.05},
+  forearm_r:   {len:.26, dir:[0,0,-1], thick:.042},
+  forearm_l:   {len:.26, dir:[0,0,-1], thick:.042},
+  hand_r:      {len:.18, dir:[0,0,-1], thick:.036},
+  hand_l:      {len:.18, dir:[0,0,-1], thick:.036},
+};
+const PARENTS = DATA.parents || {};
+const ROOT_BASE = [0,0,-0.22];               // torso proximal (pelvis) in world
+const SIDE_ROOT = {                          // fallback shoulders when no torso
+  upper_arm_r:[-.21,0,.22], upper_arm_l:[.21,0,.22]};
+
 const cvs=document.getElementById('view'), ctx=cvs.getContext('2d');
 const UP=[0,0,1], FOV=45*Math.PI/180, LIGHT=norm([0.45,0.55,1.0]);
-const GROUND=-1.72;
+const TARGET={floating:[0,0,-0.62], skeleton:[0,0,-0.30]};
+const GROUNDS={floating:-1.72, skeleton:-1.30};
 let DPR=1, W=0, H=0;
 
 // A unit box's 6 faces as vertex-index quads (verts built per body below).
@@ -523,9 +589,10 @@ for(const s of DATA.segments){
 }
 
 // ---- camera (Z-up spherical orbit) ----
-const T=[0,0,-0.62]; let az=Math.PI*0.14, el=Math.PI*0.36, rad=3.15;
+let az=Math.PI*0.14, el=Math.PI*0.36, rad=3.15;
 let cam, fwd, right, tup, focal, ccx, ccy;
 function updateCamera(){
+  const T=TARGET[layout];
   cam=[T[0]+rad*Math.sin(el)*Math.cos(az), T[1]+rad*Math.sin(el)*Math.sin(az),
        T[2]+rad*Math.cos(el)];
   fwd=norm(sub(T,cam)); right=norm(cross(fwd,UP)); tup=cross(right,fwd);
@@ -540,9 +607,43 @@ function project(P){
 // ---- playback / view state ----
 const N=DATA.meta.n_frames;
 let frame=0, mode=DATA.meta.has_calibration?'cal':'raw', playing=false;
+// default to the connected stickman when we can root it and it's calibrated;
+// otherwise the honest floating view.
+let layout=(DATA.meta.has_calibration && DATA.meta.has_root)?'skeleton':'floating';
 function segQuat(b,i){
   const q=b.frames[i];
   return mode==='cal' ? qmul(q,b.offset) : q;
+}
+
+// ---- forward kinematics for the connected layout ----
+// Root the torso (or a nominal shoulder if absent); place each child's proximal
+// end at its parent's hand-off socket, orient the bone by its MEASURED
+// quaternion, step down the chain. Position is modeled; orientation is real.
+const present=new Set(DATA.segments.map(s=>s.segment));
+function fkPose(){
+  const q={}; for(const b of bodies) q[b.seg]=segQuat(b,frame);
+  const memo={};
+  function prox(seg){
+    if(seg in memo) return memo[seg];
+    const p=PARENTS[seg];
+    let r;
+    if(p && present.has(p)){
+      const pa=ANAT[p]||{dir:[0,0,-1],len:.2};
+      const socket=(pa.sockets&&pa.sockets[seg])||scl(pa.dir,pa.len);
+      r=add(prox(p), qrot(q[p], socket));
+    } else if(seg==='torso'){ r=ROOT_BASE.slice(); }
+    else if(SIDE_ROOT[seg]){ r=SIDE_ROOT[seg].slice(); }
+    else { r=(SEG[seg]||{anchor:[0,0,0]}).anchor.slice(); }
+    return memo[seg]=r;
+  }
+  const fk={};
+  for(const b of bodies){
+    const a=ANAT[b.seg]||{dir:[0,0,-1],len:.2};
+    const P=prox(b.seg);
+    fk[b.seg]={prox:P, dist:add(P,qrot(q[b.seg],scl(a.dir,a.len))),
+      q:q[b.seg], connected:!!(PARENTS[b.seg]&&present.has(PARENTS[b.seg]))};
+  }
+  return fk;
 }
 
 // ---- the renderer ----
@@ -556,13 +657,24 @@ function render(){
 
   // ground grid (drawn first, underneath)
   ctx.lineWidth=1; ctx.strokeStyle=cssVar('--grid'); ctx.globalAlpha=0.6;
-  const R=2.0, step=0.4;
+  const gz=GROUNDS[layout], R=2.0, step=0.4;
   for(let a=-R;a<=R+1e-6;a+=step){
-    line([a,-R,GROUND],[a,R,GROUND]); line([-R,a,GROUND],[R,a,GROUND]);
+    line([a,-R,gz],[a,R,gz]); line([-R,a,gz],[R,a,gz]);
   }
   ctx.globalAlpha=1;
 
-  // collect every box face as a polygon with a camera-depth key
+  if(layout==='skeleton') renderSkeleton(); else renderFloating();
+
+  // world axis gnomon: at the origin in floating (unambiguous "up"), off in a
+  // ground corner in skeleton so it doesn't poke through the figure.
+  ctx.lineWidth=2;
+  triad(layout==='skeleton'?[-1.4,-1.4,GROUNDS.skeleton]:[0,0,0],
+        [1,0,0,0],0.34,true);
+}
+
+// each segment as its own oriented box, floating at a fixed slot (the honest
+// "orientation measured, position NOT" view).
+function renderFloating(){
   const polys=[];
   for(const b of bodies){
     const q=segQuat(b,frame);
@@ -572,14 +684,12 @@ function render(){
       const pp=wp.map(project);
       if(pp.some(p=>p===null)) continue;
       const nrm=norm(cross(sub(wp[1],wp[0]),sub(wp[2],wp[0])));
-      // outward-normal light; use abs so inner faces aren't black
       const lit=0.55+0.45*Math.max(0,Math.abs(dot(nrm,LIGHT)));
       const depth=(pp[0].z+pp[1].z+pp[2].z+pp[3].z)/4;
       polys.push({pp, color:shade(b.color,lit), depth});
     }
   }
-  // painter's algorithm: far first
-  polys.sort((a,b)=>b.depth-a.depth);
+  polys.sort((a,b)=>b.depth-a.depth);            // painter's: far first
   for(const p of polys){
     ctx.beginPath(); ctx.moveTo(p.pp[0].x,p.pp[0].y);
     for(let i=1;i<4;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
@@ -587,30 +697,80 @@ function render(){
     ctx.fillStyle=rgb(p.color); ctx.fill();
     ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.18)'; ctx.stroke();
   }
-
-  // per-body overlays: local triad (roll cue) + distal cap + label
   ctx.lineWidth=2.5; ctx.lineCap='round';
   for(const b of bodies){
-    const q=segQuat(b,frame), O=b.anchor, aL=b.cross*1.7;
-    triad(O,q,aL);
-    // distal end marker (bright dot) at local +Z tip
+    const q=segQuat(b,frame), O=b.anchor;
+    triad(O,q,b.cross*1.7);                       // roll cue
     const tip=project(add(O,qrot(q,[0,0,b.len])));
     if(tip){
       ctx.beginPath(); ctx.arc(tip.x,tip.y,4.5,0,7); ctx.fillStyle='#fff';
       ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle=rgb(b.color); ctx.stroke();
     }
-    // label above the tip
-    const lp=project(add(O,qrot(q,[0,0,b.len+0.14])));
-    if(lp){
-      ctx.font='600 12px ui-monospace,monospace';
-      ctx.textAlign='center'; ctx.textBaseline='bottom';
-      ctx.fillStyle=cssVar('--ink'); ctx.globalAlpha=0.9;
-      ctx.fillText(b.seg,lp.x,lp.y); ctx.globalAlpha=1;
+    label(add(O,qrot(q,[0,0,b.len+0.14])), b.seg);
+  }
+}
+
+// the connected stickman: bones drawn proximal->distal via forward kinematics.
+function renderSkeleton(){
+  const fk=fkPose();
+  // bones, depth-sorted (thickness is perspective-correct via the midpoint z)
+  const bones=[];
+  for(const b of bodies){
+    const f=fk[b.seg]; const a=project(f.prox), c=project(f.dist);
+    if(!a||!c) continue;
+    const thick=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
+    bones.push({a,c,color:b.color,thick,z:(a.z+c.z)/2,connected:f.connected,
+      seg:b.seg});
+  }
+  bones.sort((x,y)=>y.z-x.z);
+  ctx.lineCap='round';
+  for(const bn of bones){
+    const w=Math.max(3, focal*bn.thick/bn.z);
+    if(!bn.connected){                              // orphan: dashed, muted
+      ctx.setLineDash([6,5]); ctx.globalAlpha=.6;
+    }
+    ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)';
+    seg2d(bn.a,bn.c);
+    ctx.lineWidth=w; ctx.strokeStyle=rgb(bn.color); seg2d(bn.a,bn.c);
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+  }
+  // joint dots at each shared connection + leaf tips
+  for(const b of bodies){
+    const f=fk[b.seg];
+    for(const P of [f.prox, f.dist]){
+      const p=project(P); if(!p) continue;
+      const r=Math.max(2.5, focal*0.028/p.z);
+      ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7);
+      ctx.fillStyle='#fff'; ctx.fill();
+      ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(b.color,.85)); ctx.stroke();
     }
   }
+  // a head above the torso, so the figure reads as a person
+  const th=fk['torso'];
+  if(th){
+    const hc=add(th.dist, qrot(th.q,[0,0,0.10])), hp=project(hc);
+    if(hp){
+      const r=Math.max(4, focal*0.085/hp.z);
+      ctx.beginPath(); ctx.arc(hp.x,hp.y,r,0,7);
+      ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.9; ctx.fill();
+      ctx.globalAlpha=1; ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.25)';
+      ctx.stroke();
+    }
+  }
+  // labels at each bone's distal end
+  for(const b of bodies){
+    const f=fk[b.seg];
+    label(add(f.dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)), b.seg);
+  }
+}
 
-  // world axis triad at origin (thin), so "up" is unambiguous
-  ctx.lineWidth=2; triad([0,0,0],[1,0,0,0],0.34,true);
+function seg2d(a,b){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
+function label(P,text){
+  const lp=project(P); if(!lp) return;
+  ctx.font='600 12px ui-monospace,monospace';
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillStyle=cssVar('--ink'); ctx.globalAlpha=0.9;
+  ctx.fillText(text,lp.x,lp.y); ctx.globalAlpha=1;
 }
 
 function line(A,B){
@@ -664,7 +824,8 @@ if(window.matchMedia)
 // ---- UI wiring ----
 const scrub=document.getElementById('scrub'), tlabel=document.getElementById('tlabel'),
   playBtn=document.getElementById('play'), neutralBtn=document.getElementById('neutral'),
-  modeBox=document.getElementById('mode'), subEl=document.getElementById('sub');
+  modeBox=document.getElementById('mode'), layoutBox=document.getElementById('layout'),
+  hintEl=document.getElementById('hint'), subEl=document.getElementById('sub');
 scrub.max=Math.max(0,N-1);
 const fmtS=ms=>(ms/1000).toFixed(2)+' s';
 function setFrame(i){
@@ -693,6 +854,20 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
+const HINTS={
+  skeleton:'connected by forward kinematics · bone lengths & joint spots are '+
+    'assumed anatomy, only orientation is measured · a dashed bone has no '+
+    'parent node placed',
+  floating:'orientation measured, position NOT · each bar carries a small local '+
+    'triad so roll is visible · world up = gravity (Z, blue)'};
+function setLayout(l){
+  layout=l; hintEl.innerHTML=HINTS[l];
+  for(const b of layoutBox.querySelectorAll('button'))
+    b.classList.toggle('on',b.dataset.layout===l);
+}
+layoutBox.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(b) setLayout(b.dataset.layout);
+});
 neutralBtn.addEventListener('click',()=>{
   const nw=DATA.meta.neutral_window_ms; if(!nw) return;
   const mid=(nw[0]+nw[1])/2; let best=0,bd=Infinity;
@@ -734,7 +909,7 @@ function tick(now){
   requestAnimationFrame(tick);
 }
 
-resize(); setMode(mode); setFrame(0);
+resize(); setMode(mode); setLayout(layout); setFrame(0);
 requestAnimationFrame(tick);
 </script>
 </body>
