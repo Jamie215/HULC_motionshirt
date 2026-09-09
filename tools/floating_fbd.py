@@ -20,12 +20,15 @@ Two layouts (toggle in the viewer)
   the torso, place each segment's proximal end at its parent's joint, orient the
   bone by its quaternion, step down the chain. The CONNECTIVITY is real (the
   montage's kinematic chain, from motion_capabilities.JOINTS); the bone LENGTHS
-  and joint offsets are ASSUMED anatomy (the `ANAT` table in the viewer). A
-  segment whose parent node is absent falls back to a nominal root and draws
-  dashed, so "modeled" never masquerades as "measured". With NO torso but both
-  arms placed (the bilateral asymmetry montage), each arm roots at a nominal
-  shoulder and a fixed dashed girdle labeled "torso — not measured" bridges
-  them, so the two arms read as one body without faking a trunk.
+  and joint offsets are ASSUMED anatomy (the `ANAT` table in the viewer).
+  Missing nodes never break the figure and never masquerade as measured:
+    - a MISSING MIDDLE segment (e.g. torso + forearm, no upper arm) is drawn as
+      a dashed "ghost" bone at rest, hung from the nearest measured ancestor's
+      joint, and the measured descendant attaches to its end — orientation is
+      real where a node exists, assumed (at rest) where one is missing;
+    - with NO torso but both arms placed (the bilateral asymmetry montage) each
+      arm roots at a nominal shoulder and a fixed dashed girdle labeled "torso —
+      not measured" bridges them, so the arms read as one body without a trunk.
 
 What it shows — and why it validates stages 5-6
 -----------------------------------------------
@@ -110,6 +113,22 @@ def _parent_map(present):
     return parents
 
 
+def _anat_chain():
+    """The FULL anatomical parent per segment, independent of what's placed.
+
+    Unlike `_parent_map` (which gates on presence), this is the complete
+    body-model chain (torso←upper_arm←forearm←hand per side). The viewer walks
+    it to bridge a MISSING middle segment: e.g. torso + forearm but no upper
+    arm — the forearm still knows it descends from the torso through the (absent)
+    upper arm, so the viewer can hang it off the shoulder with a dashed ghost
+    upper arm rather than dropping it into space.
+    """
+    chain = {s: None for s in SEGMENTS}
+    for j in JOINTS.values():
+        chain[j.distal] = j.proximal
+    return chain
+
+
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES):
     """Bake a viewer-ready scene dict from the aligned stream.
 
@@ -176,6 +195,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "skeleton_default": skeleton_default,
         },
         "parents": parents,
+        "anat_chain": _anat_chain(),
         "segments": segments,
         "t_ms": [round(float(t), 1) for t in t_keep],
         "frames": frames,
@@ -317,6 +337,19 @@ def selftest():
         }
         scene_bl = build_scene(csv, bl_montage, None, max_frames=50)
 
+        # A middle-gap montage: torso + forearm_r but NO upper arm. The forearm
+        # still descends from the torso through the (absent) upper arm, which the
+        # viewer bridges with a dashed ghost. We assert the baked chain that
+        # drives that.
+        gap_montage = {
+            "schema_version": "1.0", "subject": {"id": "GAP"},
+            "session": {"id": "gap"}, "calibration": {"captured": False},
+            "nodes": [
+                {"node_id": "T", "column": "n0", "segment": "torso"},
+                {"node_id": "F", "column": "n2", "segment": "forearm_r"}],
+        }
+        scene_gap = build_scene(csv, gap_montage, None, max_frames=50)
+
     ok = True
 
     def check(cond, msg):
@@ -391,9 +424,20 @@ def selftest():
           and scene_bl["parents"].get("upper_arm_r") is None,
           f"no-torso bilateral defaults to skeleton w/ girdle: {mbl}")
 
+    # (8) Middle gap (torso + forearm, no upper arm): the present-gated parent
+    #     of the forearm is None (its node's parent isn't placed), but the FULL
+    #     anatomical chain still routes forearm -> upper_arm -> torso, which is
+    #     what lets the viewer bridge the missing upper arm with a ghost.
+    ac = scene_gap["anat_chain"]
+    check(scene_gap["parents"].get("forearm_r") is None
+          and ac.get("forearm_r") == "upper_arm_r"
+          and ac.get("upper_arm_r") == "torso"
+          and ac.get("torso") is None,
+          f"middle-gap chain: parents={scene_gap['parents']} anat={ac}")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
-          f"raw↔calibrated promise, the skeleton chain, and the no-torso "
-          f"bilateral fallback.")
+          f"raw↔calibrated promise, the skeleton chain, the no-torso bilateral "
+          f"fallback, and the missing-middle ghost chain.")
     return 0 if ok else 1
 
 
@@ -579,7 +623,7 @@ function qrot(q,v){
 }
 
 // ---- ASSUMED anatomy for the connected (skeleton) layout ----
-// The connectivity (PARENTS, baked from the montage/body model) is real; the
+// The connectivity (the anatomical chain from the body model) is real; the
 // numbers here are MODELED: nominal bone length, the bone's direction in the
 // calibrated frame at neutral (torso runs up +Z; a hanging arm runs down -Z),
 // and where a parent hands off to its child (`sockets` — only the torso has a
@@ -595,10 +639,18 @@ const ANAT = {
   hand_r:      {len:.18, dir:[0,0,-1], thick:.036},
   hand_l:      {len:.18, dir:[0,0,-1], thick:.036},
 };
-const PARENTS = DATA.parents || {};
+// full anatomical chain (presence-independent) — lets us bridge a missing
+// middle segment with a dashed ghost instead of dropping its descendants.
+const ANAT_CHAIN = DATA.anat_chain || {};
 const ROOT_BASE = [0,0,-0.22];               // torso proximal (pelvis) in world
-const SIDE_ROOT = {                          // fallback shoulders when no torso
-  upper_arm_r:[-.21,0,.22], upper_arm_l:[.21,0,.22]};
+const IDENT = [1,0,0,0];
+// where an anatomical parent P hands off to its child C (in P's local frame):
+// the torso has lateral shoulder sockets; every other parent hands off at its
+// own distal tip.
+function socket(P,C){
+  const pa=ANAT[P]||{dir:[0,0,-1],len:.2};
+  return (pa.sockets&&pa.sockets[C])||scl(pa.dir,pa.len);
+}
 
 const cvs=document.getElementById('view'), ctx=cvs.getContext('2d');
 const UP=[0,0,1], FOV=45*Math.PI/180, LIGHT=norm([0.45,0.55,1.0]);
@@ -652,34 +704,38 @@ function segQuat(b,i){
 }
 
 // ---- forward kinematics for the connected layout ----
-// Root the torso (or a nominal shoulder if absent); place each child's proximal
-// end at its parent's hand-off socket, orient the bone by its MEASURED
-// quaternion, step down the chain. Position is modeled; orientation is real.
+// Walk the full anatomical chain from the (nominal) torso root down. Each link
+// is placed at its parent's hand-off socket and oriented by the parent's
+// MEASURED quaternion if that node is placed, or by identity (a "ghost" at rest)
+// if the node is MISSING. So a present bone always uses real orientation; a
+// missing middle bone becomes a dashed placeholder its descendants still hang
+// off of. Position is modeled; orientation is real wherever a node exists.
 const present=new Set(DATA.segments.map(s=>s.segment));
 function fkPose(){
   const q={}; for(const b of bodies) q[b.seg]=segQuat(b,frame);
+  const quatOf=seg=>present.has(seg)?q[seg]:IDENT;   // ghosts sit at rest
   const memo={};
-  function prox(seg){
+  function prox(seg){                                // world proximal of `seg`
     if(seg in memo) return memo[seg];
-    const p=PARENTS[seg];
-    let r;
-    if(p && present.has(p)){
-      const pa=ANAT[p]||{dir:[0,0,-1],len:.2};
-      const socket=(pa.sockets&&pa.sockets[seg])||scl(pa.dir,pa.len);
-      r=add(prox(p), qrot(q[p], socket));
-    } else if(seg==='torso'){ r=ROOT_BASE.slice(); }
-    else if(SIDE_ROOT[seg]){ r=SIDE_ROOT[seg].slice(); }
-    else { r=(SEG[seg]||{anchor:[0,0,0]}).anchor.slice(); }
+    const P=ANAT_CHAIN[seg];
+    const r = P ? add(prox(P), qrot(quatOf(P), socket(P,seg)))
+                : ROOT_BASE.slice();                 // torso = anatomical root
     return memo[seg]=r;
   }
-  const fk={};
-  for(const b of bodies){
-    const a=ANAT[b.seg]||{dir:[0,0,-1],len:.2};
-    const P=prox(b.seg);
-    fk[b.seg]={prox:P, dist:add(P,qrot(q[b.seg],scl(a.dir,a.len))),
-      q:q[b.seg], connected:!!(PARENTS[b.seg]&&present.has(PARENTS[b.seg]))};
-  }
-  return fk;
+  const dist=(seg,quat)=>{
+    const a=ANAT[seg]||{dir:[0,0,-1],len:.2};
+    return add(prox(seg), qrot(quat, scl(a.dir,a.len)));
+  };
+  // present bones (solid, real orientation)
+  const pos={};
+  for(const b of bodies) pos[b.seg]={prox:prox(b.seg), dist:dist(b.seg,q[b.seg])};
+  // ghost bones: absent ancestors (not the torso root) on some present lineage
+  const gset=new Set();
+  for(const b of bodies){ let s=ANAT_CHAIN[b.seg];
+    while(s){ if(!present.has(s) && s!=='torso') gset.add(s); s=ANAT_CHAIN[s]; } }
+  const ghosts=[];
+  for(const s of gset) ghosts.push({seg:s, prox:prox(s), dist:dist(s,IDENT)});
+  return {pos, ghosts, prox};
 }
 
 // ---- the renderer ----
@@ -748,12 +804,12 @@ function renderFloating(){
 
 // the connected stickman: bones drawn proximal->distal via forward kinematics.
 function renderSkeleton(){
-  const fk=fkPose();
+  const {pos, ghosts, prox}=fkPose();
   // assumed shoulder girdle: with no torso node we can't measure the trunk, so
-  // the two arms root at fixed nominal shoulders. Bridge them with a static
-  // dashed line (clearly "assumed, not measured") so the arms read as one body.
+  // the two arms root at nominal shoulders. Bridge them with a static dashed
+  // line (clearly "assumed, not measured") so the arms read as one body.
   if(!DATA.meta.has_root && present.has('upper_arm_l') && present.has('upper_arm_r')){
-    const Lp=SIDE_ROOT.upper_arm_l, Rp=SIDE_ROOT.upper_arm_r;
+    const Lp=prox('upper_arm_l'), Rp=prox('upper_arm_r');
     const a=project(Lp), c=project(Rp);
     if(a&&c){
       ctx.save();
@@ -765,54 +821,57 @@ function renderSkeleton(){
       label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
     }
   }
-  // bones, depth-sorted (thickness is perspective-correct via the midpoint z)
+  // collect bones (present solid + ghost dashed), depth-sorted; thickness is
+  // perspective-correct via the midpoint z.
   const bones=[];
-  for(const b of bodies){
-    const f=fk[b.seg]; const a=project(f.prox), c=project(f.dist);
-    if(!a||!c) continue;
-    const thick=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
-    bones.push({a,c,color:b.color,thick,z:(a.z+c.z)/2,connected:f.connected,
-      seg:b.seg});
-  }
+  const pushBone=(seg,f,ghost)=>{
+    const a=project(f.prox), c=project(f.dist); if(!a||!c) return;
+    bones.push({a,c, color:(SEG[seg]||{color:[136,136,136]}).color,
+      thick:(ANAT[seg]&&ANAT[seg].thick)||.05, z:(a.z+c.z)/2, ghost, seg});
+  };
+  for(const b of bodies) pushBone(b.seg, pos[b.seg], false);
+  for(const g of ghosts) pushBone(g.seg, g, true);
   bones.sort((x,y)=>y.z-x.z);
   ctx.lineCap='round';
   for(const bn of bones){
     const w=Math.max(3, focal*bn.thick/bn.z);
-    if(!bn.connected){                              // orphan: dashed, muted
-      ctx.setLineDash([6,5]); ctx.globalAlpha=.6;
-    }
-    ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)';
+    ctx.save();
+    if(bn.ghost){ ctx.setLineDash([6,5]); ctx.globalAlpha=.55; } // no node placed
+    ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)'; seg2d(bn.a,bn.c);
+    ctx.lineWidth=w; ctx.strokeStyle=rgb(bn.ghost?shade(bn.color,.9):bn.color);
     seg2d(bn.a,bn.c);
-    ctx.lineWidth=w; ctx.strokeStyle=rgb(bn.color); seg2d(bn.a,bn.c);
-    ctx.setLineDash([]); ctx.globalAlpha=1;
+    ctx.restore();
   }
-  // joint dots at each shared connection + leaf tips
+  // joint dots at every present connection (proximal + distal)
   for(const b of bodies){
-    const f=fk[b.seg];
+    const f=pos[b.seg], col=(SEG[b.seg]||{color:[136,136,136]}).color;
     for(const P of [f.prox, f.dist]){
       const p=project(P); if(!p) continue;
       const r=Math.max(2.5, focal*0.028/p.z);
       ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7);
       ctx.fillStyle='#fff'; ctx.fill();
-      ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(b.color,.85)); ctx.stroke();
+      ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(col,.85)); ctx.stroke();
     }
   }
-  // a head above the torso, so the figure reads as a person
-  const th=fk['torso'];
-  if(th){
-    const hc=add(th.dist, qrot(th.q,[0,0,0.10])), hp=project(hc);
-    if(hp){
-      const r=Math.max(4, focal*0.085/hp.z);
+  // a head above the torso — only when the torso is actually measured
+  if(present.has('torso')){
+    const f=pos['torso'], up=norm(sub(f.dist,f.prox));
+    const hp=project(add(f.dist, scl(up,0.10))), fz=project(f.dist);
+    if(hp&&fz){
+      const r=Math.max(4, focal*0.085/fz.z);
       ctx.beginPath(); ctx.arc(hp.x,hp.y,r,0,7);
       ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.9; ctx.fill();
       ctx.globalAlpha=1; ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.25)';
       ctx.stroke();
     }
   }
-  // labels at each bone's distal end
-  for(const b of bodies){
-    const f=fk[b.seg];
-    label(add(f.dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)), b.seg);
+  // labels: present bones at their distal end (ink); ghosts at their midpoint,
+  // faint and flagged "no node".
+  for(const b of bodies)
+    label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)), b.seg);
+  for(const g of ghosts){
+    const mid=scl(add(g.prox,g.dist),0.5);
+    label([mid[0],mid[1],mid[2]+0.05], g.seg+' · no node', cssVar('--faint'));
   }
 }
 

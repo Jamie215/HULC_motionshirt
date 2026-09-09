@@ -191,11 +191,12 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 > - **Skeleton** — the same orientations connected into a stickman by forward
 >   kinematics (chain tier). The connectivity is the montage's kinematic chain
 >   (imported from `motion_capabilities.JOINTS`); only the bone **lengths and
->   joint offsets** are assumed anatomy (the viewer's `ANAT` table). A segment
->   whose parent node is absent falls back to a nominal root and draws dashed;
->   with no torso but both arms (the bilateral asymmetry montage) each arm roots
->   at a nominal shoulder and a fixed dashed girdle labeled "torso — not
->   measured" bridges them, so the arms read as one body without faking a trunk.
+>   joint offsets** are assumed anatomy (the viewer's `ANAT` table). Missing
+>   nodes degrade gracefully and stay honest: a missing *middle* segment (e.g.
+>   torso + forearm, no upper arm) is drawn as a dashed "ghost" at rest hung
+>   from the nearest measured joint, with the measured descendant attached to
+>   its end; with no torso but both arms, each roots at a nominal shoulder and a
+>   fixed dashed girdle labeled "torso — not measured" bridges them.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 
