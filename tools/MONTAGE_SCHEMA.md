@@ -149,6 +149,12 @@ build. What calibration solves is the remaining unknown: the **sensor→segment
 mounting offset** — how the sensor housing sits rotated/tilted on the bone,
 which the world frame says nothing about.
 
+This solve is built: **`calibrate_segments.py calibrate`** produces
+`calibration.json` (the per-segment mounting offsets) from the neutral-pose
+window, and `--update-montage` flips the `calibration.captured` and per-node
+`calibrated` flags this section gates on. `calibrate_segments.py verify` runs the
+cached-with-verify check described at the end of this section.
+
 So calibration here is a **sensor-to-segment** calibration, not a "record the
 resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
 
