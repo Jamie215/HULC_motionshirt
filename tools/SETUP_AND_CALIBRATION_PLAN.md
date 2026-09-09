@@ -196,7 +196,15 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   torso + forearm, no upper arm) is drawn as a dashed "ghost" at rest hung
 >   from the nearest measured joint, with the measured descendant attached to
 >   its end; with no torso but both arms, each roots at a nominal shoulder and a
->   fixed dashed girdle labeled "torso — not measured" bridges them.
+>   fixed dashed girdle labeled "torso — not measured" bridges them; an
+>   **uncalibrated** bone draws with an amber "· raw" overlay so a kink there
+>   reads as strap tilt, not motion.
+> - **Facing** — the mag-referenced world gives orientation, not how the
+>   subject's forward lines up with north, so a forward reach could draw
+>   sideways. Calibration recovers the facing from the torso
+>   (`compute_heading`, one coarse chest-mounting assumption, self-checked) and
+>   the viewer applies it as a fixed yaw — **zero extra burden at capture**. No
+>   torso, or a low-confidence check → facing left nominal, honestly labeled.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 

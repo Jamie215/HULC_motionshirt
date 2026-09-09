@@ -28,7 +28,21 @@ Two layouts (toggle in the viewer)
       real where a node exists, assumed (at rest) where one is missing;
     - with NO torso but both arms placed (the bilateral asymmetry montage) each
       arm roots at a nominal shoulder and a fixed dashed girdle labeled "torso —
-      not measured" bridges them, so the arms read as one body without a trunk.
+      not measured" bridges them, so the arms read as one body without a trunk;
+    - an UNCALIBRATED bone (present but no cached offset) draws with an amber
+      dashed overlay + "· raw" label, so a kink there reads as strap tilt, not
+      real motion.
+
+Facing (heading) auto-correction
+--------------------------------
+The mag-referenced world gives orientation but not how the subject's forward
+lines up with world "north", so a forward reach could otherwise draw sideways.
+When calibration recovered a confident heading from the torso
+(calibrate_segments.compute_heading), the skeleton is rotated by that fixed yaw
+about vertical so a forward reach draws forward. It is captured once at neutral
+(so it never eats trunk motion), applied only when confident, and always
+labeled ("facing: auto from torso" / "undetermined"). No torso -> facing stays
+nominal, honestly labeled.
 
 What it shows — and why it validates stages 5-6
 -----------------------------------------------
@@ -174,6 +188,20 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     # girdle. Otherwise it defaults to the floating view.
     both_arms = {"upper_arm_l", "upper_arm_r"} <= present
     skeleton_default = ("torso" in present) or both_arms
+
+    # Facing: the calibration step recovers the subject's heading from the torso
+    # (calibrate_segments.compute_heading). The viewer rotates the skeleton by
+    # `correction_yaw_deg` about vertical so a forward reach draws forward — but
+    # only when the recovery was confident; otherwise it stays nominal.
+    h = (calibration or {}).get("heading", {})
+    heading = {
+        "source": h.get("source", "none"),
+        "confident": bool(h.get("confident")),
+        "correction_yaw_deg": float(h.get("correction_yaw_deg", 0.0)),
+        "facing_deg": h.get("facing_deg"),
+        "note": h.get("note", ""),
+    }
+
     return {
         "schema_version": SCHEMA_VERSION,
         "meta": {
@@ -193,6 +221,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "has_root": "torso" in seg_quats,
             "both_arms": both_arms,
             "skeleton_default": skeleton_default,
+            "heading": heading,
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
@@ -423,6 +452,14 @@ def selftest():
           and scene_bl["parents"].get("upper_arm_l") is None
           and scene_bl["parents"].get("upper_arm_r") is None,
           f"no-torso bilateral defaults to skeleton w/ girdle: {mbl}")
+
+    # (7b) Facing: a torso session bakes a torso_auto heading block; a no-torso
+    #      session bakes source 'none' (viewer leaves facing nominal).
+    check(scene["meta"]["heading"]["source"] == "torso_auto"
+          and "correction_yaw_deg" in scene["meta"]["heading"]
+          and scene_bl["meta"]["heading"]["source"] == "none",
+          f"heading baked: torso={scene['meta']['heading']['source']}, "
+          f"no-torso={scene_bl['meta']['heading']['source']}")
 
     # (8) Middle gap (torso + forearm, no upper arm): the present-gated parent
     #     of the forearm is None (its node's parent isn't placed), but the FULL
@@ -711,6 +748,13 @@ function segQuat(b,i){
 // missing middle bone becomes a dashed placeholder its descendants still hang
 // off of. Position is modeled; orientation is real wherever a node exists.
 const present=new Set(DATA.segments.map(s=>s.segment));
+// facing correction: a fixed yaw about world up (Z) so the subject's forward
+// draws forward. Captured once at neutral (from the torso), applied only when
+// the recovery was confident — so it never eats trunk motion during the clip.
+const HEADING=DATA.meta.heading||{source:'none',confident:false,correction_yaw_deg:0};
+const YAW_DEG=HEADING.confident?(HEADING.correction_yaw_deg||0):0;
+const _yr=YAW_DEG*Math.PI/180/2, FACE_Q=[Math.cos(_yr),0,0,Math.sin(_yr)]; // about +Z
+const faced=p=>YAW_DEG?qrot(FACE_Q,p):p;            // rotate a world point into facing
 function fkPose(){
   const q={}; for(const b of bodies) q[b.seg]=segQuat(b,frame);
   const quatOf=seg=>present.has(seg)?q[seg]:IDENT;   // ghosts sit at rest
@@ -726,16 +770,18 @@ function fkPose(){
     const a=ANAT[seg]||{dir:[0,0,-1],len:.2};
     return add(prox(seg), qrot(quat, scl(a.dir,a.len)));
   };
-  // present bones (solid, real orientation)
+  // present bones (solid, real orientation), positions rotated into facing
   const pos={};
-  for(const b of bodies) pos[b.seg]={prox:prox(b.seg), dist:dist(b.seg,q[b.seg])};
+  for(const b of bodies)
+    pos[b.seg]={prox:faced(prox(b.seg)), dist:faced(dist(b.seg,q[b.seg]))};
   // ghost bones: absent ancestors (not the torso root) on some present lineage
   const gset=new Set();
   for(const b of bodies){ let s=ANAT_CHAIN[b.seg];
     while(s){ if(!present.has(s) && s!=='torso') gset.add(s); s=ANAT_CHAIN[s]; } }
   const ghosts=[];
-  for(const s of gset) ghosts.push({seg:s, prox:prox(s), dist:dist(s,IDENT)});
-  return {pos, ghosts, prox};
+  for(const s of gset) ghosts.push({seg:s, prox:faced(prox(s)), dist:faced(dist(s,IDENT))});
+  const shoulder=s=>faced(prox(s));                  // for the girdle
+  return {pos, ghosts, shoulder};
 }
 
 // ---- the renderer ----
@@ -804,12 +850,12 @@ function renderFloating(){
 
 // the connected stickman: bones drawn proximal->distal via forward kinematics.
 function renderSkeleton(){
-  const {pos, ghosts, prox}=fkPose();
+  const {pos, ghosts, shoulder}=fkPose();
   // assumed shoulder girdle: with no torso node we can't measure the trunk, so
   // the two arms root at nominal shoulders. Bridge them with a static dashed
   // line (clearly "assumed, not measured") so the arms read as one body.
   if(!DATA.meta.has_root && present.has('upper_arm_l') && present.has('upper_arm_r')){
-    const Lp=prox('upper_arm_l'), Rp=prox('upper_arm_r');
+    const Lp=shoulder('upper_arm_l'), Rp=shoulder('upper_arm_r');
     const a=project(Lp), c=project(Rp);
     if(a&&c){
       ctx.save();
@@ -824,15 +870,16 @@ function renderSkeleton(){
   // collect bones (present solid + ghost dashed), depth-sorted; thickness is
   // perspective-correct via the midpoint z.
   const bones=[];
-  const pushBone=(seg,f,ghost)=>{
+  const pushBone=(seg,f,ghost,raw)=>{
     const a=project(f.prox), c=project(f.dist); if(!a||!c) return;
     bones.push({a,c, color:(SEG[seg]||{color:[136,136,136]}).color,
-      thick:(ANAT[seg]&&ANAT[seg].thick)||.05, z:(a.z+c.z)/2, ghost, seg});
+      thick:(ANAT[seg]&&ANAT[seg].thick)||.05, z:(a.z+c.z)/2, ghost, raw, seg});
   };
-  for(const b of bodies) pushBone(b.seg, pos[b.seg], false);
-  for(const g of ghosts) pushBone(g.seg, g, true);
+  for(const b of bodies) pushBone(b.seg, pos[b.seg], false, !b.calibrated);
+  for(const g of ghosts) pushBone(g.seg, g, true, false);
   bones.sort((x,y)=>y.z-x.z);
   ctx.lineCap='round';
+  const RAW=[204,120,20];                           // amber for uncalibrated bones
   for(const bn of bones){
     const w=Math.max(3, focal*bn.thick/bn.z);
     ctx.save();
@@ -840,6 +887,12 @@ function renderSkeleton(){
     ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)'; seg2d(bn.a,bn.c);
     ctx.lineWidth=w; ctx.strokeStyle=rgb(bn.ghost?shade(bn.color,.9):bn.color);
     seg2d(bn.a,bn.c);
+    // uncalibrated (present) bone: amber dashed overlay so a kink here reads as
+    // "strap not calibrated", not real motion.
+    if(bn.raw){
+      ctx.setLineDash([4,4]); ctx.lineWidth=Math.max(1.5,w*0.5);
+      ctx.strokeStyle=rgb(RAW); seg2d(bn.a,bn.c);
+    }
     ctx.restore();
   }
   // joint dots at every present connection (proximal + distal)
@@ -865,10 +918,13 @@ function renderSkeleton(){
       ctx.stroke();
     }
   }
-  // labels: present bones at their distal end (ink); ghosts at their midpoint,
-  // faint and flagged "no node".
-  for(const b of bodies)
-    label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)), b.seg);
+  // labels: present bones at their distal end (uncalibrated flagged amber
+  // "· raw"); ghosts at their midpoint, faint and flagged "no node".
+  for(const b of bodies){
+    const raw=!b.calibrated;
+    label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)),
+          raw?b.seg+' · raw':b.seg, raw?rgb([204,120,20]):undefined);
+  }
   for(const g of ghosts){
     const mid=scl(add(g.prox,g.dist),0.5);
     label([mid[0],mid[1],mid[2]+0.05], g.seg+' · no node', cssVar('--faint'));
@@ -965,10 +1021,18 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
+// facing status line for the skeleton hint
+const _h=DATA.meta.heading||{source:'none'};
+const FACING=_h.source==='torso_auto'&&_h.confident
+    ? `facing: auto from torso (${(_h.correction_yaw_deg||0).toFixed(0)}°)`
+  : _h.source==='torso_auto'
+    ? 'facing: undetermined (low confidence) — forward/side is nominal'
+    : 'facing: undetermined (no torso) — forward/side is nominal';
+const HAS_RAW=DATA.segments.some(s=>!s.calibrated);
 const HINTS={
   skeleton:'connected by forward kinematics · bone lengths & joint spots are '+
-    'assumed anatomy, only orientation is measured · a dashed bone has no '+
-    'parent node placed',
+    'assumed anatomy · a dashed bone has no node; an amber-dashed bone is '+
+    'uncalibrated (a kink there may be strap tilt, not motion) · '+FACING,
   floating:'orientation measured, position NOT · each bar carries a small local '+
     'triad so roll is visible · world up = gravity (Z, blue)'};
 function setLayout(l){
