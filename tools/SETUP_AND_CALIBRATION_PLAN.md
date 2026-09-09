@@ -181,14 +181,24 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 
 ## 5. Free-body diagram (part of stage 7) — feasibility
 
+> **Built (segment tier):** `floating_fbd.py` (`render` / `selftest`). It bakes
+> the reconcile stream + an optional `calibration.json` into a single
+> self-contained HTML viewer (no external scripts/CDN — a hand-rolled Canvas-2D
+> 3-D renderer, works offline and straight from `file://`). Each placed segment
+> is one oriented bar floating at a fixed slot; a **raw↔calibrated toggle**
+> applies the cached mounting offset in the viewer (`q_seg = q_WS ⊗ q_SB`), and a
+> **jump-to-neutral** button lands on the neutral window. The quaternion math,
+> CSV binding, and body model are imported from the existing tools.
+
 The most feasible visual, because **orientation is exactly what is measured** — a
 quaternion per segment per frame directly drives an oriented 3-D body. It maps
 one-to-one onto the resolver's tiers:
 
 - **Segment tier (1 node)** → each segment drawn as its own oriented body,
   floating. A literal free-body diagram; needs only the calibrated orientation
-  (or raw, if the mounting tilt is acceptable). **Build this first** — it
-  validates stages 5–6 visually.
+  (or raw, if the mounting tilt is acceptable). **Built first** (`floating_fbd.py`)
+  — it validates stages 5–6 visually: jump to the neutral window and flip the
+  raw↔calibrated toggle; if calibration worked the scattered bars snap upright.
 - **Joint tier (2 adjacent nodes)** → connect them at the joint, render the angle
   between them. A linkage, not floating bodies.
 - **Chain (torso→arm→forearm→hand)** → a connected skeleton via forward
@@ -208,10 +218,13 @@ neutral pose is how you *see* whether calibration worked.**
 
 1. ~~**Stage 5 calibration** with the cache-and-verify contract (§4)~~ — **done**
    (`calibrate_segments.py`). The gate for every clinical angle.
-2. **Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.
-   *(next up — the calibrated orientation stream now exists to drive it.)*
+2. ~~**Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.~~
+   — **done** (`floating_fbd.py`). Self-contained HTML viewer with the
+   raw↔calibrated toggle; the neutral pose is where you *see* the mounting
+   scatter collapse.
 3. **Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
-   logs, montage auto-populated.
+   logs, montage auto-populated. *(next up — the FBD is the "verify placement"
+   surface §2.2 step 2 calls for.)*
 4. **Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
    rest already declared by the resolver.
 5. **Connected FBD / skeleton + full interface** (stage 7).
