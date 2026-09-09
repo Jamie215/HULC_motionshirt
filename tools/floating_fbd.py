@@ -22,7 +22,10 @@ Two layouts (toggle in the viewer)
   montage's kinematic chain, from motion_capabilities.JOINTS); the bone LENGTHS
   and joint offsets are ASSUMED anatomy (the `ANAT` table in the viewer). A
   segment whose parent node is absent falls back to a nominal root and draws
-  dashed, so "modeled" never masquerades as "measured".
+  dashed, so "modeled" never masquerades as "measured". With NO torso but both
+  arms placed (the bilateral asymmetry montage), each arm roots at a nominal
+  shoulder and a fixed dashed girdle labeled "torso — not measured" bridges
+  them, so the two arms read as one body without faking a trunk.
 
 What it shows — and why it validates stages 5-6
 -----------------------------------------------
@@ -146,6 +149,12 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
 
     has_cal = any(s["calibrated"] for s in segments)
     parents = _parent_map(set(seg_quats))
+    present = set(seg_quats)
+    # The skeleton reads as a "body" when it can be rooted: a torso, or (torso
+    # absent) both upper arms, which we bridge with a fixed assumed shoulder
+    # girdle. Otherwise it defaults to the floating view.
+    both_arms = {"upper_arm_l", "upper_arm_r"} <= present
+    skeleton_default = ("torso" in present) or both_arms
     return {
         "schema_version": SCHEMA_VERSION,
         "meta": {
@@ -163,6 +172,8 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "t1_ms": float(t_keep[-1]),
             "neutral_window_ms": neutral_window,
             "has_root": "torso" in seg_quats,
+            "both_arms": both_arms,
+            "skeleton_default": skeleton_default,
         },
         "parents": parents,
         "segments": segments,
@@ -293,6 +304,19 @@ def selftest():
             f.write(html)
         html_size = os.path.getsize(out)
 
+        # A no-torso BILATERAL montage over the same columns (relabel the two
+        # non-torso nodes as the left/right upper arms) — the sparse case that
+        # roots each arm at a nominal shoulder and bridges them with the assumed
+        # girdle. We only need the baked meta/parents here.
+        bl_montage = {
+            "schema_version": "1.0", "subject": {"id": "BL"},
+            "session": {"id": "bilat"}, "calibration": {"captured": False},
+            "nodes": [
+                {"node_id": "L", "column": "n1", "segment": "upper_arm_l"},
+                {"node_id": "R", "column": "n2", "segment": "upper_arm_r"}],
+        }
+        scene_bl = build_scene(csv, bl_montage, None, max_frames=50)
+
     ok = True
 
     def check(cond, msg):
@@ -357,8 +381,19 @@ def selftest():
           and scene["meta"]["has_root"] is True,
           f"skeleton chain: {par}")
 
+    # (7) No-torso bilateral: no root, both arms present -> skeleton still the
+    #     default (arms root at nominal shoulders, bridged by the assumed
+    #     girdle), and neither arm has a placed parent.
+    mbl = scene_bl["meta"]
+    check(mbl["has_root"] is False and mbl["both_arms"] is True
+          and mbl["skeleton_default"] is True
+          and scene_bl["parents"].get("upper_arm_l") is None
+          and scene_bl["parents"].get("upper_arm_r") is None,
+          f"no-torso bilateral defaults to skeleton w/ girdle: {mbl}")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
-          f"raw↔calibrated promise, and the skeleton kinematic chain.")
+          f"raw↔calibrated promise, the skeleton chain, and the no-torso "
+          f"bilateral fallback.")
     return 0 if ok else 1
 
 
@@ -607,9 +642,10 @@ function project(P){
 // ---- playback / view state ----
 const N=DATA.meta.n_frames;
 let frame=0, mode=DATA.meta.has_calibration?'cal':'raw', playing=false;
-// default to the connected stickman when we can root it and it's calibrated;
-// otherwise the honest floating view.
-let layout=(DATA.meta.has_calibration && DATA.meta.has_root)?'skeleton':'floating';
+// default to the connected stickman when we can root it into a body (torso, or
+// both arms bridged by the assumed girdle) and it's calibrated; else floating.
+let layout=(DATA.meta.has_calibration && DATA.meta.skeleton_default)
+  ?'skeleton':'floating';
 function segQuat(b,i){
   const q=b.frames[i];
   return mode==='cal' ? qmul(q,b.offset) : q;
@@ -713,6 +749,22 @@ function renderFloating(){
 // the connected stickman: bones drawn proximal->distal via forward kinematics.
 function renderSkeleton(){
   const fk=fkPose();
+  // assumed shoulder girdle: with no torso node we can't measure the trunk, so
+  // the two arms root at fixed nominal shoulders. Bridge them with a static
+  // dashed line (clearly "assumed, not measured") so the arms read as one body.
+  if(!DATA.meta.has_root && present.has('upper_arm_l') && present.has('upper_arm_r')){
+    const Lp=SIDE_ROOT.upper_arm_l, Rp=SIDE_ROOT.upper_arm_r;
+    const a=project(Lp), c=project(Rp);
+    if(a&&c){
+      ctx.save();
+      ctx.setLineDash([7,6]); ctx.lineCap='butt';
+      ctx.lineWidth=Math.max(2, focal*0.02/((a.z+c.z)/2));
+      ctx.strokeStyle=cssVar('--faint'); ctx.globalAlpha=.85; seg2d(a,c);
+      ctx.restore();
+      const mid=scl(add(Lp,Rp),0.5);
+      label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
+    }
+  }
   // bones, depth-sorted (thickness is perspective-correct via the midpoint z)
   const bones=[];
   for(const b of bodies){
@@ -765,11 +817,11 @@ function renderSkeleton(){
 }
 
 function seg2d(a,b){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
-function label(P,text){
+function label(P,text,color){
   const lp=project(P); if(!lp) return;
   ctx.font='600 12px ui-monospace,monospace';
   ctx.textAlign='center'; ctx.textBaseline='bottom';
-  ctx.fillStyle=cssVar('--ink'); ctx.globalAlpha=0.9;
+  ctx.fillStyle=color||cssVar('--ink'); ctx.globalAlpha=0.9;
   ctx.fillText(text,lp.x,lp.y); ctx.globalAlpha=1;
 }
 
