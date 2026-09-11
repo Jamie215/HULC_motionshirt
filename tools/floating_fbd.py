@@ -639,9 +639,10 @@ const RATIO = {                            // [ length/stature , breadth/stature
 };
 const segLen = k => RATIO[k][0]*STAT;
 const segW   = k => RATIO[k][1]*STAT;
-const SHOULDER_W = segW('torso');          // shoulder-to-shoulder span
+const SHOULDER_W = segW('torso');          // shoulder-to-shoulder span (biacromial)
+const HIP_W      = 0.190*STAT;             // hip breadth (bi-iliac) — trapezoid base
 const TORSO_LEN  = segLen('torso');
-const TRUNK_W    = 0.150*STAT;             // trunk tube (front-back depth), drawn
+const TRUNK_W    = 0.150*STAT;             // trunk depth (front-back), for the head gap
 const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
 const NECK       = 0.052*STAT;
 
@@ -895,15 +896,37 @@ function renderSkeleton(){
       label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
     }
   }
+  // torso: ONE filled trapezoid — narrow at the hips, wide at the shoulders (real
+  // bi-iliac & biacromial breadths), so it reads as a single body instead of two
+  // bars. Arms hang from the top corners; drawn before the limbs so raised arms
+  // overlay it, and it swings/tilts with the trunk (corners use the torso pose).
+  if(present.has('torso')){
+    const hip=pos['torso'].prox;                       // pelvis / hip centre
+    const sL=shoulder('upper_arm_l'), sR=shoulder('upper_arm_r');
+    const xdir=norm(sub(sR,sL));                        // torso left-right, in world
+    const quad=[add(hip,scl(xdir,-HIP_W/2)), add(hip,scl(xdir,HIP_W/2)), sR, sL]
+                 .map(project);
+    if(quad.every(p=>p)){
+      const dz=(quad[0].z+quad[1].z+quad[2].z+quad[3].z)/4;
+      const soft=Math.max(4, focal*0.05/dz);           // round the corners a touch
+      ctx.lineJoin='round'; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(quad[0].x,quad[0].y);
+      for(let i=1;i<4;i++) ctx.lineTo(quad[i].x,quad[i].y);
+      ctx.closePath();
+      ctx.fillStyle=rgb(SEG.torso.color); ctx.strokeStyle=rgb(SEG.torso.color);
+      ctx.lineWidth=soft; ctx.fill(); ctx.stroke();     // same-colour stroke = soft edge
+      ctx.lineWidth=1.5; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+    }
+  }
   // collect bones (present solid + ghost dashed), depth-sorted; thickness is
-  // perspective-correct via the midpoint z.
+  // perspective-correct via the midpoint z. The torso is the trapezoid above.
   const bones=[];
   const pushBone=(seg,f,ghost,raw)=>{
     const a=project(f.prox), c=project(f.dist); if(!a||!c) return;
     bones.push({a,c, color:(SEG[seg]||{color:[136,136,136]}).color,
       thick:(ANAT[seg]&&ANAT[seg].thick)||.05, z:(a.z+c.z)/2, ghost, raw, seg});
   };
-  for(const b of bodies) pushBone(b.seg, pos[b.seg], false, !b.calibrated);
+  for(const b of bodies) if(b.seg!=='torso') pushBone(b.seg, pos[b.seg], false, !b.calibrated);
   for(const g of ghosts) pushBone(g.seg, g, true, false);
   bones.sort((x,y)=>y.z-x.z);
   ctx.lineCap='round';
@@ -923,21 +946,10 @@ function renderSkeleton(){
     }
     ctx.restore();
   }
-  // shoulder bar: with a torso, span the two shoulder sockets (biacromial width)
-  // so the shoulders read at real width; it swings with the trunk. Arms hang from
-  // its ends (the same socket points).
-  if(present.has('torso')){
-    const Ls=shoulder('upper_arm_l'), Rs=shoulder('upper_arm_r');
-    const a=project(Ls), c=project(Rs);
-    if(a&&c){
-      const w=Math.max(3, focal*ANAT.torso.thick/((a.z+c.z)/2));
-      ctx.lineCap='round';
-      ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)'; seg2d(a,c);
-      ctx.lineWidth=w; ctx.strokeStyle=rgb(SEG.torso.color); seg2d(a,c);
-    }
-  }
-  // joint dots at every present connection (proximal + distal)
+  // joint dots at every present connection (proximal + distal); skip the torso,
+  // whose "joints" are the trapezoid corners.
   for(const b of bodies){
+    if(b.seg==='torso') continue;
     const f=pos[b.seg], col=(SEG[b.seg]||{color:[136,136,136]}).color;
     for(const P of [f.prox, f.dist]){
       const p=project(P); if(!p) continue;
@@ -947,23 +959,25 @@ function renderSkeleton(){
       ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(col,.85)); ctx.stroke();
     }
   }
-  // a head above the torso — only when the torso is actually measured; sized and
-  // offset (a neck's gap) anthropometrically so it clears the shoulders.
+  // a head above the shoulders — only when the torso is measured; sized (0.13
+  // stature) and lifted a neck's gap above the shoulder line so it sits clear.
   if(present.has('torso')){
-    const f=pos['torso'], up=norm(sub(f.dist,f.prox));
-    const off=ANAT.torso.thick/2 + NECK + HEAD_R;
-    const hp=project(add(f.dist, scl(up,off))), fz=project(f.dist);
+    const sMid=scl(add(shoulder('upper_arm_l'),shoulder('upper_arm_r')),0.5);
+    const up=norm(sub(pos['torso'].dist, pos['torso'].prox));
+    const hp=project(add(sMid, scl(up, NECK+HEAD_R))), fz=project(sMid);
     if(hp&&fz){
       const r=Math.max(4, focal*HEAD_R/fz.z);
       ctx.beginPath(); ctx.arc(hp.x,hp.y,r,0,7);
-      ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.9; ctx.fill();
+      ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.92; ctx.fill();
       ctx.globalAlpha=1; ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.25)';
       ctx.stroke();
     }
   }
   // labels: present bones at their distal end (uncalibrated flagged amber
-  // "· raw"); ghosts at their midpoint, faint and flagged "no node".
+  // "· raw"); ghosts at their midpoint, faint and flagged "no node". The torso
+  // trapezoid is self-evident, so it goes unlabelled.
   for(const b of bodies){
+    if(b.seg==='torso') continue;
     const raw=!b.calibrated;
     label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)),
           raw?b.seg+' · raw':b.seg, raw?rgb([204,120,20]):undefined);
