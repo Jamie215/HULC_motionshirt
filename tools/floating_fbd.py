@@ -666,15 +666,23 @@ function qrot(q,v){
 // and where a parent hands off to its child (`sockets` — only the torso has a
 // lateral one: the shoulders sit near its top corners). Change these to fit a
 // subject; they never touch the measured orientation, only where a bar is drawn.
+//
+// Bone lengths are anthropometric: segment-length / stature ratios from Winter,
+// "Biomechanics and Motor Control of Human Movement" (upper arm 0.186, forearm
+// 0.146, hand 0.108 of stature) at a nominal stature STAT, so the arm segments
+// are realistically proportioned rather than eyeballed. Torso stays at ~0.50 so
+// the shoulder sockets, root, grid and camera keep their tuning; rescale STAT to
+// grow/shrink the limbs together.
+const STAT = 1.40;                       // nominal stature (arbitrary draw units)
 const ANAT = {
-  torso:       {len:.50, dir:[0,0,1],  thick:.075, sockets:{
+  torso:       {len:.50,           dir:[0,0,1],  thick:.075, sockets:{
                   upper_arm_r:[-.21,0,.44], upper_arm_l:[.21,0,.44]}},
-  upper_arm_r: {len:.30, dir:[0,0,-1], thick:.05},
-  upper_arm_l: {len:.30, dir:[0,0,-1], thick:.05},
-  forearm_r:   {len:.26, dir:[0,0,-1], thick:.042},
-  forearm_l:   {len:.26, dir:[0,0,-1], thick:.042},
-  hand_r:      {len:.18, dir:[0,0,-1], thick:.036},
-  hand_l:      {len:.18, dir:[0,0,-1], thick:.036},
+  upper_arm_r: {len:0.186*STAT, dir:[0,0,-1], thick:.05},   // ~0.26
+  upper_arm_l: {len:0.186*STAT, dir:[0,0,-1], thick:.05},
+  forearm_r:   {len:0.146*STAT, dir:[0,0,-1], thick:.042},  // ~0.20
+  forearm_l:   {len:0.146*STAT, dir:[0,0,-1], thick:.042},
+  hand_r:      {len:0.108*STAT, dir:[0,0,-1], thick:.036},  // ~0.15
+  hand_l:      {len:0.108*STAT, dir:[0,0,-1], thick:.036},
 };
 // full anatomical chain (presence-independent) — lets us bridge a missing
 // middle segment with a dashed ghost instead of dropping its descendants.
