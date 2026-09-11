@@ -696,8 +696,8 @@ function qrot(q,v){
 // and a separate shoulder bar (in renderSkeleton) spans the full shoulder width.
 const ANAT = {
   torso:       {len:TORSO_LEN, dir:[0,0,1], thick:TRUNK_W, sockets:{
-                  upper_arm_r:[-SHOULDER_W/2,0,TORSO_LEN*0.98],
-                  upper_arm_l:[ SHOULDER_W/2,0,TORSO_LEN*0.98]}},
+                  upper_arm_r:[-SHOULDER_W/2,0,TORSO_LEN*0.88],
+                  upper_arm_l:[ SHOULDER_W/2,0,TORSO_LEN*0.88]}},
   upper_arm_r: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
   upper_arm_l: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
   forearm_r:   {len:segLen('forearm'),   dir:[0,0,-1], thick:segW('forearm')},
@@ -877,7 +877,36 @@ function renderFloating(){
   }
 }
 
-// the connected stickman: bones drawn proximal->distal via forward kinematics.
+// ---- helpers for the SOLID 3-D skeleton (shaded boxes + balls) ----
+// 8 corners of an oriented box spanning A->B with a w×d cross-section.
+function boxBetween(A,B,w,d){
+  let ax=sub(B,A); const Ln=Math.hypot(ax[0],ax[1],ax[2])||1; ax=scl(ax,1/Ln);
+  const ref=Math.abs(dot(ax,[0,0,1]))<0.9?[0,0,1]:[0,1,0];
+  const u=norm(cross(ax,ref)), v=cross(ax,u), c=[];
+  for(const P of [A,B]) for(const sv of [-1,1]) for(const su of [-1,1])
+    c.push(add(P, add(scl(u,su*w*0.5), scl(v,sv*d*0.5))));
+  return c;                                    // order matches BOX_FACES
+}
+// one box face -> a shaded, depth-keyed polygon (or null if off-screen)
+function faceOf(corners, face, baseColor){
+  const wp=face.map(i=>corners[i]), pp=wp.map(project);
+  if(pp.some(p=>!p)) return null;
+  const nrm=norm(cross(sub(wp[1],wp[0]),sub(wp[2],wp[0])));
+  const lit=0.5+0.5*Math.max(0,Math.abs(dot(nrm,LIGHT)));   // simple diffuse
+  return {pp, color:shade(baseColor,lit), depth:(pp[0].z+pp[1].z+pp[2].z+pp[3].z)/4};
+}
+// a shaded ball (fakes a lit sphere) — fills the seams at joints + the head
+function ball(P, worldR, baseColor){
+  const p=project(P); if(!p) return;
+  const r=Math.max(2, focal*worldR/p.z);
+  const g=ctx.createRadialGradient(p.x-r*0.35,p.y-r*0.4,r*0.1, p.x,p.y,r);
+  g.addColorStop(0, rgb(shade(baseColor,1.35)));
+  g.addColorStop(1, rgb(shade(baseColor,0.72)));
+  ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7); ctx.fillStyle=g; ctx.fill();
+  ctx.lineWidth=1.1; ctx.strokeStyle='rgba(0,0,0,.18)'; ctx.stroke();
+}
+
+// the connected stickman: solid shaded 3-D volumes via forward kinematics.
 function renderSkeleton(){
   const {pos, ghosts, shoulder}=fkPose();
   // assumed shoulder girdle: with no torso node we can't measure the trunk, so
@@ -896,82 +925,65 @@ function renderSkeleton(){
       label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
     }
   }
-  // torso: ONE filled trapezoid — narrow at the hips, wide at the shoulders (real
-  // bi-iliac & biacromial breadths), so it reads as a single body instead of two
-  // bars. Arms hang from the top corners; drawn before the limbs so raised arms
-  // overlay it, and it swings/tilts with the trunk (corners use the torso pose).
+  // ---- solid 3-D figure: torso block + limb boxes in one depth-sorted pass ----
+  const polys=[];
+  // torso as a tapered 3-D block: wide at the shoulders, narrow at the hips, with
+  // a front-back depth; it tilts/twists with the trunk (corners use its pose).
   if(present.has('torso')){
-    const hip=pos['torso'].prox;                       // pelvis / hip centre
-    const sL=shoulder('upper_arm_l'), sR=shoulder('upper_arm_r');
-    const xdir=norm(sub(sR,sL));                        // torso left-right, in world
-    const quad=[add(hip,scl(xdir,-HIP_W/2)), add(hip,scl(xdir,HIP_W/2)), sR, sL]
-                 .map(project);
-    if(quad.every(p=>p)){
-      const dz=(quad[0].z+quad[1].z+quad[2].z+quad[3].z)/4;
-      const soft=Math.max(4, focal*0.05/dz);           // round the corners a touch
-      ctx.lineJoin='round'; ctx.lineCap='round';
-      ctx.beginPath(); ctx.moveTo(quad[0].x,quad[0].y);
-      for(let i=1;i<4;i++) ctx.lineTo(quad[i].x,quad[i].y);
-      ctx.closePath();
-      ctx.fillStyle=rgb(SEG.torso.color); ctx.strokeStyle=rgb(SEG.torso.color);
-      ctx.lineWidth=soft; ctx.fill(); ctx.stroke();     // same-colour stroke = soft edge
-      ctx.lineWidth=1.5; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
-    }
+    const hip=pos['torso'].prox, sL=shoulder('upper_arm_l'), sR=shoulder('upper_arm_r');
+    const sMid=scl(add(sL,sR),0.5);
+    const xax=norm(sub(sR,sL)), upax=norm(sub(pos['torso'].dist,pos['torso'].prox));
+    const dax=norm(cross(upax,xax));                   // front-back
+    const tc=[];
+    for(const hh of [[hip,HIP_W*0.5],[sMid,SHOULDER_W*0.5]])
+      for(const sv of [-1,1]) for(const su of [-1,1])
+        tc.push(add(hh[0], add(scl(xax,su*hh[1]), scl(dax,sv*TRUNK_W*0.5))));
+    for(const f of BOX_FACES){ const p=faceOf(tc,f,SEG.torso.color); if(p) polys.push(p); }
   }
-  // collect bones (present solid + ghost dashed), depth-sorted; thickness is
-  // perspective-correct via the midpoint z. The torso is the trapezoid above.
-  const bones=[];
-  const pushBone=(seg,f,ghost,raw)=>{
-    const a=project(f.prox), c=project(f.dist); if(!a||!c) return;
-    bones.push({a,c, color:(SEG[seg]||{color:[136,136,136]}).color,
-      thick:(ANAT[seg]&&ANAT[seg].thick)||.05, z:(a.z+c.z)/2, ghost, raw, seg});
-  };
-  for(const b of bodies) if(b.seg!=='torso') pushBone(b.seg, pos[b.seg], false, !b.calibrated);
-  for(const g of ghosts) pushBone(g.seg, g, true, false);
-  bones.sort((x,y)=>y.z-x.z);
-  ctx.lineCap='round';
-  const RAW=[204,120,20];                           // amber for uncalibrated bones
-  for(const bn of bones){
-    const w=Math.max(3, focal*bn.thick/bn.z);
-    ctx.save();
-    if(bn.ghost){ ctx.setLineDash([6,5]); ctx.globalAlpha=.55; } // no node placed
-    ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)'; seg2d(bn.a,bn.c);
-    ctx.lineWidth=w; ctx.strokeStyle=rgb(bn.ghost?shade(bn.color,.9):bn.color);
-    seg2d(bn.a,bn.c);
-    // uncalibrated (present) bone: amber dashed overlay so a kink here reads as
-    // "strap not calibrated", not real motion.
-    if(bn.raw){
-      ctx.setLineDash([4,4]); ctx.lineWidth=Math.max(1.5,w*0.5);
-      ctx.strokeStyle=rgb(RAW); seg2d(bn.a,bn.c);
-    }
-    ctx.restore();
-  }
-  // joint dots at every present connection (proximal + distal); skip the torso,
-  // whose "joints" are the trapezoid corners.
+  // each limb as a solid shaded box between its two joints
+  const raws=[];
   for(const b of bodies){
     if(b.seg==='torso') continue;
-    const f=pos[b.seg], col=(SEG[b.seg]||{color:[136,136,136]}).color;
-    for(const P of [f.prox, f.dist]){
-      const p=project(P); if(!p) continue;
-      const r=Math.max(2.5, focal*0.028/p.z);
-      ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7);
-      ctx.fillStyle='#fff'; ctx.fill();
-      ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(col,.85)); ctx.stroke();
-    }
+    const f=pos[b.seg], t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
+    const box=boxBetween(f.prox, f.dist, t, t);
+    for(const fc of BOX_FACES){ const p=faceOf(box,fc,SEG[b.seg].color); if(p) polys.push(p); }
+    if(!b.calibrated) raws.push([project(f.prox), project(f.dist)]);
   }
-  // a head above the shoulders — only when the torso is measured; sized (0.13
-  // stature) and lifted a neck's gap above the shoulder line so it sits clear.
+  // paint every face far -> near (painter's algorithm) for correct occlusion
+  polys.sort((x,y)=>y.depth-x.depth);
+  for(const p of polys){
+    ctx.beginPath(); ctx.moveTo(p.pp[0].x,p.pp[0].y);
+    for(let i=1;i<4;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
+    ctx.closePath();
+    ctx.fillStyle=rgb(p.color); ctx.fill();
+    ctx.lineWidth=0.8; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+  }
+  // rounded joints: shaded balls fill the seams where boxes meet, and read as 3-D
+  for(const b of bodies){
+    if(b.seg==='torso') continue;
+    const t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05, col=SEG[b.seg].color;
+    ball(pos[b.seg].prox, t*0.62, col); ball(pos[b.seg].dist, t*0.62, col);
+  }
+  // ghost (missing-middle) bones: dashed & flat, clearly "not measured"
+  ctx.lineCap='round';
+  for(const g of ghosts){
+    const a=project(g.prox), c=project(g.dist); if(!a||!c) continue;
+    const w=Math.max(3, focal*((ANAT[g.seg]&&ANAT[g.seg].thick)||.05)/((a.z+c.z)/2));
+    ctx.save(); ctx.setLineDash([6,5]); ctx.globalAlpha=.5;
+    ctx.lineWidth=w;
+    ctx.strokeStyle=rgb(shade((SEG[g.seg]||{color:[136,136,136]}).color,.9));
+    seg2d(a,c); ctx.restore();
+  }
+  // uncalibrated present bones: amber dashed overlay so a kink reads as strap tilt
+  ctx.save(); ctx.setLineDash([5,4]); ctx.lineCap='round'; ctx.lineWidth=3;
+  ctx.strokeStyle='rgb(204,120,20)';
+  for(const r of raws){ if(r[0]&&r[1]) seg2d(r[0],r[1]); }
+  ctx.restore();
+  // head as a shaded ball above the shoulders (only when the torso is measured)
   if(present.has('torso')){
     const sMid=scl(add(shoulder('upper_arm_l'),shoulder('upper_arm_r')),0.5);
     const up=norm(sub(pos['torso'].dist, pos['torso'].prox));
-    const hp=project(add(sMid, scl(up, NECK+HEAD_R))), fz=project(sMid);
-    if(hp&&fz){
-      const r=Math.max(4, focal*HEAD_R/fz.z);
-      ctx.beginPath(); ctx.arc(hp.x,hp.y,r,0,7);
-      ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.92; ctx.fill();
-      ctx.globalAlpha=1; ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.25)';
-      ctx.stroke();
-    }
+    ball(add(sMid, scl(up, NECK+HEAD_R)), HEAD_R, SEG.torso.color);
   }
   // labels: present bones at their distal end (uncalibrated flagged amber
   // "· raw"); ghosts at their midpoint, faint and flagged "no node". The torso
