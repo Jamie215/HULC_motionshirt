@@ -958,11 +958,27 @@ function renderSkeleton(){
     ctx.fillStyle=rgb(p.color); ctx.fill();
     ctx.lineWidth=0.8; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
   }
-  // rounded joints: shaded balls fill the seams where boxes meet, and read as 3-D
+  // rounded joints: shaded balls fill the seams where boxes meet, and read as 3-D.
+  // Each joint links two segments, so its ball blends their two colors (shoulder =
+  // torso+arm, elbow = upper_arm+forearm, wrist = forearm+hand). A leaf tip
+  // (fingertip) has no child, so it keeps its own segment colour.
+  const mix=(a,b)=>[(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2];
+  const drawn=new Set(bodies.filter(b=>b.seg!=='torso').map(b=>b.seg));
+  for(const g of ghosts) drawn.add(g.seg);
+  const hasChild=new Set();
+  for(const s of drawn){ const p=ANAT_CHAIN[s]; if(p) hasChild.add(p); }
+  const parentColor=seg=>{
+    const p=ANAT_CHAIN[seg]; if(!p) return null;
+    if(p==='torso') return present.has('torso')?SEG.torso.color:null;
+    if(drawn.has(p)&&SEG[p]) return SEG[p].color;
+    return null;
+  };
   for(const b of bodies){
     if(b.seg==='torso') continue;
     const t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05, col=SEG[b.seg].color;
-    ball(pos[b.seg].prox, t*0.62, col); ball(pos[b.seg].dist, t*0.62, col);
+    const pc=parentColor(b.seg);
+    ball(pos[b.seg].prox, t*0.62, pc?mix(col,pc):col);   // joint with parent -> blend
+    if(!hasChild.has(b.seg)) ball(pos[b.seg].dist, t*0.62, col); // leaf tip -> own colour
   }
   // ghost (missing-middle) bones: dashed & flat, clearly "not measured"
   ctx.lineCap='round';
