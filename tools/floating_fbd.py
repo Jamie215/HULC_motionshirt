@@ -645,6 +645,7 @@ const TORSO_LEN  = segLen('torso');
 const TRUNK_W    = 0.150*STAT;             // trunk depth (front-back), for the head gap
 const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
 const NECK       = 0.052*STAT;
+const NECK_W     = 0.058*STAT;             // neck breadth (connects head to torso)
 
 // Fixed per-segment geometry + floating anchor slot. Data frame: X = subject
 // L/R, Y = front/back, Z = up (gravity). Length runs along local +Z, so a
@@ -905,6 +906,15 @@ function ball(P, worldR, baseColor){
   ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7); ctx.fillStyle=g; ctx.fill();
   ctx.lineWidth=1.1; ctx.strokeStyle='rgba(0,0,0,.18)'; ctx.stroke();
 }
+// 2-D convex hull (Andrew's monotone chain) — the torso's rounded silhouette
+function hull2d(ps){
+  const p=ps.slice().sort((a,b)=>a.x-b.x||a.y-b.y);
+  const X=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+  const lo=[],up=[];
+  for(const q of p){ while(lo.length>1&&X(lo[lo.length-2],lo[lo.length-1],q)<=0)lo.pop(); lo.push(q);}
+  for(let i=p.length-1;i>=0;i--){const q=p[i]; while(up.length>1&&X(up[up.length-2],up[up.length-1],q)<=0)up.pop(); up.push(q);}
+  lo.pop(); up.pop(); return lo.concat(up);
+}
 
 // the connected stickman: solid shaded 3-D volumes via forward kinematics.
 function renderSkeleton(){
@@ -938,7 +948,18 @@ function renderSkeleton(){
     for(const hh of [[hip,HIP_W*0.5],[sMid,SHOULDER_W*0.5]])
       for(const sv of [-1,1]) for(const su of [-1,1])
         tc.push(add(hh[0], add(scl(xax,su*hh[1]), scl(dax,sv*TRUNK_W*0.5))));
-    for(const f of BOX_FACES){ const p=faceOf(tc,f,SEG.torso.color); if(p) polys.push(p); }
+    // rounded, shaded torso: the convex-hull silhouette of the box corners, so it
+    // has no sharp edge for a swinging arm to cut into (filleted when painted).
+    const P=tc.map(project);
+    if(P.every(p=>p)){
+      const hull=hull2d(P);
+      let cx=0,cy=0; for(const q of hull){cx+=q.x;cy+=q.y;} cx/=hull.length; cy/=hull.length;
+      const rad=Math.max.apply(null, hull.map(q=>Math.hypot(q.x-cx,q.y-cy)));
+      polys.push({pp:hull, depth:P.reduce((s,q)=>s+q.z,0)/P.length, torso:true, cx, cy, rad});
+    }
+    // neck: a short box from the shoulder line up to the head, so the head joins
+    const neck=boxBetween(sMid, add(sMid, scl(upax, NECK)), NECK_W, NECK_W);
+    for(const f of BOX_FACES){ const p=faceOf(neck,f,SEG.torso.color); if(p) polys.push(p); }
   }
   // each limb as a solid shaded box between its two joints
   const raws=[];
@@ -949,14 +970,25 @@ function renderSkeleton(){
     for(const fc of BOX_FACES){ const p=faceOf(box,fc,SEG[b.seg].color); if(p) polys.push(p); }
     if(!b.calibrated) raws.push([project(f.prox), project(f.dist)]);
   }
-  // paint every face far -> near (painter's algorithm) for correct occlusion
+  // paint far -> near (painter's algorithm) for correct occlusion
   polys.sort((x,y)=>y.depth-x.depth);
   for(const p of polys){
     ctx.beginPath(); ctx.moveTo(p.pp[0].x,p.pp[0].y);
-    for(let i=1;i<4;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
+    for(let i=1;i<p.pp.length;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
     ctx.closePath();
-    ctx.fillStyle=rgb(p.color); ctx.fill();
-    ctx.lineWidth=0.8; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+    if(p.torso){                                       // rounded + filleted torso
+      const g=ctx.createRadialGradient(p.cx-p.rad*0.35,p.cy-p.rad*0.42,p.rad*0.12,
+                                       p.cx,p.cy,p.rad*1.05);
+      g.addColorStop(0, rgb(shade(SEG.torso.color,1.2)));
+      g.addColorStop(1, rgb(shade(SEG.torso.color,0.68)));
+      ctx.lineJoin='round'; ctx.lineCap='round';
+      ctx.fillStyle=g; ctx.strokeStyle=g; ctx.lineWidth=Math.max(6, p.rad*0.16);
+      ctx.fill(); ctx.stroke();                         // round-join stroke = fillet
+      ctx.lineWidth=1.5; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+    } else {
+      ctx.fillStyle=rgb(p.color); ctx.fill();
+      ctx.lineWidth=0.8; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+    }
   }
   // rounded joints: shaded balls fill the seams where boxes meet, and read as 3-D
   for(const b of bodies){
