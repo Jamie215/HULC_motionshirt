@@ -645,7 +645,6 @@ const TORSO_LEN  = segLen('torso');
 const TRUNK_W    = 0.150*STAT;             // trunk depth (front-back), for the head gap
 const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
 const NECK       = 0.052*STAT;
-const NECK_W     = 0.058*STAT;             // neck breadth (connects head to torso)
 
 // Fixed per-segment geometry + floating anchor slot. Data frame: X = subject
 // L/R, Y = front/back, Z = up (gravity). Length runs along local +Z, so a
@@ -906,48 +905,6 @@ function ball(P, worldR, baseColor){
   ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7); ctx.fillStyle=g; ctx.fill();
   ctx.lineWidth=1.1; ctx.strokeStyle='rgba(0,0,0,.18)'; ctx.stroke();
 }
-// 2-D convex hull (Andrew's monotone chain) — the torso's rounded silhouette
-function hull2d(ps){
-  const p=ps.slice().sort((a,b)=>a.x-b.x||a.y-b.y);
-  const X=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
-  const lo=[],up=[];
-  for(const q of p){ while(lo.length>1&&X(lo[lo.length-2],lo[lo.length-1],q)<=0)lo.pop(); lo.push(q);}
-  for(let i=p.length-1;i>=0;i--){const q=p[i]; while(up.length>1&&X(up[up.length-2],up[up.length-1],q)<=0)up.pop(); up.push(q);}
-  lo.pop(); up.pop(); return lo.concat(up);
-}
-// a limb as a shaded CAPSULE: a round-capped bar with a highlight down its
-// length, so it reads as a rounded cylinder. a,c are projected endpoints.
-function capsule(a,c,w,color,raw){
-  ctx.lineCap='round';
-  ctx.lineWidth=w+2.5; ctx.strokeStyle='rgba(0,0,0,.2)'; seg2d(a,c);     // outline
-  const dx=c.x-a.x, dy=c.y-a.y, L=Math.hypot(dx,dy)||1;
-  const px=-dy/L, py=dx/L, mx=(a.x+c.x)/2, my=(a.y+c.y)/2;               // across-axis
-  const g=ctx.createLinearGradient(mx-px*w*0.5,my-py*w*0.5, mx+px*w*0.5,my+py*w*0.5);
-  g.addColorStop(0, rgb(shade(color,0.6)));
-  g.addColorStop(0.5, rgb(shade(color,1.18)));                          // tube highlight
-  g.addColorStop(1, rgb(shade(color,0.6)));
-  ctx.lineWidth=w; ctx.strokeStyle=g; seg2d(a,c);
-  if(raw){ ctx.save(); ctx.setLineDash([5,4]); ctx.lineWidth=3;
-    ctx.strokeStyle='rgb(204,120,20)'; seg2d(a,c); ctx.restore(); }
-}
-// a dashed, flat capsule for a missing (ghost) bone
-function ghostCapsule(a,c,w,color){
-  ctx.save(); ctx.lineCap='round'; ctx.setLineDash([6,5]); ctx.globalAlpha=.5;
-  ctx.lineWidth=w; ctx.strokeStyle=rgb(shade(color,.9)); seg2d(a,c); ctx.restore();
-}
-// the torso as a rounded, filleted, volume-shaded blob (its hull silhouette)
-function torsoBlob(hull,cx,cy,rad){
-  ctx.beginPath(); ctx.moveTo(hull[0].x,hull[0].y);
-  for(let i=1;i<hull.length;i++) ctx.lineTo(hull[i].x,hull[i].y);
-  ctx.closePath();
-  const g=ctx.createRadialGradient(cx-rad*0.35,cy-rad*0.42,rad*0.12, cx,cy,rad*1.05);
-  g.addColorStop(0, rgb(shade(SEG.torso.color,1.2)));
-  g.addColorStop(1, rgb(shade(SEG.torso.color,0.68)));
-  ctx.lineJoin='round'; ctx.lineCap='round';
-  ctx.fillStyle=g; ctx.strokeStyle=g; ctx.lineWidth=Math.max(6, rad*0.18);
-  ctx.fill(); ctx.stroke();                                             // round join = fillet
-  ctx.lineWidth=1.5; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
-}
 
 // the connected stickman: solid shaded 3-D volumes via forward kinematics.
 function renderSkeleton(){
@@ -968,10 +925,10 @@ function renderSkeleton(){
       label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
     }
   }
-  // ---- one rounded figure: shaded capsule limbs + a rounded torso + a ball head
-  // seated on the body (fa-person vibe), all in ONE depth-sorted pass ----
-  const parts=[];
-  // torso: rounded, shaded silhouette (convex hull of its 3-D box corners)
+  // ---- solid 3-D figure: torso block + limb boxes in one depth-sorted pass ----
+  const polys=[];
+  // torso as a tapered 3-D block: wide at the shoulders, narrow at the hips, with
+  // a front-back depth; it tilts/twists with the trunk (corners use its pose).
   if(present.has('torso')){
     const hip=pos['torso'].prox, sL=shoulder('upper_arm_l'), sR=shoulder('upper_arm_r');
     const sMid=scl(add(sL,sR),0.5);
@@ -981,41 +938,52 @@ function renderSkeleton(){
     for(const hh of [[hip,HIP_W*0.5],[sMid,SHOULDER_W*0.5]])
       for(const sv of [-1,1]) for(const su of [-1,1])
         tc.push(add(hh[0], add(scl(xax,su*hh[1]), scl(dax,sv*TRUNK_W*0.5))));
-    const P=tc.map(project);
-    if(P.every(p=>p)){
-      const hull=hull2d(P);
-      let cx=0,cy=0; for(const q of hull){cx+=q.x;cy+=q.y;} cx/=hull.length; cy/=hull.length;
-      const rad=Math.max.apply(null, hull.map(q=>Math.hypot(q.x-cx,q.y-cy)));
-      parts.push({kind:'torso', depth:P.reduce((s,q)=>s+q.z,0)/P.length, hull, cx, cy, rad});
-    }
-    // head: a ball seated on the shoulders (bottom overlaps the torso -> no gap,
-    // no separate neck — the head reads as attached to the body)
-    const hc=add(sMid, scl(upax, HEAD_R*0.72));
-    const hp=project(hc);
-    if(hp) parts.push({kind:'head', depth:hp.z, world:hc});
+    for(const f of BOX_FACES){ const p=faceOf(tc,f,SEG.torso.color); if(p) polys.push(p); }
   }
-  // limbs as shaded capsules
+  // each limb as a solid shaded box between its two joints
+  const raws=[];
   for(const b of bodies){
     if(b.seg==='torso') continue;
-    const f=pos[b.seg], a=project(f.prox), c=project(f.dist); if(!a||!c) continue;
-    const w=Math.max(4, focal*((ANAT[b.seg]&&ANAT[b.seg].thick)||.05)/((a.z+c.z)/2));
-    parts.push({kind:'limb', depth:(a.z+c.z)/2, a, c, w,
-      color:SEG[b.seg].color, raw:!b.calibrated});
+    const f=pos[b.seg], t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
+    const box=boxBetween(f.prox, f.dist, t, t);
+    for(const fc of BOX_FACES){ const p=faceOf(box,fc,SEG[b.seg].color); if(p) polys.push(p); }
+    if(!b.calibrated) raws.push([project(f.prox), project(f.dist)]);
   }
-  // ghost (missing-middle) bones: dashed flat capsules, clearly "not measured"
+  // paint every face far -> near (painter's algorithm) for correct occlusion
+  polys.sort((x,y)=>y.depth-x.depth);
+  for(const p of polys){
+    ctx.beginPath(); ctx.moveTo(p.pp[0].x,p.pp[0].y);
+    for(let i=1;i<4;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
+    ctx.closePath();
+    ctx.fillStyle=rgb(p.color); ctx.fill();
+    ctx.lineWidth=0.8; ctx.strokeStyle='rgba(0,0,0,.16)'; ctx.stroke();
+  }
+  // rounded joints: shaded balls fill the seams where boxes meet, and read as 3-D
+  for(const b of bodies){
+    if(b.seg==='torso') continue;
+    const t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05, col=SEG[b.seg].color;
+    ball(pos[b.seg].prox, t*0.62, col); ball(pos[b.seg].dist, t*0.62, col);
+  }
+  // ghost (missing-middle) bones: dashed & flat, clearly "not measured"
+  ctx.lineCap='round';
   for(const g of ghosts){
     const a=project(g.prox), c=project(g.dist); if(!a||!c) continue;
     const w=Math.max(3, focal*((ANAT[g.seg]&&ANAT[g.seg].thick)||.05)/((a.z+c.z)/2));
-    parts.push({kind:'ghost', depth:(a.z+c.z)/2, a, c, w,
-      color:(SEG[g.seg]||{color:[136,136,136]}).color});
+    ctx.save(); ctx.setLineDash([6,5]); ctx.globalAlpha=.5;
+    ctx.lineWidth=w;
+    ctx.strokeStyle=rgb(shade((SEG[g.seg]||{color:[136,136,136]}).color,.9));
+    seg2d(a,c); ctx.restore();
   }
-  // paint far -> near so nearer parts cover farther ones
-  parts.sort((x,y)=>y.depth-x.depth);
-  for(const P of parts){
-    if(P.kind==='torso')      torsoBlob(P.hull, P.cx, P.cy, P.rad);
-    else if(P.kind==='limb')  capsule(P.a, P.c, P.w, P.color, P.raw);
-    else if(P.kind==='ghost') ghostCapsule(P.a, P.c, P.w, P.color);
-    else if(P.kind==='head')  ball(P.world, HEAD_R, SEG.torso.color);
+  // uncalibrated present bones: amber dashed overlay so a kink reads as strap tilt
+  ctx.save(); ctx.setLineDash([5,4]); ctx.lineCap='round'; ctx.lineWidth=3;
+  ctx.strokeStyle='rgb(204,120,20)';
+  for(const r of raws){ if(r[0]&&r[1]) seg2d(r[0],r[1]); }
+  ctx.restore();
+  // head as a shaded ball above the shoulders (only when the torso is measured)
+  if(present.has('torso')){
+    const sMid=scl(add(shoulder('upper_arm_l'),shoulder('upper_arm_r')),0.5);
+    const up=norm(sub(pos['torso'].dist, pos['torso'].prox));
+    ball(add(sMid, scl(up, NECK+HEAD_R)), HEAD_R, SEG.torso.color);
   }
   // labels: present bones at their distal end (uncalibrated flagged amber
   // "· raw"); ghosts at their midpoint, faint and flagged "no node". The torso
