@@ -624,18 +624,39 @@ _HTML_TEMPLATE = r"""<!doctype html>
 "use strict";
 const DATA = /*__FBD_DATA__*/null;
 
+// ---- anthropometry: one body, sized from a standard ----
+// Every segment's length AND breadth is a fraction of the subject's stature,
+// from Winter, "Biomechanics and Motor Control of Human Movement" (segment
+// length / stature; torso breadth = biacromial, i.e. shoulder, width). So the
+// whole figure is one consistent body instead of eyeballed bars, and the
+// shoulders come out at the real shoulder width. Tune STAT to resize the figure.
+const STAT = 1.60;                         // nominal stature (arbitrary draw units)
+const RATIO = {                            // [ length/stature , breadth/stature ]
+  torso:     [0.288, 0.245],               // hip->shoulder ; biacromial (shoulders)
+  upper_arm: [0.186, 0.057],
+  forearm:   [0.146, 0.047],
+  hand:      [0.108, 0.040],
+};
+const segLen = k => RATIO[k][0]*STAT;
+const segW   = k => RATIO[k][1]*STAT;
+const SHOULDER_W = segW('torso');          // shoulder-to-shoulder span
+const TORSO_LEN  = segLen('torso');
+const TRUNK_W    = 0.150*STAT;             // trunk tube (front-back depth), drawn
+const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
+const NECK       = 0.052*STAT;
+
 // Fixed per-segment geometry + floating anchor slot. Data frame: X = subject
 // L/R, Y = front/back, Z = up (gravity). Length runs along local +Z, so a
 // calibrated neutral pose (offset applied, orientation ~identity) points every
-// bar straight up.
+// bar straight up. Lengths/breadths come from the anthropometry above.
 const SEG = {
-  torso:       {len:.52, cross:.24, color:[59,130,196],  anchor:[0,0,.0]},
-  upper_arm_r: {len:.30, cross:.10, color:[228,87,46],   anchor:[-.58,0,-.02]},
-  upper_arm_l: {len:.30, cross:.10, color:[242,165,65],  anchor:[ .58,0,-.02]},
-  forearm_r:   {len:.27, cross:.08, color:[23,163,152],  anchor:[-.58,0,-.74]},
-  forearm_l:   {len:.27, cross:.08, color:[124,181,24],  anchor:[ .58,0,-.74]},
-  hand_r:      {len:.17, cross:.065,color:[111,75,216],  anchor:[-.58,0,-1.36]},
-  hand_l:      {len:.17, cross:.065,color:[214,84,155],  anchor:[ .58,0,-1.36]},
+  torso:       {len:TORSO_LEN,          cross:SHOULDER_W,      color:[59,130,196], anchor:[0,0,.0]},
+  upper_arm_r: {len:segLen('upper_arm'),cross:segW('upper_arm'),color:[228,87,46], anchor:[-.58,0,-.02]},
+  upper_arm_l: {len:segLen('upper_arm'),cross:segW('upper_arm'),color:[242,165,65],anchor:[ .58,0,-.02]},
+  forearm_r:   {len:segLen('forearm'),  cross:segW('forearm'), color:[23,163,152], anchor:[-.58,0,-.74]},
+  forearm_l:   {len:segLen('forearm'),  cross:segW('forearm'), color:[124,181,24], anchor:[ .58,0,-.74]},
+  hand_r:      {len:segLen('hand'),     cross:segW('hand'),    color:[111,75,216], anchor:[-.58,0,-1.36]},
+  hand_l:      {len:segLen('hand'),     cross:segW('hand'),    color:[214,84,155], anchor:[ .58,0,-1.36]},
 };
 const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
@@ -667,27 +688,26 @@ function qrot(q,v){
 // lateral one: the shoulders sit near its top corners). Change these to fit a
 // subject; they never touch the measured orientation, only where a bar is drawn.
 //
-// Bone lengths are anthropometric: segment-length / stature ratios from Winter,
-// "Biomechanics and Motor Control of Human Movement" (upper arm 0.186, forearm
-// 0.146, hand 0.108 of stature) at a nominal stature STAT, so the arm segments
-// are realistically proportioned rather than eyeballed. Torso stays at ~0.50 so
-// the shoulder sockets, root, grid and camera keep their tuning; rescale STAT to
-// grow/shrink the limbs together.
-const STAT = 1.40;                       // nominal stature (arbitrary draw units)
+// Lengths, breadths, the shoulder sockets and the head all come from the one
+// anthropometry table defined above (STAT / RATIO / SHOULDER_W ...), so the
+// figure is a single consistent body. The shoulders sit at ± half the biacromial
+// width at the top of the trunk; the trunk itself is drawn as a moderate tube
+// and a separate shoulder bar (in renderSkeleton) spans the full shoulder width.
 const ANAT = {
-  torso:       {len:.50,           dir:[0,0,1],  thick:.075, sockets:{
-                  upper_arm_r:[-.21,0,.44], upper_arm_l:[.21,0,.44]}},
-  upper_arm_r: {len:0.186*STAT, dir:[0,0,-1], thick:.05},   // ~0.26
-  upper_arm_l: {len:0.186*STAT, dir:[0,0,-1], thick:.05},
-  forearm_r:   {len:0.146*STAT, dir:[0,0,-1], thick:.042},  // ~0.20
-  forearm_l:   {len:0.146*STAT, dir:[0,0,-1], thick:.042},
-  hand_r:      {len:0.108*STAT, dir:[0,0,-1], thick:.036},  // ~0.15
-  hand_l:      {len:0.108*STAT, dir:[0,0,-1], thick:.036},
+  torso:       {len:TORSO_LEN, dir:[0,0,1], thick:TRUNK_W, sockets:{
+                  upper_arm_r:[-SHOULDER_W/2,0,TORSO_LEN*0.98],
+                  upper_arm_l:[ SHOULDER_W/2,0,TORSO_LEN*0.98]}},
+  upper_arm_r: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
+  upper_arm_l: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
+  forearm_r:   {len:segLen('forearm'),   dir:[0,0,-1], thick:segW('forearm')},
+  forearm_l:   {len:segLen('forearm'),   dir:[0,0,-1], thick:segW('forearm')},
+  hand_r:      {len:segLen('hand'),      dir:[0,0,-1], thick:segW('hand')},
+  hand_l:      {len:segLen('hand'),      dir:[0,0,-1], thick:segW('hand')},
 };
 // full anatomical chain (presence-independent) — lets us bridge a missing
 // middle segment with a dashed ghost instead of dropping its descendants.
 const ANAT_CHAIN = DATA.anat_chain || {};
-const ROOT_BASE = [0,0,-0.22];               // torso proximal (pelvis) in world
+const ROOT_BASE = [0,0,-0.34];               // torso proximal (pelvis) in world
 const IDENT = [1,0,0,0];
 // where an anatomical parent P hands off to its child C (in P's local frame):
 // the torso has lateral shoulder sockets; every other parent hands off at its
@@ -699,8 +719,8 @@ function socket(P,C){
 
 const cvs=document.getElementById('view'), ctx=cvs.getContext('2d');
 const UP=[0,0,1], FOV=45*Math.PI/180, LIGHT=norm([0.45,0.55,1.0]);
-const TARGET={floating:[0,0,-0.62], skeleton:[0,0,-0.30]};
-const GROUNDS={floating:-1.72, skeleton:-1.30};
+const TARGET={floating:[0,0,-0.62], skeleton:[0,0,0.06]};
+const GROUNDS={floating:-1.72, skeleton:-0.62};
 let DPR=1, W=0, H=0;
 
 // A unit box's 6 faces as vertex-index quads (verts built per body below).
@@ -903,6 +923,19 @@ function renderSkeleton(){
     }
     ctx.restore();
   }
+  // shoulder bar: with a torso, span the two shoulder sockets (biacromial width)
+  // so the shoulders read at real width; it swings with the trunk. Arms hang from
+  // its ends (the same socket points).
+  if(present.has('torso')){
+    const Ls=shoulder('upper_arm_l'), Rs=shoulder('upper_arm_r');
+    const a=project(Ls), c=project(Rs);
+    if(a&&c){
+      const w=Math.max(3, focal*ANAT.torso.thick/((a.z+c.z)/2));
+      ctx.lineCap='round';
+      ctx.lineWidth=w+3; ctx.strokeStyle='rgba(0,0,0,.22)'; seg2d(a,c);
+      ctx.lineWidth=w; ctx.strokeStyle=rgb(SEG.torso.color); seg2d(a,c);
+    }
+  }
   // joint dots at every present connection (proximal + distal)
   for(const b of bodies){
     const f=pos[b.seg], col=(SEG[b.seg]||{color:[136,136,136]}).color;
@@ -914,12 +947,14 @@ function renderSkeleton(){
       ctx.lineWidth=2; ctx.strokeStyle=rgb(shade(col,.85)); ctx.stroke();
     }
   }
-  // a head above the torso — only when the torso is actually measured
+  // a head above the torso — only when the torso is actually measured; sized and
+  // offset (a neck's gap) anthropometrically so it clears the shoulders.
   if(present.has('torso')){
     const f=pos['torso'], up=norm(sub(f.dist,f.prox));
-    const hp=project(add(f.dist, scl(up,0.10))), fz=project(f.dist);
+    const off=ANAT.torso.thick/2 + NECK + HEAD_R;
+    const hp=project(add(f.dist, scl(up,off))), fz=project(f.dist);
     if(hp&&fz){
-      const r=Math.max(4, focal*0.085/fz.z);
+      const r=Math.max(4, focal*HEAD_R/fz.z);
       ctx.beginPath(); ctx.arc(hp.x,hp.y,r,0,7);
       ctx.fillStyle=rgb(SEG.torso.color); ctx.globalAlpha=.9; ctx.fill();
       ctx.globalAlpha=1; ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.25)';
