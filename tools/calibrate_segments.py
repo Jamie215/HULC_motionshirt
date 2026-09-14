@@ -588,7 +588,9 @@ def _fmt_q(q):
 # Commands
 # ---------------------------------------------------------------------------
 def load_montage(path):
-    with open(path) as f:
+    # utf-8-sig tolerates a UTF-8 BOM (Windows Notepad / PowerShell '>' add one),
+    # which would otherwise crash json.load with "Expecting value: ... char 0".
+    with open(path, encoding="utf-8-sig") as f:
         montage = json.load(f)
     errors = validate_montage(montage)
     if errors:
@@ -634,7 +636,7 @@ def cmd_calibrate(args):
 def cmd_verify(args):
     montage = load_montage(args.montage)
     t_ms, seg_quats, _ = load_aligned(args.aligned_csv, montage)
-    with open(args.calibration) as f:
+    with open(args.calibration, encoding="utf-8-sig") as f:
         calibration = json.load(f)
 
     if args.window:

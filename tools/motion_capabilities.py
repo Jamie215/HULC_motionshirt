@@ -678,7 +678,7 @@ def main() -> None:
     if not args.montage:
         ap.error("give a montage file, or use --example / --selftest")
 
-    with open(args.montage) as f:
+    with open(args.montage, encoding="utf-8-sig") as f:  # tolerate a UTF-8 BOM
         montage = json.load(f)
 
     errors = validate_montage(montage)

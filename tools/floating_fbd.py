@@ -251,7 +251,7 @@ def _html_escape(s):
 # Commands
 # ---------------------------------------------------------------------------
 def _load_calibration(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8-sig") as f:   # tolerate a UTF-8 BOM
         cal = json.load(f)
     cal["_path"] = path
     return cal
