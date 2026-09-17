@@ -14,8 +14,12 @@ permanent, no reflash). This tool:
   1. scans + connects to every advertising node,
   2. turns on the firmware's DEBUG quaternion stream (control 0x01 -> char A001;
      0x00 stops it) — a bench-only path, never used during real capture,
-  3. walks the segments you're placing; for each one you SHAKE the node you're
-     about to strap there, and the tool reports which id moved,
+  3. walks the segments you're placing; for each one it opens a short LISTEN
+     window (~3 s) during which you SHAKE the node you're about to strap there,
+     while the others sit still. All nodes stream at once, so it discriminates by
+     angular speed: the shaken board spins (high deg/s), the still ones read ~0,
+     and it reports the id that clearly dominated (and moved for a sustained
+     stretch, so a bump can't false-trigger),
   4. writes a schema-valid `montage.json` (columns n0..nN in enrollment order,
      so downstream log ordering is unambiguous) and a persistent
      `nodes_registry.json` (id -> label + last segment).
@@ -43,6 +47,7 @@ import math
 import os
 import struct
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import SEGMENTS, validate_montage  # noqa: E402
@@ -57,11 +62,15 @@ QUAT_RECORD = struct.Struct("<Iffff")   # t_ms, qw, qx, qy, qz  (matches firmwar
 DEFAULT_REGISTRY = "nodes_registry.json"
 DEFAULT_MONTAGE = "montage.json"
 
-# Shake detection thresholds (deg/s). A shaken node spins fast; a still one is
-# near zero. We require BOTH an absolute floor and clear dominance over the
-# next-fastest node so a small bump on a neighbour never wins.
-SHAKE_MIN_DPS = 60.0        # the mover must exceed this peak angular speed
+# Shake detection thresholds (deg/s). All nodes stream their live orientation at
+# once; a shaken node spins fast, a still one reads ~0. We discriminate on the
+# per-node angular speed: the winner must clear an absolute floor AND dominate the
+# next-fastest node, and must have MOVED for a sustained stretch (not one spike).
+SHAKE_MIN_DPS = 60.0        # the mover's PEAK angular speed must exceed this
 SHAKE_DOMINANCE = 3.0       # ...and be >= this many times the next-fastest node
+MOVING_FLOOR_DPS = 25.0     # a sample above this counts the node as "moving"
+MIN_MOVED_SAMPLES = 4       # ...and it must move for >= this many samples (~0.4s @10Hz)
+LISTEN_WINDOW_S = 3.0       # how long we listen per shake prompt
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +84,17 @@ def quat_speed_dps(q_prev, q_cur, dt_s):
     dot = max(-1.0, min(1.0, dot))
     ang = 2.0 * math.acos(dot)               # radians of rotation
     return math.degrees(ang) / dt_s
+
+
+def eligible_movers(peaks, moved, used, min_moved=MIN_MOVED_SAMPLES):
+    """Peaks for nodes that moved for a SUSTAINED stretch and aren't yet assigned.
+
+    Filtering on a sustained sample count (not a single frame) before picking a
+    winner is what stops a one-sample glitch or a brief bump from being read as a
+    deliberate shake.
+    """
+    return {k: peaks.get(k, 0.0) for k, n in moved.items()
+            if n >= min_moved and k not in used}
 
 
 def pick_mover(peak_dps, min_dps=SHAKE_MIN_DPS, dominance=SHAKE_DOMINANCE):
@@ -214,7 +234,14 @@ async def _enroll(segments, montage_path, registry_path, reuse, subject, session
         else:
             print("[setup] registry does not cover all segments — enrolling.")
 
-    clients, peaks, last = {}, {}, {}
+    # peaks: max angular speed seen this window; moved: count of "moving" samples;
+    # last: (quat, monotonic-time) of the previous notification. All reset per shake.
+    clients, peaks, moved, last = {}, {}, {}, {}
+    loop = asyncio.get_event_loop()
+
+    async def ask(msg):
+        # Run blocking input() OFF the event loop so BLE notifications keep flowing.
+        return await loop.run_in_executor(None, input, msg)
 
     def make_handler(node_id):
         def handler(_char, data):
@@ -223,10 +250,12 @@ async def _enroll(segments, montage_path, registry_path, reuse, subject, session
             _t, qw, qx, qy, qz = QUAT_RECORD.unpack_from(data, 0)
             q = (qw, qx, qy, qz)
             prev = last.get(node_id)
-            now = asyncio.get_event_loop().time()
+            now = time.monotonic()
             if prev is not None:
                 dps = quat_speed_dps(prev[0], q, now - prev[1])
                 peaks[node_id] = max(peaks.get(node_id, 0.0), dps)
+                if dps >= MOVING_FLOOR_DPS:
+                    moved[node_id] = moved.get(node_id, 0) + 1
             last[node_id] = (q, now)
         return handler
 
@@ -242,19 +271,28 @@ async def _enroll(segments, montage_path, registry_path, reuse, subject, session
         assignments, used = [], set()
         for seg in segments:
             while True:
-                for k in list(peaks):
-                    peaks[k] = 0.0
-                input(f">>> SHAKE the node for '{seg}', then press Enter... ")
-                await asyncio.sleep(0.2)     # let the last notifications land
-                candidates = {k: v for k, v in peaks.items() if k not in used}
-                mover = pick_mover(candidates)
+                await ask(f">>> Set the OTHER boards down still. Press Enter, "
+                          f"then SHAKE the node for '{seg}'... ")
+                peaks.clear(); moved.clear(); last.clear()
+                print(f"    listening {LISTEN_WINDOW_S:.0f}s — shake it now...")
+                await asyncio.sleep(LISTEN_WINDOW_S)   # loop runs; peaks accumulate
+                # eligible = moved for a sustained stretch, and not already assigned
+                eligible = eligible_movers(peaks, moved, used)
+                mover = pick_mover(eligible)
                 if mover is None:
-                    top = max(candidates.values()) if candidates else 0.0
-                    print(f"    [!] no clear mover (peak {top:.0f} deg/s). "
-                          f"Shake ONE node harder and retry.\n")
+                    if not any(last.values()):
+                        print("    [!] no data — are the nodes streaming? retry.\n")
+                    else:
+                        top = max(peaks.values()) if peaks else 0.0
+                        movers = [k for k, n in moved.items() if n >= MIN_MOVED_SAMPLES]
+                        why = ("more than one node moved" if len(movers) > 1
+                               else f"peak only {top:.0f} deg/s")
+                        print(f"    [!] no clear mover ({why}). Shake ONE node, "
+                              f"harder, and keep the others still.\n")
                     continue
-                lbl = input(f"    detected {mover} (peak {peaks[mover]:.0f} deg/s)."
-                            f" Physical label (optional): ").strip()
+                lbl = (await ask(f"    detected {mover} "
+                                 f"(peak {peaks[mover]:.0f} deg/s). "
+                                 f"Physical label (optional): ")).strip()
                 assignments.append((mover, seg, lbl))
                 used.add(mover)
                 print(f"    -> {seg} = {mover}\n")
@@ -297,6 +335,14 @@ def selftest():
     check(pick_mover({"A": 20, "B": 5}) is None, "below floor -> None")
     # pick_mover: ambiguous (too close) -> None
     check(pick_mover({"A": 200, "B": 150}) is None, "ambiguous -> None")
+
+    # eligible_movers: sustained motion + not-yet-used filtering
+    elig = eligible_movers({"A": 200, "B": 200, "C": 30},
+                           moved={"A": 6, "B": 1, "C": 6}, used={"C"})
+    check(elig == {"A": 200.0}, "eligible drops one-frame glitch (B) and used (C)")
+    check(pick_mover(eligible_movers({"A": 200, "B": 200},
+                                     moved={"A": 6, "B": 1}, used=set())) == "A",
+          "sustained filter resolves a would-be tie -> A")
 
     # montage build + validate
     asg = [("HULC-IMU-485C", "upper_arm_r", "orange"),
