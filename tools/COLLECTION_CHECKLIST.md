@@ -25,30 +25,33 @@ order change — the steps are identical.
 
 ## 0b. Enroll the nodes → montage (one-time per rig)
 
-Instead of hand-writing `montage.json` and guessing which board is where, use
-the shake-to-assign wizard. This is a **bench** step (it briefly uses the debug
-stream); real capture stays offline.
+Instead of hand-writing `montage.json` and guessing which board is where, map
+each board by **powering one node at a time** — with only one advertising, its id
+is unambiguous. No firmware change, no streaming. Because the `HULC-IMU-XXXX` id
+is a permanent per-board property, this is a **one-time** job per board.
 
 ```bash
-python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r
+# add --erase to also wipe each node's flash in the same pass (see step 1)
+python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r --erase
 ```
 
-- [ ] Scan lists both boards; for each segment prompt, **shake the node** you're
-      about to strap there — it reports the moving id.
-- [ ] Type a physical **label** (e.g. "orange tape") when asked, and mark the
-      board so you recognise it later.
-- [ ] It writes a schema-valid `montage.json` (columns in the order you
-      enrolled) plus `nodes_registry.json` (remembers id → segment/label).
+- [ ] When prompted for `upper_arm_r`, power ON **only** that board (all others
+      OFF), press Enter — it finds the single advertising id and reports it.
+- [ ] Type a physical **label** (e.g. "orange tape") and mark the board.
+- [ ] With `--erase`, it wipes that node (~30 s) before moving on.
+- [ ] Repeat for `forearm_r` (power ONLY it on).
+- [ ] It writes a schema-valid `montage.json` (columns in enrollment order) plus
+      `nodes_registry.json` (remembers id → segment/label).
 
-Next time the same boards are used, skip the shaking:
+Next time the same (labeled) boards are used, skip the power-cycling — power them
+all on and reuse the saved mapping:
 
 ```bash
 python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r --reuse
 ```
 
-- [ ] It offers "reuse previous placement?" and writes the montage with no
-      shaking. (Because the `HULC-IMU-XXXX` id is permanent, once labeled you
-      just confirm.)
+- [ ] It scans, sees both known ids, offers "reuse previous placement?" and
+      writes the montage directly.
 
 > `montage.json` is written UTF-8 without a BOM automatically. If you ever edit
 > it by hand, keep it BOM-free (Notepad "Save as UTF-8" and PowerShell `>` add a
@@ -57,6 +60,9 @@ python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r --reuse
 ---
 
 ## 1. Erase both nodes (start clean)
+
+If you used `enroll --erase` above, the flash is already wiped — skip this.
+Otherwise, erase both:
 
 ```bash
 python tools/multinode_test.py --erase --count 2
@@ -183,7 +189,8 @@ python tools/calibrate_segments.py verify redon.csv montage.json \
 | Offload rejected / empty | Node not in `IDLE`, or nothing recorded | Hold the subject still; confirm motion actually happened in step 4 |
 | Low reconcile confidence | Weak/absent sync gesture — the two segments didn't move together | Redo beat 2 (whole-arm swings), wide and moderate |
 | Neutral residual large in calibrate | Neutral hold wasn't still, or wrong window | Redo beat 1; or pin `--window` from `t_common_ms` in aligned.csv |
-| Enroll: "no clear mover" | Shake too weak, or two nodes moved | Shake ONE node harder; hold the others still |
+| Enroll: "N nodes advertising" | More than one board powered on | Power ON only the ONE node you're enrolling; others OFF |
+| Enroll: "no HULC node advertising" | Board off, or advert not up yet | Power it on, wait a few seconds, retry (a connected node stops advertising) |
 | `analyze: node log not found` | `--capture-dir` wrong, or a node didn't offload COMPLETE | Point at the offload dir; re-run offload to finish the missing node |
 
 See `firmware/MULTINODE_TESTING.md` for the offload framing/recovery details and
