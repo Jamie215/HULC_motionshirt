@@ -104,6 +104,45 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
 - [ ] Snug and consistently oriented — strap tilt shows up downstream as an
       uncalibrated "kink", not motion.
 
+### Where on each segment (and why it matters less than you'd think)
+
+The neutral-pose calibration solves for **however the sensor sits on the bone**
+and subtracts it, so the *exact* spot is largely calibrated away — a static
+placement offset does **not** shift your angles. What calibration can't fix is
+(a) **soft-tissue artifact** (muscle bulging under the sensor moves it without
+the bone moving — motion-correlated error that won't average out) and
+(b) **re-don repeatability** (the cached calibration is only reusable if the
+sensor lands the same way next wear). One rule optimizes both:
+
+> **Place each sensor over the least contractile tissue, referenced to a
+> palpable bony landmark, with the axial roll (rotation around the limb) pinned
+> to a consistent flat spot.**
+
+That single principle gives a *different* answer per segment because the anatomy
+differs — it is not two philosophies:
+
+| Segment | Put it | Referenced to | Avoid |
+|---|---|---|---|
+| **torso** | **anterior**, flat on the **sternum** | sternal midline | pec / upper abdomen (muscle + breathing motion) |
+| **upper arm** | **lateral**, distal third just above the elbow | distal humerus | anterior biceps belly (bulges during flexion); proximal deltoid |
+| **forearm** | **lateral/dorsal**, distal third | subcutaneous **ulnar border** | volar (palm-side) muscle bellies |
+| **hand** | flat on the **dorsum** | 2nd–3rd metacarpal | — |
+
+- [ ] **Torso is anterior for a specific reason, not just repeatability.** The
+      facing/heading recovery assumes the torso board's normal points out of the
+      chest (`TORSO_FORWARD_IN_SENSOR` in `calibrate_segments.py`). An anterior
+      sternal mount is what lets the pipeline auto-recover which way the subject
+      faced; a side-of-trunk mount is self-flagged low-confidence and loses it.
+      If you ever standardize the torso sensor elsewhere, that constant has to
+      move with it.
+- [ ] **Arms are lateral/dorsal** to keep the sensor off the muscle bellies that
+      bulge with the very motion you're measuring, and over bone that re-dons
+      consistently.
+- [ ] **Repeatability beats alignment.** You are not trying to line the sensor up
+      with the bone — the pose does that. You are trying to place it the *same
+      way every wear*. A bony, roll-referenced spot is what makes `verify` reuse
+      the cached calibration instead of demanding a fresh pose.
+
 ## 2. Erase to a clean start (smart)
 
 Connect once (over BLE — the boards stay strapped on) and wipe only what needs
