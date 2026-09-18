@@ -1,14 +1,15 @@
 """
 HULC Motion Shirt — one-shot post-offload pipeline.
 
-Turns a directory of offloaded node logs + a montage into a viewer in ONE
-command, running the four post-offload stages in order and binding logs to
+Turns a directory of offloaded node logs + a montage into a viewer + metrics in
+ONE command, running the post-offload stages in order and binding logs to
 segments automatically (no hand-ordering of .bin files):
 
     reconcile  -> aligned.csv        (logs passed in montage column order)
     capability -> which joints are computable for this montage
     calibrate  -> calibration.json   (neutral window auto-detected)
     render     -> <out>.html         (the floating/skeleton viewer)
+    metrics    -> metrics.json       (per-DOF joint angles + range of motion)
 
 The montage records each node's column (n0, n1, ...) and its id. Offload names
 each file by node id (e.g. HULC-IMU-485C.bin), so this tool resolves every
@@ -127,6 +128,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
     os.makedirs(outdir, exist_ok=True)
     aligned = os.path.join(outdir, "aligned.csv")
     calib = os.path.join(outdir, "calibration.json")
+    metrics = os.path.join(outdir, "metrics.json")
     out_html = os.path.join(outdir, out_html)
     py = sys.executable
 
@@ -134,27 +136,33 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
     cmd = [py, os.path.join(TOOLS, "reconcile_nodes.py"), *logs, "--out", aligned]
     if fs:
         cmd += ["--fs", str(fs)]
-    _run(cmd, "1/4 reconcile (align onto one timeline)")
+    _run(cmd, "1/5 reconcile (align onto one timeline)")
 
     # 2. capability — which joints this montage supports
     _run([py, os.path.join(TOOLS, "motion_capabilities.py"), montage_path],
-         "2/4 capability check")
+         "2/5 capability check")
 
     # 3. calibrate — auto neutral window unless overridden
     cmd = [py, os.path.join(TOOLS, "calibrate_segments.py"), "calibrate",
            aligned, montage_path, "--out", calib]
     if window:
         cmd += ["--window", window]
-    _run(cmd, "3/4 calibrate (sensor->segment offsets)")
+    _run(cmd, "3/5 calibrate (sensor->segment offsets)")
 
     # 4. render — the viewer
     _run([py, os.path.join(TOOLS, "floating_fbd.py"), "render", aligned,
           montage_path, "--calibration", calib, "--out", out_html],
-         "4/4 render (build the viewer)")
+         "4/5 render (build the viewer)")
+
+    # 5. metrics — per-DOF joint angles + ROM over the calibrated stream
+    _run([py, os.path.join(TOOLS, "metrics.py"), "compute", aligned,
+          montage_path, "--calibration", calib, "--out", metrics],
+         "5/5 metrics (per-DOF joint angles + range of motion)")
 
     print("\n===== DONE =====")
     print(f"  aligned stream : {aligned}")
     print(f"  calibration    : {calib}")
+    print(f"  metrics        : {metrics}")
     print(f"  viewer         : {out_html}")
     print(f"  open it        : file://{os.path.abspath(out_html)}")
 
@@ -232,10 +240,11 @@ def selftest():
     # full chain end-to-end
     try:
         run(mpath, cap, "out.html", tmp, window=None, fs=None)
-        made = os.path.exists(os.path.join(tmp, "out.html")) and \
-            os.path.exists(os.path.join(tmp, "calibration.json"))
+        made = all(os.path.exists(os.path.join(tmp, f)) for f in
+                   ("out.html", "calibration.json", "metrics.json"))
         ok = ok and made
-        check(made, "end-to-end run produced calibration.json + out.html")
+        check(made, "end-to-end run produced calibration.json + metrics.json + "
+              "out.html")
     except SystemExit as e:
         ok = False; check(False, f"end-to-end run failed: {e}")
 

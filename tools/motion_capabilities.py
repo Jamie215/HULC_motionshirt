@@ -181,6 +181,10 @@ class DOF:
     key: str
     name: str                 # clinical name
     plane: str                # anatomical plane / axis it lives in
+    seq_index: int            # which slot (0/1/2) of the joint's `decomposition`
+                              # Euler sequence carries THIS clinical angle. The
+                              # metric plugin (metrics.py) reads angle[seq_index];
+                              # a 2-DOF joint drops the unused middle/last slot.
     needs_calibration: bool = True   # anatomical-frame cal needed for a valid number
 
 
@@ -203,9 +207,9 @@ JOINTS = {
         key="shoulder_r", name="Right shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("abd_add",   "Abduction / adduction",          "frontal"),
-            DOF("int_ext_rot","Internal / external rotation",  "transverse"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
+            DOF("abd_add",   "Abduction / adduction",          "frontal",    1),
+            DOF("int_ext_rot","Internal / external rotation",  "transverse", 2),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         caveat="Trunk motion contaminates this unless the torso node is present "
@@ -215,9 +219,9 @@ JOINTS = {
         key="shoulder_l", name="Left shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("abd_add",   "Abduction / adduction",          "frontal"),
-            DOF("int_ext_rot","Internal / external rotation",  "transverse"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
+            DOF("abd_add",   "Abduction / adduction",          "frontal",    1),
+            DOF("int_ext_rot","Internal / external rotation",  "transverse", 2),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         caveat="Trunk motion contaminates this unless the torso node is present "
@@ -227,8 +231,8 @@ JOINTS = {
         key="elbow_r", name="Right elbow + forearm",
         proximal="upper_arm_r", distal="forearm_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("pro_sup",   "Pronation / supination",         "transverse"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
@@ -239,8 +243,8 @@ JOINTS = {
         key="elbow_l", name="Left elbow + forearm",
         proximal="upper_arm_l", distal="forearm_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("pro_sup",   "Pronation / supination",         "transverse"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
@@ -251,8 +255,8 @@ JOINTS = {
         key="wrist_r", name="Right wrist",
         proximal="forearm_r", distal="hand_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
         ),
         decomposition="ZXY (flex/ext, deviation)",
     ),
@@ -260,8 +264,8 @@ JOINTS = {
         key="wrist_l", name="Left wrist",
         proximal="forearm_l", distal="hand_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal"),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal"),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
         ),
         decomposition="ZXY (flex/ext, deviation)",
     ),
@@ -439,7 +443,8 @@ def resolve(montage: dict) -> list:
             kind="joint", target=jkey, name=j.name,
             computable=not missing, requires=need, missing=missing,
             decomposition=j.decomposition,
-            dofs=[{"key": d.key, "name": d.name, "plane": d.plane} for d in j.dofs],
+            dofs=[{"key": d.key, "name": d.name, "plane": d.plane,
+                   "seq_index": d.seq_index} for d in j.dofs],
         )
         if missing:
             cap.warnings.append(
@@ -611,6 +616,17 @@ def selftest() -> None:
         assert j.proximal in SEGMENTS, f"{jkey}: bad proximal {j.proximal}"
         assert j.distal in SEGMENTS, f"{jkey}: bad distal {j.distal}"
         assert j.dofs, f"{jkey}: no DOFs"
+        # Each DOF's seq_index must address a real slot of the joint's Euler
+        # sequence (the leading token of `decomposition`, e.g. 'YXY'), and no two
+        # DOFs of a joint may claim the same slot — the metric plugin reads
+        # angle[seq_index], so a collision or out-of-range index would silently
+        # mislabel a clinical angle.
+        seq = j.decomposition.split()[0]
+        assert len(seq) == 3 and set(seq) <= set("XYZ"), \
+            f"{jkey}: decomposition must start with a 3-axis XYZ sequence, got {seq!r}"
+        slots = [d.seq_index for d in j.dofs]
+        assert all(0 <= s < 3 for s in slots), f"{jkey}: seq_index out of range: {slots}"
+        assert len(set(slots)) == len(slots), f"{jkey}: duplicate seq_index: {slots}"
     print(f"           {len(SEGMENTS)} segments, {len(JOINTS)} joints — OK")
 
     # Segment codes are contiguous 0..N-1 and round-trip through the header
