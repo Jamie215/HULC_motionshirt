@@ -24,9 +24,13 @@ empty*, so it's just a quick check then) and the offload at the end:
 | Offload | **yes** |
 | Sync/link check | only occasionally, not per session |
 
-Erasing *before* the recording (rather than after the previous offload)
-guarantees a clean slate for the take you're about to capture; the smart-skip
-keeps it cheap when the node is already empty.
+**Why erase at the start, not after offload:** wiping before each recording
+(rather than with `offload --erase-after`) keeps the **previous session's raw
+capture on the node until you deliberately begin the next one** — a safety net if
+a transfer looked complete but wasn't, a file is lost, or an analysis needs
+redoing from raw. The smart-skip keeps the start-erase cheap when the node is
+already empty. (You erase over BLE while the node is `IDLE`; a strapped-on board
+never has to be unmounted to be wiped.)
 
 The worked example below is the 2-node **elbow** montage
 (upper_arm_r + forearm_r). For other placements, only the montage changes — the
@@ -91,7 +95,9 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
 
 ## 2. Erase to a clean start (smart)
 
-Connect once and wipe only what needs wiping, so this take starts clean:
+Connect once (over BLE — the boards stay strapped on) and wipe only what needs
+wiping, so this take starts clean. This is also the point where last session's
+raw is finally discarded — up to here it was still recoverable on the node.
 
 ```bash
 python tools/multinode_test.py erase --count 2
@@ -136,10 +142,13 @@ python tools/multinode_test.py offload --count 2 --out-dir ./capture
 - [ ] If any records are reported missing, just re-run the same command — it
       re-requests only the holes.
 
-> Prefer to erase at the end instead? `offload --count 2 --erase-after` wipes
-> each node once its offload verifies COMPLETE, folding the clean-up into this
-> connect (then skip step 2 next time). The default flow keeps the erase up front
-> for a guaranteed clean slate.
+> `offload --count 2 --erase-after` exists (wipes each node once its offload
+> verifies COMPLETE, saving a connect), **but it discards the on-device raw
+> immediately** — so you lose the ability to re-offload if the transfer was
+> subtly bad or the files are lost. The default flow deliberately erases at the
+> *start* of the next session instead, keeping this capture recoverable until
+> then. Use `--erase-after` only when the on-device backup isn't worth the extra
+> start-of-session connect.
 
 ## 5. Analyze — one command from logs to viewer
 
