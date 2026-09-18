@@ -285,7 +285,10 @@ def cmd_render(args):
     scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
                         metrics=metrics)
     html = render_html(scene)
-    with open(args.out, "w") as f:
+    # UTF-8 always: the page is <meta charset="utf-8"> and carries non-ASCII glyphs
+    # (↔, °, ·, —). Without this, Python on Windows defaults to cp1252 and the
+    # write dies with a UnicodeEncodeError.
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
 
     m = scene["meta"]
@@ -387,7 +390,7 @@ def selftest():
                             metrics=metrics_report)
         html = render_html(scene)
         out = os.path.join(d, "fbd.html")
-        with open(out, "w") as f:
+        with open(out, "w", encoding="utf-8") as f:
             f.write(html)
         html_size = os.path.getsize(out)
 
