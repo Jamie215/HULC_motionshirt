@@ -288,5 +288,19 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    lag), and trunk **compensation**. Each derived metric is emitted only when
    `resolve()` says the montage supports it, and carries the same
    clinical/relative-only honesty flag.
-5. **Full interface** (stage 7) — the metrics + both FBD layouts in one review UI.
-   *(next up.)*
+5. ~~**Full interface** (stage 7) — the metrics + both FBD layouts in one review
+   UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
+   and bakes a review panel beside the 3-D body: per-joint **ROM** bars
+   (range + min…max), peak/mean **velocity**, **rep** counts, the **segment**
+   tier (travel/active%/elevation/SPARC), and the **derived** tier — all from the
+   one self-contained page (still no external scripts/CDN). The honesty flags
+   carry straight through the UI: a `clinical:false` joint reads **relative** and
+   its rows **dim while the view shows Raw** (mirroring the scene's amber "· raw"
+   overlay), a blocked joint names its missing node, and each derived metric keeps
+   its note. The panel **shares the raw↔calibrated toggle**, and hovering a
+   joint/segment row **highlights the bone(s) it measures** in the scene (via the
+   baked `joint_segments` adjacency). `analyze_session` now runs metrics *before*
+   render (steps 4/5 → 5/5) and passes it in, so one command produces the whole
+   review. *(Live per-frame angle read-out — a scrubber-linked value under each
+   DOF — is a natural follow-up; it needs the per-frame series added to the baked
+   payload, whereas today the panel carries session summaries only.)*

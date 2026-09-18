@@ -8,8 +8,8 @@ segments automatically (no hand-ordering of .bin files):
     reconcile  -> aligned.csv        (logs passed in montage column order)
     capability -> which joints are computable for this montage
     calibrate  -> calibration.json   (neutral window auto-detected)
-    render     -> <out>.html         (the floating/skeleton viewer)
     metrics    -> metrics.json       (per-DOF joint angles + range of motion)
+    render     -> <out>.html         (stage-7 review: viewer + metrics panel)
 
 The montage records each node's column (n0, n1, ...) and its id. Offload names
 each file by node id (e.g. HULC-IMU-485C.bin), so this tool resolves every
@@ -149,21 +149,23 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
         cmd += ["--window", window]
     _run(cmd, "3/5 calibrate (sensor->segment offsets)")
 
-    # 4. render — the viewer
-    _run([py, os.path.join(TOOLS, "floating_fbd.py"), "render", aligned,
-          montage_path, "--calibration", calib, "--out", out_html],
-         "4/5 render (build the viewer)")
-
-    # 5. metrics — per-DOF joint angles + ROM over the calibrated stream
+    # 4. metrics — per-DOF joint angles + ROM over the calibrated stream. Runs
+    #    BEFORE render so the viewer can bake the metrics panel into one page.
     _run([py, os.path.join(TOOLS, "metrics.py"), "compute", aligned,
           montage_path, "--calibration", calib, "--out", metrics],
-         "5/5 metrics (per-DOF joint angles + range of motion)")
+         "4/5 metrics (per-DOF joint angles + range of motion)")
+
+    # 5. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
+    _run([py, os.path.join(TOOLS, "floating_fbd.py"), "render", aligned,
+          montage_path, "--calibration", calib, "--metrics", metrics,
+          "--out", out_html],
+         "5/5 render (stage-7 review: viewer + metrics panel)")
 
     print("\n===== DONE =====")
     print(f"  aligned stream : {aligned}")
     print(f"  calibration    : {calib}")
     print(f"  metrics        : {metrics}")
-    print(f"  viewer         : {out_html}")
+    print(f"  review (html)  : {out_html}   (3-D viewer + metrics panel)")
     print(f"  open it        : file://{os.path.abspath(out_html)}")
 
 
@@ -245,6 +247,15 @@ def selftest():
         ok = ok and made
         check(made, "end-to-end run produced calibration.json + metrics.json + "
               "out.html")
+        # the stage-7 page fuses both halves: the baked 3-D scene AND the metrics
+        # panel, in one self-contained (no external script) file.
+        with open(os.path.join(tmp, "out.html"), encoding="utf-8") as f:
+            html = f.read()
+        fused = ('"frames"' in html and '"metrics":' in html
+                 and 'id="metrics"' in html and "<script src=" not in html)
+        ok = ok and fused
+        check(fused, "stage-7 page fuses the 3-D scene + a metrics panel, "
+              "self-contained")
     except SystemExit as e:
         ok = False; check(False, f"end-to-end run failed: {e}")
 
