@@ -344,6 +344,48 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
               f"the updated firmware.")
 
 
+def erase_decision(kb, assume_yes: bool, interactive: bool) -> str:
+    """Decide what to do for a node reporting `kb` KB of log.
+
+    'skip' — already empty (0KB), nothing to wipe.
+    'wipe' — has data (or unknown) and confirmation is assumed.
+    'ask'  — has data and we should prompt [y/N].
+    'hold' — has data but no way to confirm; leave it (never wipe blind).
+    """
+    if kb == 0:
+        return "skip"
+    if assume_yes:
+        return "wipe"
+    return "ask" if interactive else "hold"
+
+
+async def smart_erase(node: Node, ask=None, assume_yes: bool = False) -> None:
+    """Erase a node's flash only if it holds data, over the OPEN connection.
+
+    Reads the log size first: if it's already 0KB, skip the ~30s wipe entirely
+    (just the status read). Otherwise confirm before wiping — `assume_yes` wipes
+    without asking; an interactive `ask` coroutine prompts [y/N]; with neither, a
+    node holding data is left untouched (safe default) rather than wiped blind.
+    """
+    kb = await _read_log_kb(node)
+    size = "an unknown amount" if kb is None else f"{kb}KB"
+    action = erase_decision(kb, assume_yes, ask is not None)
+    if action == "skip":
+        print(f"[ERASE] {node.name}: flash already empty (0KB) — skipping.")
+        return
+    if action == "hold":
+        print(f"[ERASE] {node.name}: holds {size}; pass --yes to wipe. "
+              f"Left in place.")
+        return
+    if action == "ask":
+        ans = (await ask(f"[ERASE] {node.name} holds {size}. Erase now? [y/N] ")
+               ).strip().lower()
+        if ans != "y":
+            print(f"[ERASE] {node.name}: left {size} in place.")
+            return
+    await erase_node(node)
+
+
 def _missing_ranges(received: dict, total: int):
     """Given {offset: payload} and the expected total, return the list of
     (start, length) byte ranges that were never received."""
@@ -599,7 +641,7 @@ async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
               offload_dir: str = None, erase: bool = False,
-              erase_after: bool = False) -> None:
+              erase_after: bool = False, erase_yes: bool = False) -> None:
     _ensure_bleak()
     devices = await scan(count, scan_timeout, name_filter)
 
@@ -630,9 +672,17 @@ async def run(count: int, duration: float, interval: float,
             print()
 
         if erase:
-            # Wipe each connected node's flash, one at a time.
+            # Wipe each connected node's flash, one at a time — but skip nodes
+            # that are already empty, and confirm before wiping ones that aren't
+            # (unless --yes). Reuses this single connection for all of them.
+            loop = asyncio.get_event_loop()
+
+            async def _ask(m):
+                return await loop.run_in_executor(None, input, m)
+
             for node in connected:
-                await erase_node(node)
+                await smart_erase(node, ask=(None if erase_yes else _ask),
+                                  assume_yes=erase_yes)
             return
 
         if offload:
@@ -860,14 +910,17 @@ async def enroll(segments, montage_path, registry_path, reuse, erase,
             lbl = (await ask(f"    found {node_id}. Physical label "
                              f"(e.g. 'orange tape', optional): ")).strip()
             if erase:
+                # Keep this one connection: check the log, and only wipe (with a
+                # y/N confirm) if the node actually holds data — no reconnect, no
+                # 30s wipe on an already-empty node.
                 client = await connect_with_retry(address)
                 if client is None:
                     print(f"    [!] couldn't connect to {node_id} to erase — "
                           f"enrolled anyway; wipe it later.")
                 else:
                     try:
-                        await erase_node(Node(name=node_id, address=address,
-                                              client=client))
+                        await smart_erase(Node(name=node_id, address=address,
+                                               client=client), ask=ask)
                     finally:
                         await client.disconnect()
             assignments.append((node_id, seg, lbl))
@@ -911,6 +964,14 @@ def enroll_selftest():
     except SystemExit:
         check(True, "unknown segment name rejected")
 
+    # smart-erase decision: skip empty, confirm data, never wipe blind
+    check(erase_decision(0, False, True) == "skip", "empty node -> skip erase")
+    check(erase_decision(0, True, False) == "skip", "empty node -> skip even with --yes")
+    check(erase_decision(12, False, True) == "ask", "data + interactive -> prompt")
+    check(erase_decision(12, True, False) == "wipe", "data + --yes -> wipe")
+    check(erase_decision(12, False, False) == "hold", "data, no confirm path -> hold")
+    check(erase_decision(None, False, True) == "ask", "unknown size -> prompt, not blind wipe")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — montage build/validate, "
           f"registry reuse, and segment validation.")
     return 0 if ok else 1
@@ -939,8 +1000,10 @@ def _main_sub(argv) -> None:
     pc.add_argument("--duration", type=float, default=60.0)
     pc.add_argument("--interval", type=float, default=0.5)
 
-    pe = sub.add_parser("erase", help="WIPE each node's flash (destructive)")
+    pe = sub.add_parser("erase", help="wipe each node's flash if it holds data")
     add_common(pe)
+    pe.add_argument("--yes", action="store_true",
+                    help="wipe without the per-node y/N confirmation")
 
     po = sub.add_parser("offload", help="offload each node's flash log")
     add_common(po)
@@ -978,7 +1041,8 @@ def _main_sub(argv) -> None:
                             args.scan_timeout, name_filter=args.name))
         elif args.cmd == "erase":
             asyncio.run(run(args.count, 0, 0, args.scan_timeout,
-                            name_filter=args.name, erase=True))
+                            name_filter=args.name, erase=True,
+                            erase_yes=args.yes))
         elif args.cmd == "offload":
             asyncio.run(run(args.count, 0, 0, args.scan_timeout, offload=True,
                             offload_save=args.save, name_filter=args.name,
@@ -1038,7 +1102,8 @@ def main() -> None:
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
                         args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir, args.erase, args.erase_after_offload))
+                        args.out_dir, args.erase, args.erase_after_offload,
+                        erase_yes=args.erase))   # legacy --erase = unconditional
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 

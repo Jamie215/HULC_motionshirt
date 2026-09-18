@@ -11,16 +11,22 @@ is `IDLE`**, so you connect the laptop *after* the recording, with the subject a
 rest, and do the actual movement with the laptop disconnected.
 
 **Connections are the slow part.** Every BLE command connects to each node up
-front (slow, especially on a Windows central), so this flow is arranged to need
-just **one connect per routine session** — the offload — with identification and
-erase either one-time or folded into that single connect:
+front (slow, especially on a Windows central), so the flow keeps connects to the
+minimum: identification is connect-free, and a routine session touches BLE twice
+— a smart erase at the start (which *skips the ~30 s wipe when a node is already
+empty*, so it's just a quick check then) and the offload at the end:
 
 | Phase | BLE connect? |
 |---|---|
 | Enroll → montage (one-time) | **no** — scan only |
+| Erase to a clean start | **yes** — but skips the wipe if already empty |
 | Strap + record | no — disconnected |
-| Offload **+ self-clean** | **yes — the one connect** |
+| Offload | **yes** |
 | Sync/link check | only occasionally, not per session |
+
+Erasing *before* the recording (rather than after the previous offload)
+guarantees a clean slate for the take you're about to capture; the smart-skip
+keeps it cheap when the node is already empty.
 
 The worked example below is the 2-node **elbow** montage
 (upper_arm_r + forearm_r). For other placements, only the montage changes — the
@@ -63,22 +69,14 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
 - [ ] It scans, sees both known ids, offers "reuse previous placement?" and
       writes the montage directly.
 
+> **Tip:** on a *first* enrollment you can fold the initial wipe into the same
+> per-node connection with `enroll --segments … --erase` — it reads each board's
+> log and, only if it holds data, asks `[y/N]` before wiping (no reconnect, and
+> no 30 s wipe on an already-empty board).
+
 > `montage.json` is written UTF-8 without a BOM automatically. If you ever edit
 > it by hand, keep it BOM-free (Notepad "Save as UTF-8" and PowerShell `>` add a
 > BOM; the tools tolerate a UTF-8 BOM but a UTF-16 file still needs re-saving).
-
-## 0c. One-time only: wipe to a clean start
-
-Do this **once** for a rig (or after a fresh firmware flash) so no stale records
-linger. After that you never run a standalone erase again — step 3's
-`--erase-after` self-cleans at the end of every session.
-
-```bash
-python tools/multinode_test.py erase --count 2
-```
-
-- [ ] Both nodes report `OK — log is now 0KB (wipe confirmed)`.
-- [ ] Do **not** power off during the ~30 s per-node erase.
 
 ---
 
@@ -91,7 +89,20 @@ python tools/multinode_test.py erase --count 2
 - [ ] Snug and consistently oriented — strap tilt shows up downstream as an
       uncalibrated "kink", not motion.
 
-## 2. Record the movement — laptop disconnected
+## 2. Erase to a clean start (smart)
+
+Connect once and wipe only what needs wiping, so this take starts clean:
+
+```bash
+python tools/multinode_test.py erase --count 2
+```
+
+- [ ] A node already at 0KB is **skipped** (no 30 s wipe — just the check).
+- [ ] A node holding data prompts `[y/N]`; answer `y` to wipe (`erase --yes`
+      skips the prompt for scripting).
+- [ ] Wiped nodes report `OK — log is now 0KB`; do **not** power off mid-wipe.
+
+## 3. Record the movement — laptop disconnected
 
 Nothing is connected. Run this **4-beat protocol**. It satisfies two separate
 needs in one take: a *still* hold for calibration, and *shared* motion (both
@@ -111,23 +122,26 @@ segments moving together) so reconcile can lock the clock from the motion alone.
 > swing moves both segments together → strong correlation. Keep it **wide and
 > moderate**, not frantic — very fast motion aliases at ~10 Hz logging.
 
-## 3. Offload + self-clean — the one connect
+## 4. Offload the logs
 
-Bring the subject to rest (nodes IDLE), then run the **single** BLE command of
-the session — it offloads each log **and** wipes the node afterwards, so the next
-capture starts clean with no separate erase:
+Bring the subject to rest (nodes IDLE), then offload each log (the next session's
+clean start is handled by step 2, not here):
 
 ```bash
-python tools/multinode_test.py offload --count 2 --out-dir ./capture --erase-after
+python tools/multinode_test.py offload --count 2 --out-dir ./capture
 ```
 
-- [ ] Each node reports `COMPLETE — saved N bytes`, then `erasing… 0KB`.
+- [ ] Each node reports `COMPLETE — saved N bytes`.
 - [ ] Files land as `./capture/HULC-IMU-XXXX.bin` (auto-named by id).
 - [ ] If any records are reported missing, just re-run the same command — it
-      re-requests only the holes. (A node whose offload was **incomplete** is not
-      erased, so you never lose data you didn't fully receive.)
+      re-requests only the holes.
 
-## 4. Analyze — one command from logs to viewer
+> Prefer to erase at the end instead? `offload --count 2 --erase-after` wipes
+> each node once its offload verifies COMPLETE, folding the clean-up into this
+> connect (then skip step 2 next time). The default flow keeps the erase up front
+> for a guaranteed clean slate.
+
+## 5. Analyze — one command from logs to viewer
 
 `analyze_session.py` runs the whole post-offload chain
 (reconcile → capability → calibrate → render) and binds each `.bin` to its
@@ -183,7 +197,7 @@ python tools/multinode_test.py check --count 2 --duration 30
 
 Taking the shirt off and back on breaks the mounting offset (a charge cycle does
 not). To confirm the cached calibration still holds after a re-don, record a
-fresh short still hold, offload it (step 3) into `./redon`, reconcile that
+fresh short still hold, offload it (step 4) into `./redon`, reconcile that
 capture to a CSV, then verify against the cached calibration:
 
 ```bash
@@ -203,7 +217,7 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 | Offload takes minutes/hours | Windows `bleak` central forces a slow connection interval | Use an iOS/Android/BlueZ central; confirm with `offload --count 1` (throughput KB/s) |
 | Many `pass 2: re-requesting …` lines | Weak link / distance / body blocking 2.4 GHz | Node close and line-of-sight to the central; re-run offload to fill holes |
 | `json ... Expecting value: line 1 column 1 (char 0)` | `montage.json` has a BOM or is empty/UTF-16 | Re-save as UTF-8 **without BOM**; check first 3 bytes are not `239 187 191` |
-| Offload rejected / empty | Node not in `IDLE`, or nothing recorded | Hold the subject still; confirm motion actually happened in step 2 |
+| Offload rejected / empty | Node not in `IDLE`, or nothing recorded | Hold the subject still; confirm motion actually happened in step 3 |
 | Low reconcile confidence | Weak/absent sync gesture — the two segments didn't move together | Redo beat 2 (whole-arm swings), wide and moderate |
 | Neutral residual large in calibrate | Neutral hold wasn't still, or wrong window | Redo beat 1; or pin `--window` from `t_common_ms` in aligned.csv |
 | Enroll: "N nodes advertising" | More than one board powered on | Power ON only the ONE node you're enrolling; others OFF |
