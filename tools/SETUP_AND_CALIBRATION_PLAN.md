@@ -181,26 +181,55 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 
 ## 5. Free-body diagram (part of stage 7) — feasibility
 
+> **Built (`floating_fbd.py`, `render` / `selftest`).** Bakes the reconcile
+> stream + an optional `calibration.json` into a single self-contained HTML
+> viewer (no external scripts/CDN — a hand-rolled Canvas-2D 3-D renderer, works
+> offline and straight from `file://`), with a **raw↔calibrated toggle**
+> (applies `q_seg = q_WS ⊗ q_SB` in the viewer) and **jump-to-neutral**. Two
+> layouts share the stream:
+> - **Floating** — each segment an oriented bar at a fixed slot (segment tier).
+> - **Skeleton** — the same orientations connected into a stickman by forward
+>   kinematics (chain tier). The connectivity is the montage's kinematic chain
+>   (imported from `motion_capabilities.JOINTS`); only the bone **lengths and
+>   joint offsets** are assumed anatomy (the viewer's `ANAT` table). Missing
+>   nodes degrade gracefully and stay honest: a missing *middle* segment (e.g.
+>   torso + forearm, no upper arm) is drawn as a dashed "ghost" at rest hung
+>   from the nearest measured joint, with the measured descendant attached to
+>   its end; with no torso but both arms, each roots at a nominal shoulder and a
+>   fixed dashed girdle labeled "torso — not measured" bridges them; an
+>   **uncalibrated** bone draws with an amber "· raw" overlay so a kink there
+>   reads as strap tilt, not motion.
+> - **Facing** — the mag-referenced world gives orientation, not how the
+>   subject's forward lines up with north, so a forward reach could draw
+>   sideways. Calibration recovers the facing from the torso
+>   (`compute_heading`, one coarse chest-mounting assumption, self-checked) and
+>   the viewer applies it as a fixed yaw — **zero extra burden at capture**. No
+>   torso, or a low-confidence check → facing left nominal, honestly labeled.
+>
+> The quaternion math, CSV binding, and body model come from the existing tools.
+
 The most feasible visual, because **orientation is exactly what is measured** — a
 quaternion per segment per frame directly drives an oriented 3-D body. It maps
 one-to-one onto the resolver's tiers:
 
 - **Segment tier (1 node)** → each segment drawn as its own oriented body,
-  floating. A literal free-body diagram; needs only the calibrated orientation
-  (or raw, if the mounting tilt is acceptable). **Build this first** — it
-  validates stages 5–6 visually.
-- **Joint tier (2 adjacent nodes)** → connect them at the joint, render the angle
-  between them. A linkage, not floating bodies.
+  floating (the **Floating** layout). Needs only the orientation. Validates
+  stages 5–6: jump to the neutral window and flip the raw↔calibrated toggle; if
+  calibration worked the scattered bars snap upright.
+- **Joint tier (2 adjacent nodes)** → connect them at the joint. The **Skeleton**
+  layout draws the linkage; the per-DOF angle read-out (from the resolver's
+  decomposition) is the remaining piece, and belongs with the ROM metric plugin.
 - **Chain (torso→arm→forearm→hand)** → a connected skeleton via forward
-  kinematics.
+  kinematics (the **Skeleton** layout): root the torso, place each segment's
+  proximal end at its parent's joint, orient by the quaternion, step down.
 
-**The honest caveat:** orientation is measured; **position/connection is
-modeled**. Connecting segments into a skeleton needs the kinematic chain (the
-montage), **assumed segment lengths**, and calibration to make them line up.
-Root the torso, place each segment's proximal end at its parent's distal end,
-orient by the quaternion, step down the chain. Without calibration the segments
-still render but won't sit anatomically — which is useful: **the FBD from the
-neutral pose is how you *see* whether calibration worked.**
+**The honest caveat, kept visible in the UI:** orientation is measured;
+**position/connection is modeled**. The skeleton's connectivity is real (the
+montage), but its **segment lengths and joint offsets are assumed** — so the two
+layouts are one toggle apart, and the modeled positions never masquerade as
+measured (orphan bones without a placed parent render dashed). Without
+calibration the skeleton still renders but won't sit anatomically — which is
+useful: **the neutral pose is how you *see* whether calibration worked.**
 
 ---
 
@@ -208,10 +237,18 @@ neutral pose is how you *see* whether calibration worked.**
 
 1. ~~**Stage 5 calibration** with the cache-and-verify contract (§4)~~ — **done**
    (`calibrate_segments.py`). The gate for every clinical angle.
-2. **Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.
-   *(next up — the calibrated orientation stream now exists to drive it.)*
+2. ~~**Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.~~
+   — **done** (`floating_fbd.py`). Self-contained HTML viewer with the
+   raw↔calibrated toggle; the neutral pose is where you *see* the mounting
+   scatter collapse.
+2b. ~~**Connected skeleton** (§5, chain tier) — forward kinematics over the same
+   stream.~~ — **done** (`floating_fbd.py` **Skeleton** layout). Real kinematic
+   chain + assumed lengths; pulled forward from step 5 because it's the same
+   viewer and the intuitive read of the calibrated stream.
 3. **Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
-   logs, montage auto-populated.
+   logs, montage auto-populated. *(next up — the FBD is the "verify placement"
+   surface §2.2 step 2 calls for.)*
 4. **Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
-   rest already declared by the resolver.
-5. **Connected FBD / skeleton + full interface** (stage 7).
+   rest already declared by the resolver. The skeleton linkage exists; the
+   per-DOF joint-angle read-out rides along with ROM (same decomposition).
+5. **Full interface** (stage 7) — the metrics + both FBD layouts in one review UI.

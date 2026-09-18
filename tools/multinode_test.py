@@ -11,18 +11,24 @@ nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
   4. Reads each node's Time Info characteristic (A005) repeatedly and computes
      the cross-node clock offset and its drift over time.
 
-This is a laptop-side test tool — no phone app required. It needs `bleak`:
+This is a laptop-side test tool — no phone app required. BLE actions need
+`bleak` (pip install bleak); the offline `enroll` bookkeeping and `selftest` do
+not.
 
-    pip install bleak
+Subcommands (preferred)
+-----------------------
+    python tools/multinode_test.py enroll  --segments upper_arm_r,forearm_r [--erase] [--reuse]
+    python tools/multinode_test.py check   --count 2 --duration 60     # sync + offset/drift
+    python tools/multinode_test.py erase   --count 2                   # wipe flash (destructive)
+    python tools/multinode_test.py offload --count 2 --out-dir ./capture [--erase-after]
+    python tools/multinode_test.py selftest                            # offline logic, no hardware
 
-Typical use (two boards on the bench):
+`enroll` maps each board to a body segment by powering ONE node at a time (its
+permanent HULC-IMU-XXXX id is unambiguous when it's the only one advertising)
+and writes montage.json + nodes_registry.json — no firmware change or streaming.
 
-    python tools/multinode_test.py --count 2 --duration 60
-
-Offload every detected node's log, each to its own file named by node id
-(e.g. HULC-IMU-D067.bin), ready for tools/reconcile_nodes.py:
-
-    python tools/multinode_test.py --offload --count 2 --out-dir ./capture
+The legacy flag form still works as a deprecated alias:
+    --count/--duration (check) · --erase · --offload/--out-dir/--erase-after-offload
 
 What to look for
 ----------------
@@ -38,8 +44,11 @@ BLE GATT (see firmware.ino header for the authoritative layout):
   Service A0010000-...   Control A0010002 (write)   Time Info A0010005 (read)
 """
 
+from __future__ import annotations   # lazy annotations: Node can name BleakClient
+                                      # without importing bleak at module load
 import argparse
 import asyncio
+import json
 import os
 import re
 import statistics
@@ -48,10 +57,24 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-try:
-    from bleak import BleakClient, BleakScanner
-except ImportError:  # pragma: no cover - dependency hint
-    raise SystemExit("This harness needs bleak:  pip install bleak")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from motion_capabilities import SEGMENTS, validate_montage  # noqa: E402
+
+# bleak is imported lazily (see _ensure_bleak) so the offline paths — `enroll`
+# montage/registry logic and `selftest` — run without the dependency or hardware.
+BleakClient = None
+BleakScanner = None
+
+
+def _ensure_bleak():
+    """Populate the BleakClient/BleakScanner globals on first BLE use."""
+    global BleakClient, BleakScanner
+    if BleakClient is None:
+        try:
+            from bleak import BleakClient as _C, BleakScanner as _S
+        except ImportError:  # pragma: no cover - dependency hint
+            raise SystemExit("This harness needs bleak:  pip install bleak")
+        BleakClient, BleakScanner = _C, _S
 
 NAME_PREFIX = "HULC-IMU"
 UUID_CONTROL = "A0010002-B0CE-4A4A-8F0B-0011223344FF"
@@ -263,9 +286,9 @@ def report_offsets(nodes: list) -> None:
             print(f"  drift      : {slope_per_min:+.1f} ms/min "
                   f"(above the {drift_floor_per_min:.0f} ms/min noise floor)")
         print(f"\n  NOTE: read windows of ~{best_unc:.0f}-{med_unc:.0f} ms floor this")
-        print(f"  measurement. Treat the offset as an upper bound, not a")
-        print(f"  calibrated value. For true ms-level validation use a shared")
-        print(f"  physical event (see MULTINODE_TESTING.md).")
+        print("  measurement. Treat the offset as an upper bound, not a")
+        print("  calibrated value. For true ms-level validation use a shared")
+        print("  physical event (see MULTINODE_TESTING.md).")
     print("====================================\n")
 
 
@@ -319,6 +342,48 @@ async def erase_node(node: Node, wait_s: float = 40.0) -> None:
               f"did not confirm a blank erase. Check the node's USB serial for a "
               f"'[QSPI] ... FAILED/timeout' line, and confirm the node is running "
               f"the updated firmware.")
+
+
+def erase_decision(kb, assume_yes: bool, interactive: bool) -> str:
+    """Decide what to do for a node reporting `kb` KB of log.
+
+    'skip' — already empty (0KB), nothing to wipe.
+    'wipe' — has data (or unknown) and confirmation is assumed.
+    'ask'  — has data and we should prompt [y/N].
+    'hold' — has data but no way to confirm; leave it (never wipe blind).
+    """
+    if kb == 0:
+        return "skip"
+    if assume_yes:
+        return "wipe"
+    return "ask" if interactive else "hold"
+
+
+async def smart_erase(node: Node, ask=None, assume_yes: bool = False) -> None:
+    """Erase a node's flash only if it holds data, over the OPEN connection.
+
+    Reads the log size first: if it's already 0KB, skip the ~30s wipe entirely
+    (just the status read). Otherwise confirm before wiping — `assume_yes` wipes
+    without asking; an interactive `ask` coroutine prompts [y/N]; with neither, a
+    node holding data is left untouched (safe default) rather than wiped blind.
+    """
+    kb = await _read_log_kb(node)
+    size = "an unknown amount" if kb is None else f"{kb}KB"
+    action = erase_decision(kb, assume_yes, ask is not None)
+    if action == "skip":
+        print(f"[ERASE] {node.name}: flash already empty (0KB) — skipping.")
+        return
+    if action == "hold":
+        print(f"[ERASE] {node.name}: holds {size}; pass --yes to wipe. "
+              f"Left in place.")
+        return
+    if action == "ask":
+        ans = (await ask(f"[ERASE] {node.name} holds {size}. Erase now? [y/N] ")
+               ).strip().lower()
+        if ans != "y":
+            print(f"[ERASE] {node.name}: left {size} in place.")
+            return
+    await erase_node(node)
 
 
 def _missing_ranges(received: dict, total: int):
@@ -576,7 +641,8 @@ async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
               offload_dir: str = None, erase: bool = False,
-              erase_after: bool = False) -> None:
+              erase_after: bool = False, erase_yes: bool = False) -> None:
+    _ensure_bleak()
     devices = await scan(count, scan_timeout, name_filter)
 
     nodes = []
@@ -606,9 +672,17 @@ async def run(count: int, duration: float, interval: float,
             print()
 
         if erase:
-            # Wipe each connected node's flash, one at a time.
+            # Wipe each connected node's flash, one at a time — but skip nodes
+            # that are already empty, and confirm before wiping ones that aren't
+            # (unless --yes). Reuses this single connection for all of them.
+            loop = asyncio.get_event_loop()
+
+            async def _ask(m):
+                return await loop.run_in_executor(None, input, m)
+
             for node in connected:
-                await erase_node(node)
+                await smart_erase(node, ask=(None if erase_yes else _ask),
+                                  assume_yes=erase_yes)
             return
 
         if offload:
@@ -696,7 +770,293 @@ async def run(count: int, duration: float, interval: float,
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Enrollment (power-one-at-a-time) + montage builder
+# ---------------------------------------------------------------------------
+# Maps each physical board to a body segment with NO firmware change or live
+# streaming: power ON one node at a time; with a single board advertising, its
+# permanent id (HULC-IMU-XXXX = last 4 hex of MAC) is unambiguous. Writes a
+# schema-valid montage.json plus a persistent nodes_registry.json (id -> segment
+# + label) so later sessions can --reuse without power-cycling.
+DEFAULT_REGISTRY = "nodes_registry.json"
+DEFAULT_MONTAGE = "montage.json"
+
+
+def build_montage(assignments, subject_id="S01", session_id="", notes=""):
+    """assignments: ordered [(node_id, segment, label)] -> montage dict.
+
+    Column order follows the list order (n0, n1, ...) — what reconcile and
+    analyze_session use to bind logs to segments.
+    """
+    nodes = [{"node_id": nid, "column": f"n{i}", "segment": seg,
+              "landmark": lbl or "", "calibrated": True}
+             for i, (nid, seg, lbl) in enumerate(assignments)]
+    return {
+        "schema_version": "1.0",
+        "subject": {"id": subject_id, "notes": notes},
+        "session": {"id": session_id, "aligned_csv": "aligned.csv"},
+        "calibration": {"neutral_pose": "N-pose", "captured": True,
+                        "t_window_ms": [1000, 4000], "functional": []},
+        "nodes": nodes,
+    }
+
+
+def load_registry(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8-sig") as f:
+        return json.load(f)
+
+
+def save_registry(path, registry):
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(registry, f, indent=2)
+        f.write("\n")
+
+
+def merge_registry(registry, assignments):
+    for node_id, segment, label in assignments:
+        entry = registry.get(node_id, {})
+        entry["segment"] = segment
+        if label:
+            entry["label"] = label
+        registry[node_id] = entry
+    return registry
+
+
+def reuse_from_registry(registry, present_ids, segments):
+    """If every requested segment maps to a present, known node, return an
+    ordered assignment list matching `segments`; else None."""
+    by_seg = {}
+    for node_id, entry in registry.items():
+        if node_id in present_ids and entry.get("segment"):
+            by_seg[entry["segment"]] = node_id
+    if all(s in by_seg for s in segments):
+        return [(by_seg[s], s, registry[by_seg[s]].get("label", ""))
+                for s in segments]
+    return None
+
+
+def write_montage(path, montage):
+    errors = validate_montage(montage)
+    if errors:
+        raise SystemExit("[enroll] built montage failed validation:\n  - " +
+                         "\n  - ".join(errors))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(montage, f, indent=2)
+        f.write("\n")
+
+
+def norm_segments(seg_arg):
+    segs = [s.strip() for s in seg_arg.split(",") if s.strip()]
+    bad = [s for s in segs if s not in SEGMENTS]
+    if bad:
+        raise SystemExit(f"[enroll] unknown segment(s): {', '.join(bad)}\n"
+                         f"valid: {', '.join(SEGMENTS)}")
+    if not segs:
+        raise SystemExit("[enroll] --segments is empty")
+    return segs
+
+
+async def _scan_names(timeout):
+    """Return {name: address} for HULC nodes currently advertising."""
+    return {d.name: d.address for d in await BleakScanner.discover(timeout=timeout)
+            if (d.name or "").startswith(NAME_PREFIX)}
+
+
+async def enroll(segments, montage_path, registry_path, reuse, erase,
+                 subject, session, scan_timeout):
+    _ensure_bleak()
+    registry = load_registry(registry_path)
+    loop = asyncio.get_event_loop()
+
+    async def ask(msg):
+        return await loop.run_in_executor(None, input, msg)
+
+    if reuse:
+        print("[enroll] --reuse: scanning for all boards...")
+        present = await _scan_names(scan_timeout)
+        ordered = reuse_from_registry(registry, set(present), segments)
+        if ordered:
+            print("[enroll] all segments known from a prior enrollment:")
+            for nid, seg, lbl in ordered:
+                print(f"        {seg:<14} <- {nid}"
+                      f"{'  (' + lbl + ')' if lbl else ''}")
+            if (await ask("[enroll] reuse this placement? [Y/n] ")).strip().lower() in ("", "y"):
+                write_montage(montage_path, build_montage(ordered, subject, session))
+                print(f"[enroll] wrote {montage_path} (reused, no power cycling).")
+                return
+        else:
+            print("[enroll] registry doesn't cover all segments — enrolling.")
+
+    assignments, used = [], set()
+    for seg in segments:
+        while True:
+            await ask(f">>> Power ON ONLY the node for '{seg}' (all others OFF), "
+                      f"then press Enter... ")
+            names = await _scan_names(scan_timeout)
+            fresh = {n: a for n, a in names.items() if n not in used}
+            if not fresh:
+                print("    [!] " + ("seen board(s) already assigned — power OFF the "
+                      "enrolled ones, ON only the new one." if names else
+                      "no HULC node advertising. Powered on? wait a few seconds.")
+                      + "\n")
+                continue
+            if len(fresh) > 1:
+                print(f"    [!] {len(fresh)} nodes advertising: "
+                      f"{', '.join(sorted(fresh))}. Power ON only ONE.\n")
+                continue
+            node_id, address = next(iter(fresh.items()))
+            lbl = (await ask(f"    found {node_id}. Physical label "
+                             f"(e.g. 'orange tape', optional): ")).strip()
+            if erase:
+                # Keep this one connection: check the log, and only wipe (with a
+                # y/N confirm) if the node actually holds data — no reconnect, no
+                # 30s wipe on an already-empty node.
+                client = await connect_with_retry(address)
+                if client is None:
+                    print(f"    [!] couldn't connect to {node_id} to erase — "
+                          f"enrolled anyway; wipe it later.")
+                else:
+                    try:
+                        await smart_erase(Node(name=node_id, address=address,
+                                               client=client), ask=ask)
+                    finally:
+                        await client.disconnect()
+            assignments.append((node_id, seg, lbl))
+            used.add(node_id)
+            print(f"    -> {seg} = {node_id}\n")
+            break
+
+    write_montage(montage_path, build_montage(assignments, subject, session))
+    save_registry(registry_path, merge_registry(registry, assignments))
+    print(f"[enroll] wrote {montage_path} and updated {registry_path}.")
+    print("[enroll] label your boards now so you can --reuse next time.")
+
+
+def enroll_selftest():
+    ok = True
+
+    def check(cond, msg):
+        nonlocal ok
+        ok = ok and cond
+        print(f"[selftest] {'ok ' if cond else 'FAIL'}: {msg}")
+
+    asg = [("HULC-IMU-485C", "upper_arm_r", "orange"),
+           ("HULC-IMU-B059", "forearm_r", "blue")]
+    m = build_montage(asg, subject_id="S01", session_id="t")
+    check(validate_montage(m) == [], "built montage validates clean")
+    check([n["column"] for n in m["nodes"]] == ["n0", "n1"], "columns n0,n1 in order")
+    check(m["nodes"][0]["segment"] == "upper_arm_r", "n0 -> upper_arm_r")
+
+    reg = merge_registry({}, asg)
+    check(reg["HULC-IMU-485C"]["label"] == "orange", "registry stores label")
+    reused = reuse_from_registry(reg, {"HULC-IMU-485C", "HULC-IMU-B059"},
+                                 ["upper_arm_r", "forearm_r"])
+    check(reused is not None and [a[0] for a in reused] ==
+          ["HULC-IMU-485C", "HULC-IMU-B059"], "reuse reconstructs ordered assignment")
+    check(reuse_from_registry(reg, {"HULC-IMU-485C"},
+                              ["upper_arm_r", "forearm_r"]) is None,
+          "reuse aborts when a node is absent")
+    try:
+        norm_segments("upper_arm_r,not_a_segment")
+        check(False, "bad segment should raise")
+    except SystemExit:
+        check(True, "unknown segment name rejected")
+
+    # smart-erase decision: skip empty, confirm data, never wipe blind
+    check(erase_decision(0, False, True) == "skip", "empty node -> skip erase")
+    check(erase_decision(0, True, False) == "skip", "empty node -> skip even with --yes")
+    check(erase_decision(12, False, True) == "ask", "data + interactive -> prompt")
+    check(erase_decision(12, True, False) == "wipe", "data + --yes -> wipe")
+    check(erase_decision(12, False, False) == "hold", "data, no confirm path -> hold")
+    check(erase_decision(None, False, True) == "ask", "unknown size -> prompt, not blind wipe")
+
+    print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — montage build/validate, "
+          f"registry reuse, and segment validation.")
+    return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+# CLI: unified subcommands, with the legacy flag form kept as a back-compat alias
+# ---------------------------------------------------------------------------
+_SUBCOMMANDS = {"check", "erase", "offload", "enroll", "selftest"}
+
+
+def _main_sub(argv) -> None:
+    ap = argparse.ArgumentParser(
+        prog="multinode_test.py", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add_common(p):
+        p.add_argument("--count", type=int, default=2, help="nodes to connect")
+        p.add_argument("--scan-timeout", type=float, default=8.0)
+        p.add_argument("--name", metavar="SUFFIX",
+                       help="only the node whose name contains SUFFIX")
+
+    pc = sub.add_parser("check", help="sync + cross-node offset/drift report")
+    add_common(pc)
+    pc.add_argument("--duration", type=float, default=60.0)
+    pc.add_argument("--interval", type=float, default=0.5)
+
+    pe = sub.add_parser("erase", help="wipe each node's flash if it holds data")
+    add_common(pe)
+    pe.add_argument("--yes", action="store_true",
+                    help="wipe without the per-node y/N confirmation")
+
+    po = sub.add_parser("offload", help="offload each node's flash log")
+    add_common(po)
+    po.add_argument("--out-dir", metavar="DIR", default=".")
+    po.add_argument("--save", metavar="PATH", help="single-node: exact .bin path")
+    po.add_argument("--erase-after", action="store_true",
+                    help="wipe each node after its offload verifies COMPLETE")
+
+    pn = sub.add_parser("enroll", help="power-one-at-a-time -> montage.json")
+    pn.add_argument("--segments", required=True,
+                    help="comma-separated segments in placement order")
+    pn.add_argument("--montage", default=DEFAULT_MONTAGE)
+    pn.add_argument("--registry", default=DEFAULT_REGISTRY)
+    pn.add_argument("--reuse", action="store_true")
+    pn.add_argument("--erase", action="store_true",
+                    help="also wipe each node's flash as it is enrolled")
+    pn.add_argument("--subject", default="S01")
+    pn.add_argument("--session", default="")
+    pn.add_argument("--scan-timeout", type=float, default=8.0)
+
+    sub.add_parser("selftest", help="validate the offline enroll logic")
+
+    args = ap.parse_args(argv)
+    if args.cmd == "selftest":
+        sys.exit(enroll_selftest())
+    if args.cmd == "enroll":
+        segs = norm_segments(args.segments)
+        asyncio.run(enroll(segs, args.montage, args.registry, args.reuse,
+                           args.erase, args.subject, args.session,
+                           args.scan_timeout))
+        return
+    try:
+        if args.cmd == "check":
+            asyncio.run(run(args.count, args.duration, args.interval,
+                            args.scan_timeout, name_filter=args.name))
+        elif args.cmd == "erase":
+            asyncio.run(run(args.count, 0, 0, args.scan_timeout,
+                            name_filter=args.name, erase=True,
+                            erase_yes=args.yes))
+        elif args.cmd == "offload":
+            asyncio.run(run(args.count, 0, 0, args.scan_timeout, offload=True,
+                            offload_save=args.save, name_filter=args.name,
+                            offload_dir=args.out_dir, erase_after=args.erase_after))
+    except KeyboardInterrupt:
+        print("\n[ABORT] Interrupted.")
+
+
 def main() -> None:
+    argv = sys.argv[1:]
+    if argv and argv[0] in _SUBCOMMANDS:
+        _main_sub(argv)
+        return
+    # ---- legacy flag form (deprecated but still supported) ----
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--count", type=int, default=2,
@@ -735,11 +1095,15 @@ def main() -> None:
         ap.error("--erase and --offload are separate steps; run them separately")
     if args.erase_after_offload and not args.offload:
         ap.error("--erase-after-offload requires --offload")
+    hint = ("erase" if args.erase else "offload" if args.offload else "check")
+    print(f"[note] the flag form is deprecated; prefer: "
+          f"multinode_test.py {hint} ...\n", file=sys.stderr)
 
     try:
         asyncio.run(run(args.count, args.duration, args.interval,
                         args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir, args.erase, args.erase_after_offload))
+                        args.out_dir, args.erase, args.erase_after_offload,
+                        erase_yes=args.erase))   # legacy --erase = unconditional
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 

@@ -45,6 +45,18 @@ compares to the baseline: all deviations small -> REUSE silently; any over
 threshold -> prompt for a fresh ~2 s pose. The same check run on a later still
 window within one session catches intra-session slippage.
 
+Heading (facing) recovery — the `heading` block
+-----------------------------------------------
+The shared world frame gives absolute orientation but not how the subject's
+FORWARD lines up with world north, so a downstream skeleton could draw a forward
+reach sideways. `compute_heading` recovers the facing from the torso node under
+ONE coarse assumption (`TORSO_FORWARD_IN_SENSOR`: which torso-sensor axis points
+out of the chest), and self-checks it — the axis must land ~horizontal at the
+upright neutral pose, and the pose must be still — marking the result
+low-confidence rather than confidently wrong. No torso -> not recovered. The FBD
+viewer applies a confident heading as a fixed yaw; nothing here asks the subject
+to do or remember anything extra.
+
 Usage
 -----
     # solve offsets + baseline from the neutral-pose window in a montage:
@@ -74,7 +86,7 @@ except ImportError:  # pragma: no cover
 
 # Single source of truth for the body model + montage validation.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_capabilities import JOINTS, SEGMENTS, validate_montage  # noqa: E402
+from motion_capabilities import JOINTS, validate_montage  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
 
@@ -83,6 +95,21 @@ SCHEMA_VERSION = "1.0"
 # per-pair check is independent of it. If a firmware convention change moves the
 # gravity axis, change this one constant.
 WORLD_UP = np.array([0.0, 0.0, 1.0])
+
+# ---- torso facing (heading) recovery — the ONE mounting assumption ----------
+# The mag-referenced world gives absolute orientation, but not how the subject's
+# FORWARD lines up with world "north" (+Y). We recover that heading from the
+# torso node's neutral orientation, given ONE coarse assumption: which axis of
+# the torso SENSOR points out of the chest (anterior). Default: the board normal,
+# +Z in the sensor frame — a sensor lying flat on the sternum has its normal
+# pointing forward. Change this one vector for a different torso mounting; the
+# horizontality self-test below flags a badly-wrong guess rather than trusting it.
+TORSO_FORWARD_IN_SENSOR = np.array([0.0, 0.0, 1.0])
+# If the assumed forward axis lands more than this far from horizontal at the
+# (upright) neutral pose, the mounting assumption is likely violated -> we mark
+# the heading low-confidence and DON'T apply it, instead of facing the figure
+# confidently wrong.
+HEADING_HORIZONTALITY_MAX_DEG = 35.0
 
 # Reuse-vs-re-pose thresholds (degrees). A quiet-standing pose repeats to within
 # a few degrees; past these the mounting has moved enough to matter for angles.
@@ -310,10 +337,66 @@ def _q_list(q):
     return [round(float(v), 8) for v in qnorm(np.asarray(q, dtype=float))]
 
 
+def compute_heading(segments, still_ok):
+    """Recover the subject's FACING (heading yaw) from the torso node.
+
+    The skeleton view otherwise assumes the subject faced world +Y; if they
+    faced elsewhere, a forward reach is drawn sideways. We fix that automatically
+    (no protocol, no user input) from the torso, using the single mounting
+    assumption `TORSO_FORWARD_IN_SENSOR`:
+
+      forward_world = q_torso_neutral (x) forward_in_sensor
+      facing_deg    = azimuth of forward_world about gravity, measured from +Y
+      correction    = the yaw the viewer applies to the figure so facing -> +Y
+
+    Self-checks (so it never faces the figure confidently wrong):
+      * needs the torso node present;
+      * the assumed forward axis must land ~horizontal at the upright neutral
+        pose — if it tilts more than HEADING_HORIZONTALITY_MAX_DEG, the mounting
+        assumption is suspect;
+      * the neutral pose must have been still.
+    Any failure -> confident=False and the viewer leaves facing uncorrected.
+    """
+    torso = segments.get("torso")
+    if torso is None:
+        return {"source": "none", "confident": False,
+                "note": "no torso node — facing cannot be recovered"}
+
+    q_bar = np.asarray(torso["neutral_mean_quat"], dtype=float)
+    fwd = qrotate(q_bar, TORSO_FORWARD_IN_SENSOR.astype(float))
+    fwd = fwd / (np.linalg.norm(fwd) or 1.0)
+    # elevation above the horizontal plane (0 = perfectly horizontal / good)
+    horiz_dev = float(np.degrees(np.arcsin(np.clip(abs(fwd[2]), 0.0, 1.0))))
+    # azimuth of the horizontal component, measured clockwise from +Y (north).
+    facing = float(np.degrees(np.arctan2(fwd[0], fwd[1])))
+    horiz_ok = horiz_dev <= HEADING_HORIZONTALITY_MAX_DEG
+    confident = bool(horiz_ok and still_ok)
+    note = "ok"
+    if not horiz_ok:
+        note = (f"assumed chest-forward axis is {horiz_dev:.0f}° off horizontal "
+                f"at neutral — torso mounting likely differs from the default; "
+                f"facing left uncorrected")
+    elif not still_ok:
+        note = "neutral pose was not still — facing left uncorrected"
+    # `facing` is the azimuth atan2(x, y); a figure rotation about +Z by that same
+    # angle drives the azimuth to zero (new_az = az - angle), so the correction
+    # the viewer applies EQUALS facing (not its negation).
+    return {
+        "source": "torso_auto",
+        "confident": confident,
+        "facing_deg": round(facing, 2),          # subject's forward azimuth from +Y
+        "correction_yaw_deg": round(facing, 2),   # viewer rotates figure by this
+        "horizontality_dev_deg": round(horiz_dev, 2),
+        "forward_in_sensor": [float(v) for v in TORSO_FORWARD_IN_SENSOR],
+        "note": note,
+    }
+
+
 def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
                       csv_path, targets=None):
     stillness = window_stillness(t_ms, seg_quats, t0, t1)
     segments, pairs = solve_calibration(t_ms, seg_quats, seg_meta, t0, t1, targets)
+    still_ok = bool(stillness <= STILL_MAX_RAD_S)
     return {
         "schema_version": SCHEMA_VERSION,
         "subject": montage.get("subject", {}),
@@ -325,12 +408,13 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
             "t_window_ms": [round(float(t0), 1), round(float(t1), 1)],
             "n_samples": int(window_mask(t_ms, t0, t1).sum()),
             "stillness_rad_s": round(stillness, 4),
-            "still_ok": bool(stillness <= STILL_MAX_RAD_S),
+            "still_ok": still_ok,
         },
         "thresholds": {
             "segment_gravity_deg": DEFAULT_SEG_GRAVITY_DEG,
             "pair_angle_deg": DEFAULT_PAIR_ANGLE_DEG,
         },
+        "heading": compute_heading(segments, still_ok),
         "segments": segments,
         "pairs": pairs,
     }
@@ -452,6 +536,18 @@ def print_calibrate_report(cal):
         for jkey, p in cal["pairs"].items():
             print(f"  {jkey:<12} {p['proximal']}→{p['distal']}: "
                   f"neutral relative {p['neutral_rel_angle_deg']:.2f}°")
+    h = cal.get("heading", {})
+    if h.get("source") == "torso_auto":
+        if h.get("confident"):
+            print(f"\nFACING (auto from torso): subject faced "
+                  f"{h['facing_deg']:+.0f}° from +Y; the FBD skeleton will rotate "
+                  f"{h['correction_yaw_deg']:+.0f}° to face forward.")
+        else:
+            print(f"\nFACING (auto from torso): LOW CONFIDENCE — {h.get('note')}.")
+    elif h.get("source") == "none":
+        print("\nFACING: not recovered (no torso node) — the FBD skeleton's "
+              "forward/side plane stays nominal.")
+
     print("\nWrote per-segment offsets + a heading-independent consistency "
           "baseline. On the next don, run `verify` to decide reuse vs re-pose.")
 
@@ -492,7 +588,9 @@ def _fmt_q(q):
 # Commands
 # ---------------------------------------------------------------------------
 def load_montage(path):
-    with open(path) as f:
+    # utf-8-sig tolerates a UTF-8 BOM (Windows Notepad / PowerShell '>' add one),
+    # which would otherwise crash json.load with "Expecting value: ... char 0".
+    with open(path, encoding="utf-8-sig") as f:
         montage = json.load(f)
     errors = validate_montage(montage)
     if errors:
@@ -538,7 +636,7 @@ def cmd_calibrate(args):
 def cmd_verify(args):
     montage = load_montage(args.montage)
     t_ms, seg_quats, _ = load_aligned(args.aligned_csv, montage)
-    with open(args.calibration) as f:
+    with open(args.calibration, encoding="utf-8-sig") as f:
         calibration = json.load(f)
 
     if args.window:
@@ -666,14 +764,49 @@ def selftest():
     print(f"[selftest] auto still-window on a moving record: "
           f"{aw0:.0f}–{aw1:.0f} ms (injected still 2000–4000 ms)")
 
+    # (6) Facing recovery: build a torso whose assumed forward axis (sensor +Z)
+    #     points horizontally at a KNOWN facing, and check compute_heading
+    #     recovers it (applying the correction lands forward back on +Y). Also
+    #     the no-torso and non-horizontal-mounting guards.
+    def _q_from_to(u, v):                      # shortest-arc quaternion u -> v
+        u = u / np.linalg.norm(u); v = v / np.linalg.norm(v)
+        w = float(np.dot(u, v)) + 1.0
+        xyz = np.cross(u, v)
+        return qnorm(np.array([w, *xyz]))
+    face_deg = 40.0
+    q_face = _axis_angle([0, 0, 1], face_deg)  # subject yawed 40° about gravity
+    q_flat = _q_from_to(TORSO_FORWARD_IN_SENSOR, np.array([0.0, 1.0, 0.0]))
+    q_torso_neutral = qmul(q_face, q_flat)     # forward axis horizontal, faced 40°
+    seg_h = {"torso": {"neutral_mean_quat": _q_list(q_torso_neutral)}}
+    head = compute_heading(seg_h, still_ok=True)
+    # apply the viewer's correction and confirm forward returns to ~+Y
+    fwd = qrotate(q_torso_neutral, TORSO_FORWARD_IN_SENSOR.astype(float))
+    fwd_corr = qrotate(_axis_angle([0, 0, 1], head["correction_yaw_deg"]), fwd)
+    fwd_corr = fwd_corr / np.linalg.norm(fwd_corr)
+    heading_ok = (head["source"] == "torso_auto" and head["confident"]
+                  and abs(fwd_corr[0]) < 0.02 and fwd_corr[1] > 0.98)
+    print(f"[selftest] facing recovery: faced {face_deg}°, recovered "
+          f"{head['facing_deg']:.1f}° (horiz dev {head['horizontality_dev_deg']:.1f}°), "
+          f"corrected forward -> [{fwd_corr[0]:+.2f},{fwd_corr[1]:+.2f}] (want ~[0,+1])")
+    # no torso -> not recovered; forward axis tilted 90° -> low confidence
+    no_torso = compute_heading({}, still_ok=True)
+    tilted = compute_heading(
+        {"torso": {"neutral_mean_quat": _q_list(np.array([1., 0, 0, 0]))}},
+        still_ok=True)  # forward=+Z stays vertical -> not horizontal
+    guards_ok = (no_torso["source"] == "none"
+                 and tilted["source"] == "torso_auto" and not tilted["confident"])
+    print(f"[selftest] facing guards: no-torso source='{no_torso['source']}', "
+          f"vertical-forward confident={tilted['confident']} (want False)")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]
-          and 1500 <= aw0 <= 2500)
+          and 1500 <= aw0 <= 2500
+          and heading_ok and guards_ok)
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} "
           f"(offset recovery, heading-independent reuse, slip detection, "
-          f"still-window search)")
+          f"still-window search, facing recovery + guards)")
     return 0 if ok else 1
 
 

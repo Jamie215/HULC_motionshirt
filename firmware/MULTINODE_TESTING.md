@@ -42,18 +42,24 @@ and compares two nodes to get their clock offset (the host term cancels).
 3. On the laptop:
    ```bash
    pip install bleak
-   python tools/multinode_test.py --count 2 --duration 60
+   python tools/multinode_test.py check --count 2 --duration 60
    ```
 
 The harness scans, connects to both nodes simultaneously, syncs each with an
 ms-resolution timestamp, then reads `A005` from both in a round-robin for the
 duration and reports the cross-node offset and its drift.
 
+The tool uses subcommands (`check`, `erase`, `offload`, `enroll`, `selftest`);
+the older flag form (`--count`, `--offload`, `--erase`, ...) still works as a
+deprecated alias.
+
 Other modes:
-* `--count 1` — single-node latency diagnostic (isolates per-link latency from
-  multi-connection scheduling).
-* `--offload` — offload one node's flash log to a `.bin` (and measure throughput
+* `check --count 1` — single-node latency diagnostic (isolates per-link latency
+  from multi-connection scheduling).
+* `offload` — offload one node's flash log to a `.bin` (and measure throughput
   KB/s). The transfer is now framed and loss-verified — see below.
+* `enroll --segments ...` — map each board to a body segment (power one node at a
+  time) and write `montage.json`; see `tools/COLLECTION_CHECKLIST.md`.
 
 ## Flash offload — framing & drop recovery
 
@@ -126,10 +132,11 @@ analysis but means stale data is accumulating.
 
 Keep each node's flash to a single session:
 
-* **`--offload --erase-after-offload`** — wipe each node's flash **only after its
+* **`offload --erase-after`** — wipe each node's flash **only after its
   offload is verified `COMPLETE`**, so you never erase data you didn't fully
   receive. This is the clean default workflow: offload, verify, wipe.
-* **`--erase`** — wipe unconditionally, then exit (use before a capture, or to
+* **`erase`** — wipe each node that holds data (`--yes` skips the per-node
+  confirm), then exit (use before a capture, or to
   clear a node you don't need to offload).
 
 `eraseLog()` erases the whole chip in 64 KB blocks and **verifies the data region
@@ -167,7 +174,7 @@ Testing from a non-Windows central:
   effective connection interval the central negotiated (the number iOS won't
   tell you directly). This is the most reliable way to measure offload speed on
   any central.
-* **Mac** — run `multinode_test.py --offload` (`bleak` works over CoreBluetooth)
+* **Mac** — run `multinode_test.py offload` (`bleak` works over CoreBluetooth)
   for a hard KB/s number, directly comparable to the Windows run.
 * **Android** nRF Connect *does* display the negotiated interval directly.
 
