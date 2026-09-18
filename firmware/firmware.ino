@@ -83,7 +83,9 @@
 //   Header sector (4KB):
 //     Byte 0–3   : Magic number 0xC0DE0001 — confirms flash is initialized
 //     Byte 4–7   : Write pointer (byte offset of next write)
-//     Byte 8–19  : Reserved header padding
+//     Byte 8      : Segment config tag (0x01 = byte 9 holds a valid assignment)
+//     Byte 9      : Segment code (0=torso, 1=upper_arm_l, … — motion_capabilities)
+//     Byte 10–19 : Reserved header padding
 //   Data region (byte 4096 onward):
 //     20-byte quaternion records, sequentially appended
 //
@@ -363,6 +365,18 @@
 
 #define BYTES_PER_SAMPLE     20
 
+// Segment assignment — stored in the log header's reserved bytes so an offloaded
+// log is self-describing (says which BODY PART, not just which node). The host
+// writes it once per rig via control cmd 0x07; it survives power cycles like the
+// write pointer. Codes match tools/motion_capabilities.py SEGMENT_CODES
+// (0=torso, 1=upper_arm_l, 2=upper_arm_r, 3=forearm_l, 4=forearm_r, 5=hand_l,
+// 6=hand_r) — that file is the source of truth; keep this count in sync.
+#define SEGMENT_HDR_TAG_OFF   8       // header byte: config-valid tag
+#define SEGMENT_HDR_CODE_OFF  9       // header byte: segment code
+#define SEGMENT_CONFIG_TAG    0x01    // tag value meaning "code byte is valid"
+#define SEGMENT_UNASSIGNED    0xFF    // sentinel: no segment assigned yet
+#define SEGMENT_COUNT         7       // number of known segments (codes 0..6)
+
 
 // =============================================================================
 // SECTION 7 — BNO086 Stability Classifier Values
@@ -460,7 +474,7 @@ BNO08x       imu;
 BLEService        imuService(UUID_SERVICE);
 BLECharacteristic quatChar(UUID_QUAT,       BLENotify,  20);
 BLECharacteristic ctrlChar(UUID_CONTROL,    BLEWrite,    9);  // 1 cmd + up to 8-byte payload
-BLECharacteristic statChar(UUID_STATUS,     BLERead,     4);
+BLECharacteristic statChar(UUID_STATUS,     BLERead,     6);  // state/flags/logKB + segment
 BLECharacteristic offloadChar(UUID_OFFLOAD, BLENotify,  OFFLOAD_CHUNK_SIZE);
 BLECharacteristic syncInfoChar(UUID_SYNCINFO, BLERead,  16);  // clock info for skew measurement
 bool              bleConnected     = false;
@@ -490,6 +504,8 @@ bool         qspiAsleep          = false;   // external flash parked in deep pow
 bool         logging             = true;
 uint32_t     writeAddr           = LOG_DATA_START;
 uint32_t     writeCount          = 0;
+uint8_t      segmentCode         = SEGMENT_UNASSIGNED;  // body part this node is on
+bool         segmentValid        = false;              // true once host assigns it
 // MUST be 4-byte aligned: nRF52 QSPI EasyDMA requires word-aligned buffers.
 // An unaligned pktBuf caused every flash record to be written shifted by one
 // byte (a stray leading byte + the last byte truncated) — see git history.
@@ -676,6 +692,9 @@ void saveHeader() {
   uint32_t magic       = LOG_MAGIC;
   memcpy(header,     &magic,     4);
   memcpy(header + 4, &writeAddr, 4);
+  // Segment assignment (persists across power cycles like the write pointer).
+  header[SEGMENT_HDR_TAG_OFF]  = segmentValid ? SEGMENT_CONFIG_TAG : 0x00;
+  header[SEGMENT_HDR_CODE_OFF] = segmentValid ? segmentCode : SEGMENT_UNASSIGNED;
   qspiWrite(LOG_HEADER_ADDR, header, 20);
 
   // Read-back verify
@@ -705,6 +724,9 @@ bool loadHeader() {
   if (magic != LOG_MAGIC) {
     Serial.println("[QSPI] Fresh flash — initialising log");
     writeAddr = LOG_DATA_START;
+    // Fresh/legacy header: no segment assignment yet (kept as SEGMENT_UNASSIGNED).
+    segmentValid = false;
+    segmentCode  = SEGMENT_UNASSIGNED;
     saveHeader();
   } else {
     memcpy(&writeAddr, header + 4, 4);
@@ -712,6 +734,21 @@ bool loadHeader() {
       Serial.println("[QSPI] Bad write pointer — resetting log");
       writeAddr = LOG_DATA_START;
       saveHeader();
+    }
+    // Segment assignment: valid only when the tag matches and the code is in
+    // range — a legacy header (reserved bytes 0x00) reads as unassigned, never
+    // as code 0 (torso).
+    uint8_t tag  = header[SEGMENT_HDR_TAG_OFF];
+    uint8_t code = header[SEGMENT_HDR_CODE_OFF];
+    if (tag == SEGMENT_CONFIG_TAG && code < SEGMENT_COUNT) {
+      segmentValid = true;
+      segmentCode  = code;
+      Serial.print("[QSPI] Segment code: ");
+      Serial.println(segmentCode);
+    } else {
+      segmentValid = false;
+      segmentCode  = SEGMENT_UNASSIGNED;
+      Serial.println("[QSPI] Segment: unassigned");
     }
     Serial.print("[QSPI] Resuming log at 0x");
     Serial.println(writeAddr, HEX);
@@ -815,6 +852,8 @@ bool writeLogRecord(const uint8_t* buf, size_t len) {
 //   Byte 0  : Device state (0=IDLE, 1=STATIC, 2=ACTIVE)
 //   Byte 1  : Flags (bit 0 = streaming, bit 1 = time synced)
 //   Byte 2-3: Log size in KB (little-endian uint16)
+//   Byte 4  : Segment config tag (0x01 = byte 5 is a valid assignment)
+//   Byte 5  : Segment code (0=torso, …; 0xFF when unassigned)
 // ---------------------------------------------------------------------------
 void updateStatus() {
   uint32_t logBytes = (writeAddr > LOG_DATA_START) ? (writeAddr - LOG_DATA_START) : 0;
@@ -824,13 +863,15 @@ void updateStatus() {
   if (streaming)  flags |= 0x01;
   if (timeSynced) flags |= 0x02;
 
-  uint8_t status[4] = {
+  uint8_t status[6] = {
     (uint8_t)currentState,
     flags,
     (uint8_t)(logKB & 0xFF),
-    (uint8_t)((logKB >> 8) & 0xFF)
+    (uint8_t)((logKB >> 8) & 0xFF),
+    (uint8_t)(segmentValid ? SEGMENT_CONFIG_TAG : 0x00),
+    (uint8_t)(segmentValid ? segmentCode : SEGMENT_UNASSIGNED)
   };
-  statChar.writeValue(status, 4);
+  statChar.writeValue(status, 6);
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,6 +1092,7 @@ void offloadRange(BLEDevice& central, uint32_t startOff, uint32_t length) {
 //   0x03  erase flash log
 //   0x04  begin log offload (IDLE only)
 //   0x06  re-send a byte range (IDLE only): [0x06, offset u32 LE, length u32 LE]
+//   0x07  set segment assignment (2-byte payload: cmd + segment code 0..6)
 // ---------------------------------------------------------------------------
 void handleControl(BLEDevice& central) {
   uint8_t cmd = ctrlChar.value()[0];
@@ -1140,6 +1182,28 @@ void handleControl(BLEDevice& central) {
         offloadRange(central, offset, length);
       } else {
         Serial.println("[CTRL] Range resend — missing payload (need 9 bytes)");
+      }
+      break;
+    }
+
+    case 0x07: {
+      // Set segment assignment: [0x07, code]. Config-level, not per-session —
+      // persisted in the log header so the offloaded log is self-describing and
+      // the assignment survives power cycles and log erases.
+      if (ctrlChar.valueLength() >= 2) {
+        uint8_t code = ctrlChar.value()[1];
+        if (code < SEGMENT_COUNT) {
+          segmentCode  = code;
+          segmentValid = true;
+          if (qspiReady) saveHeader();   // persist immediately
+          Serial.print("[CTRL] Segment set — code: ");
+          Serial.println(segmentCode);
+        } else {
+          Serial.print("[CTRL] Segment REJECTED — code out of range: ");
+          Serial.println(code);
+        }
+      } else {
+        Serial.println("[CTRL] Segment set — missing code (need 2 bytes)");
       }
       break;
     }

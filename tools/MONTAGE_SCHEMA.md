@@ -114,6 +114,24 @@ nodes cover at most one adjacent segment pair; computing both `elbow_l` and
 Labeling notes appear in the report header and under `montage_warnings` in the
 JSON output.
 
+### 3.2 Node header vs montage (source-of-truth rule)
+
+Each node also stores **its own segment** as a 1-byte code in its log header
+(`SETUP_AND_CALIBRATION_PLAN.md` §2.1), written at enroll and reported over BLE.
+The code enum is `motion_capabilities.SEGMENT_CODES` — the single source of truth,
+shared with the firmware; **append new segments only at the end** so a code never
+changes meaning for logs already on deployed nodes. The rule when the two sources
+disagree:
+
+- The **montage `segment` stays authoritative** — it is what binds a log to a body
+  part in the pipeline.
+- The node header is the **default/confirmation**: `read-segments` builds the
+  montage straight from the headers, and offload writes a `<node_id>.seg.json`
+  sidecar next to each `.bin`.
+- On a mismatch, `analyze_session` **warns** (same non-fatal spirit as the
+  landmark check) so a swapped or re-placed node surfaces instead of silently
+  binding wrong — but it never overrides the montage.
+
 ### Validation (hard errors)
 
 - unknown `segment` (not in the canonical list)
