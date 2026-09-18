@@ -132,10 +132,11 @@ analysis but means stale data is accumulating.
 
 Keep each node's flash to a single session:
 
-* **`--offload --erase-after-offload`** — wipe each node's flash **only after its
+* **`offload --erase-after`** — wipe each node's flash **only after its
   offload is verified `COMPLETE`**, so you never erase data you didn't fully
   receive. This is the clean default workflow: offload, verify, wipe.
-* **`--erase`** — wipe unconditionally, then exit (use before a capture, or to
+* **`erase`** — wipe each node that holds data (`--yes` skips the per-node
+  confirm), then exit (use before a capture, or to
   clear a node you don't need to offload).
 
 `eraseLog()` erases the whole chip in 64 KB blocks and **verifies the data region

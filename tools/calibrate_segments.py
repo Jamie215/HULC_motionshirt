@@ -86,7 +86,7 @@ except ImportError:  # pragma: no cover
 
 # Single source of truth for the body model + montage validation.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_capabilities import JOINTS, SEGMENTS, validate_montage  # noqa: E402
+from motion_capabilities import JOINTS, validate_montage  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
 
@@ -781,7 +781,6 @@ def selftest():
     head = compute_heading(seg_h, still_ok=True)
     # apply the viewer's correction and confirm forward returns to ~+Y
     fwd = qrotate(q_torso_neutral, TORSO_FORWARD_IN_SENSOR.astype(float))
-    corr = qmul(_axis_angle([0, 0, 1], head["correction_yaw_deg"]), np.array([1.,0,0,0]))
     fwd_corr = qrotate(_axis_angle([0, 0, 1], head["correction_yaw_deg"]), fwd)
     fwd_corr = fwd_corr / np.linalg.norm(fwd_corr)
     heading_ok = (head["source"] == "torso_auto" and head["confident"]

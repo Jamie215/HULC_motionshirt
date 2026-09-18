@@ -286,9 +286,9 @@ def report_offsets(nodes: list) -> None:
             print(f"  drift      : {slope_per_min:+.1f} ms/min "
                   f"(above the {drift_floor_per_min:.0f} ms/min noise floor)")
         print(f"\n  NOTE: read windows of ~{best_unc:.0f}-{med_unc:.0f} ms floor this")
-        print(f"  measurement. Treat the offset as an upper bound, not a")
-        print(f"  calibrated value. For true ms-level validation use a shared")
-        print(f"  physical event (see MULTINODE_TESTING.md).")
+        print("  measurement. Treat the offset as an upper bound, not a")
+        print("  calibrated value. For true ms-level validation use a shared")
+        print("  physical event (see MULTINODE_TESTING.md).")
     print("====================================\n")
 
 

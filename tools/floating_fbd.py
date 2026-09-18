@@ -296,7 +296,7 @@ def _axis_angle(axis, deg):
 
 def selftest():
     import tempfile
-    from calibrate_segments import (qconj, build_calibration, WORLD_UP)
+    from calibrate_segments import (qconj, build_calibration)
 
     print("[selftest] synthesizing a right-arm session (torso + upper_arm_r + "
           "forearm_r) ...")
