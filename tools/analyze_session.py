@@ -77,6 +77,35 @@ def ordered_logs(montage, capture_dir):
     return paths, nodes
 
 
+def warn_segment_disagreements(nodes, capture_dir):
+    """Warn when a node's OWN segment header disagrees with the montage.
+
+    Offload writes a `<node_id>.seg.json` sidecar carrying the segment the node
+    reported for itself. The montage stays AUTHORITATIVE (source-of-truth rule,
+    SETUP_AND_CALIBRATION_PLAN.md §2.1) — this only warns, so a swapped or
+    mislabeled node surfaces instead of silently binding to the wrong body part.
+    Non-fatal and best-effort: a node captured on older firmware has no sidecar.
+    """
+    warned = False
+    for n in nodes:
+        side = os.path.join(capture_dir, f"{_safe_name(n['node_id'])}.seg.json")
+        if not os.path.exists(side):
+            continue
+        try:
+            with open(side, encoding="utf-8-sig") as f:
+                node_seg = json.load(f).get("segment")
+        except (OSError, ValueError):
+            continue
+        if node_seg and node_seg != n["segment"]:
+            print(f"    [!] {n['column']} {n['node_id']}: montage says "
+                  f"'{n['segment']}' but the node's header says '{node_seg}'. "
+                  f"Using the montage value — fix the montage or re-enroll if the "
+                  f"node moved.")
+            warned = True
+    if not warned:
+        print("    (node headers agree with the montage)")
+
+
 def _run(cmd, step):
     print(f"\n===== {step} =====")
     print("  $ " + " ".join(cmd))
@@ -93,6 +122,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
     print("[analyze] montage binding (column order = reconcile order):")
     for n, p in zip(nodes, logs):
         print(f"    {n['column']}  {n['segment']:<14} <- {os.path.basename(p)}")
+    warn_segment_disagreements(nodes, capture_dir)
 
     os.makedirs(outdir, exist_ok=True)
     aligned = os.path.join(outdir, "aligned.csv")

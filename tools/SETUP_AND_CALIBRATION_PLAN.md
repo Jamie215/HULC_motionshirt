@@ -42,6 +42,14 @@ are different artifacts, not one step.
 
 ### 2.1 Persist the segment assignment on the node
 
+> **Built.** `firmware/firmware.ino` stores the segment as a 1-byte code plus a
+> config-valid tag in the log header's reserved bytes (persists across power
+> cycles and log erases); it is set over BLE with control `0x07` and reported on
+> the status characteristic. The code enum is pinned in
+> `motion_capabilities.SEGMENT_CODES` (the one source of truth). Host side:
+> `multinode_test.py` `set_segment` / `read-segments`, the `.seg.json` offload
+> sidecar, and the `analyze_session` disagreement warning.
+
 **Decision: store the segment as a 1-byte enum in a per-log *header*, not per
 record, and not as a string.**
 
@@ -245,10 +253,18 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    stream.~~ — **done** (`floating_fbd.py` **Skeleton** layout). Real kinematic
    chain + assumed lengths; pulled forward from step 5 because it's the same
    viewer and the intuitive read of the calibrated stream.
-3. **Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
-   logs, montage auto-populated. *(next up — the FBD is the "verify placement"
-   surface §2.2 step 2 calls for.)*
+3. ~~**Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
+   logs, montage auto-populated.~~ — **done**. The node stores its segment as a
+   1-byte code in the log header (config tag + code in the reserved header bytes),
+   set over BLE (control `0x07`) and read back on the status characteristic.
+   `enroll` now does it on one connection per node — smart-erase **and** stamp the
+   segment — and `read-segments` builds a montage from the nodes' own headers (the
+   §2.2 "user only confirms" flow). Offload drops a `<node_id>.seg.json` sidecar so
+   captures are self-describing on disk; `analyze_session` warns when a node's
+   header disagrees with the montage (montage stays authoritative). *(next up:
+   step 4.)*
 4. **Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
    rest already declared by the resolver. The skeleton linkage exists; the
    per-DOF joint-angle read-out rides along with ROM (same decomposition).
+   *(next up.)*
 5. **Full interface** (stage 7) — the metrics + both FBD layouts in one review UI.

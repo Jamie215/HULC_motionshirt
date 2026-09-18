@@ -96,6 +96,37 @@ SEGMENTS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 1a-0. Canonical segment codes — the ONE uint8 enum shared with the firmware.
+#     A node stores its own segment as a 1-byte code in its log header (see
+#     SETUP_AND_CALIBRATION_PLAN.md §2.1), so the offloaded log is self-describing.
+#     The code is the segment's INDEX in SEGMENTS above, pinned here explicitly so
+#     that reordering the dict can never silently reassign a node's stored code.
+#     APPEND new segments at the END only — never renumber an existing one, or old
+#     logs written by deployed firmware would decode to the wrong body part.
+# ─────────────────────────────────────────────────────────────────────────────
+SEGMENT_CODES = {name: i for i, name in enumerate(SEGMENTS)}
+SEGMENT_BY_CODE = {i: name for name, i in SEGMENT_CODES.items()}
+
+# Header config marker (firmware writes these into the log header's reserved
+# bytes). A byte that is not SEGMENT_CONFIG_TAG means the node was never assigned
+# a segment — reported honestly as "unassigned", never guessed as code 0 (torso).
+SEGMENT_CONFIG_TAG = 0x01     # config-valid tag byte
+SEGMENT_UNASSIGNED = 0xFF     # sentinel code for "no segment assigned yet"
+
+
+def segment_from_header(tag: int, code: int) -> Optional[str]:
+    """Map a node header's (config-tag, code) pair to a segment name.
+
+    Returns None when the header carries no valid assignment (tag mismatch, the
+    unassigned sentinel, or an out-of-range code) — the caller then treats the
+    node's segment as unknown rather than guessing.
+    """
+    if tag != SEGMENT_CONFIG_TAG or code == SEGMENT_UNASSIGNED:
+        return None
+    return SEGMENT_BY_CODE.get(code)
+
+
 def _seg_base(seg: str) -> str:
     """Segment key without its side suffix ('upper_arm_l' -> 'upper_arm')."""
     return seg[:-2] if seg.endswith(("_l", "_r")) else seg
@@ -581,6 +612,20 @@ def selftest() -> None:
         assert j.distal in SEGMENTS, f"{jkey}: bad distal {j.distal}"
         assert j.dofs, f"{jkey}: no DOFs"
     print(f"           {len(SEGMENTS)} segments, {len(JOINTS)} joints — OK")
+
+    # Segment codes are contiguous 0..N-1 and round-trip through the header
+    # mapping — the firmware relies on this exact enum, so a gap or renumber here
+    # would silently mislabel offloaded logs.
+    assert list(SEGMENT_CODES.values()) == list(range(len(SEGMENTS))), \
+        f"segment codes must be contiguous 0..{len(SEGMENTS) - 1}: {SEGMENT_CODES}"
+    for name, code in SEGMENT_CODES.items():
+        assert segment_from_header(SEGMENT_CONFIG_TAG, code) == name, name
+    assert segment_from_header(0x00, 0) is None, "untagged header → unassigned"
+    assert segment_from_header(SEGMENT_CONFIG_TAG, SEGMENT_UNASSIGNED) is None
+    assert segment_from_header(SEGMENT_CONFIG_TAG, len(SEGMENTS)) is None, \
+        "out-of-range code → unassigned"
+    print(f"[selftest] segment codes 0..{len(SEGMENTS) - 1} contiguous, "
+          "header round-trip — OK")
 
     # Full right-arm montage: shoulder+elbow+wrist all computable, coordination
     # + compensation unlocked.

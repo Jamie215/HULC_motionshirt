@@ -45,12 +45,15 @@ steps are identical.
       A Windows-desktop `bleak` central imposes a slow connection interval and
       makes offload crawl; it's a bench artifact, not a firmware limit.
 
-## 0b. Enroll the nodes → montage (one-time per rig, no BLE connect)
+## 0b. Enroll the nodes → montage (one-time per rig)
 
 Map each board to a body segment by **powering one node at a time** — with only
-one advertising, its id is unambiguous. This only **scans advertisements; it
-never connects**, so it's fast. Because the `HULC-IMU-XXXX` id is a permanent
-per-board property, this is a **one-time** job per board.
+one advertising, its id is unambiguous. Identification is **scan-only**; then
+enroll makes **one BLE connection per board** to (1) smart-erase and (2) **write
+the segment into the node's log header** so the offloaded log is self-describing
+(says which *body part*, not just which node). Because the `HULC-IMU-XXXX` id is a
+permanent per-board property and the segment persists in flash, this is a
+**one-time** job per board.
 
 ```bash
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
@@ -59,12 +62,17 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 - [ ] When prompted for `upper_arm_r`, power ON **only** that board (all others
       OFF), press Enter — it finds the single advertising id and reports it.
 - [ ] Type a physical **label** (e.g. "orange tape") and mark the board.
+- [ ] On the one connection it smart-erases (skips an already-empty board; asks
+      `[y/N]` before wiping one that holds data) and writes the segment, then
+      confirms the readback.
 - [ ] Repeat for `forearm_r` (power ONLY it on).
 - [ ] It writes a schema-valid `montage.json` (columns in enrollment order) plus
       `nodes_registry.json` (remembers id → segment/label).
 
-Next time the same (labeled) boards are used, reuse the saved mapping (also
-scan-only, no connect):
+Pass `--no-erase` to skip only the wipe check (the segment is still written).
+
+Next time the same (labeled) boards are used, reuse the saved mapping —
+**scan-only, no connect** (the segment already lives on each node):
 
 ```bash
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
@@ -73,10 +81,13 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
 - [ ] It scans, sees both known ids, offers "reuse previous placement?" and
       writes the montage directly.
 
-> **Tip:** on a *first* enrollment you can fold the initial wipe into the same
-> per-node connection with `enroll --segments … --erase` — it reads each board's
-> log and, only if it holds data, asks `[y/N]` before wiping (no reconnect, and
-> no 30 s wipe on an already-empty board).
+> **Tip — rebuild the montage from the boards themselves.** Once nodes are
+> enrolled, `read-segments` connects to whatever is advertising, reads each
+> node's own segment header, and writes the montage from that (you just confirm):
+>
+> ```bash
+> python tools/multinode_test.py read-segments
+> ```
 
 > `montage.json` is written UTF-8 without a BOM automatically. If you ever edit
 > it by hand, keep it BOM-free (Notepad "Save as UTF-8" and PowerShell `>` add a
@@ -138,7 +149,10 @@ python tools/multinode_test.py offload --count 2 --out-dir ./capture
 ```
 
 - [ ] Each node reports `COMPLETE — saved N bytes`.
-- [ ] Files land as `./capture/HULC-IMU-XXXX.bin` (auto-named by id).
+- [ ] Files land as `./capture/HULC-IMU-XXXX.bin` (auto-named by id), each with a
+      `HULC-IMU-XXXX.seg.json` sidecar recording the node's own segment — so the
+      capture dir is self-describing and `analyze_session` can cross-check it
+      against the montage (it warns, but the montage stays authoritative).
 - [ ] If any records are reported missing, just re-run the same command — it
       re-requests only the holes.
 
@@ -235,5 +249,6 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 
 See `firmware/MULTINODE_TESTING.md` for the offload framing/recovery details and
 `tools/SETUP_AND_CALIBRATION_PLAN.md` for the pipeline stages. Tools used here:
-`multinode_test.py` (enroll → montage; erase/offload; occasional check),
-`analyze_session.py` (one-shot reconcile → render).
+`multinode_test.py` (enroll → montage, incl. segment stamp; `read-segments`;
+erase/offload; occasional check), `analyze_session.py` (one-shot reconcile →
+render).

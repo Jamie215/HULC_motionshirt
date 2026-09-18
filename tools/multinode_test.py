@@ -58,7 +58,10 @@ import time
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_capabilities import SEGMENTS, validate_montage  # noqa: E402
+from motion_capabilities import (  # noqa: E402
+    SEGMENTS, SEGMENT_CODES, SEGMENT_CONFIG_TAG, SEGMENT_UNASSIGNED,
+    segment_from_header, validate_montage,
+)
 
 # bleak is imported lazily (see _ensure_bleak) so the offline paths — `enroll`
 # montage/registry logic and `selftest` — run without the dependency or hardware.
@@ -86,6 +89,7 @@ CMD_SYNC_MS = 0x05
 CMD_OFFLOAD = 0x04
 CMD_ERASE = 0x03
 CMD_OFFLOAD_RANGE = 0x06   # [0x06, offset u32 LE, length u32 LE] — resend one byte range
+CMD_SET_SEGMENT = 0x07     # [0x07, segment code 0..6] — assign this node's body part
 
 # Offload framing (must match firmware OFFLOAD_* defines): every A004
 # notification is [4-byte LE offset][payload]; the header notification uses a
@@ -299,6 +303,49 @@ async def _read_log_kb(node: Node):
     except Exception:  # noqa: BLE001
         return None
     return struct.unpack_from("<H", data, 2)[0] if len(data) >= 4 else None
+
+
+async def _read_segment(node: Node):
+    """Return the node's assigned segment NAME from the status char.
+
+    Status bytes 4-5 carry (config-tag, segment code); an older firmware sends a
+    4-byte status and reads as unassigned. Returns None when the node reports no
+    valid assignment (never guessed) — the caller treats that as unknown.
+    """
+    try:
+        data = bytes(await node.client.read_gatt_char(UUID_STATUS))
+    except Exception:  # noqa: BLE001
+        return None
+    if len(data) < 6:
+        return None
+    return segment_from_header(data[4], data[5])
+
+
+async def set_segment(node: Node, segment: str) -> bool:
+    """Assign a body segment to the node (control 0x07), then verify the readback.
+
+    `segment` is a name from motion_capabilities.SEGMENTS; it is mapped to the
+    shared uint8 code. Config-level and persisted in the node's log header, so it
+    survives power cycles and log erases. Returns True once the node reports the
+    expected segment back on the status char.
+    """
+    code = SEGMENT_CODES.get(segment)
+    if code is None:
+        print(f"[SEGMENT] {node.name}: unknown segment '{segment}' — not set.")
+        return False
+    try:
+        await node.client.write_gatt_char(
+            UUID_CONTROL, bytes([CMD_SET_SEGMENT, code]), response=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[SEGMENT] {node.name}: write failed ({exc})")
+        return False
+    back = await _read_segment(node)
+    if back == segment:
+        print(f"[SEGMENT] {node.name}: set to '{segment}' (code {code}) — confirmed.")
+        return True
+    print(f"[SEGMENT] {node.name}: set '{segment}' but readback is "
+          f"{back!r} — check the node is running updated firmware.")
+    return False
 
 
 async def erase_node(node: Node, wait_s: float = 40.0) -> None:
@@ -537,6 +584,18 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
             buf[off:off + len(payload)] = payload
         with open(save_path, "wb") as f:
             f.write(buf)
+        # Sidecar: record the node's self-reported segment next to the .bin so the
+        # capture dir is self-describing on disk (survives without the node) and
+        # analyze can cross-check it against the montage. Best-effort — a node on
+        # older firmware simply reports no segment and no sidecar is written.
+        seg = await _read_segment(node)
+        if seg is not None:
+            side_path = os.path.splitext(save_path)[0] + ".seg.json"
+            with open(side_path, "w", encoding="utf-8", newline="\n") as f:
+                json.dump({"node_id": node.name, "segment": seg,
+                           "code": SEGMENT_CODES[seg]}, f, indent=2)
+                f.write("\n")
+            print(f"           segment: {seg} -> {side_path}")
         recs = size // RECORD_SIZE
         if complete:
             print(f"           COMPLETE — saved {size} bytes ({recs} records) "
@@ -864,7 +923,7 @@ async def _scan_names(timeout):
             if (d.name or "").startswith(NAME_PREFIX)}
 
 
-async def enroll(segments, montage_path, registry_path, reuse, erase,
+async def enroll(segments, montage_path, registry_path, reuse, no_erase,
                  subject, session, scan_timeout):
     _ensure_bleak()
     registry = load_registry(registry_path)
@@ -909,20 +968,25 @@ async def enroll(segments, montage_path, registry_path, reuse, erase,
             node_id, address = next(iter(fresh.items()))
             lbl = (await ask(f"    found {node_id}. Physical label "
                              f"(e.g. 'orange tape', optional): ")).strip()
-            if erase:
-                # Keep this one connection: check the log, and only wipe (with a
-                # y/N confirm) if the node actually holds data — no reconnect, no
-                # 30s wipe on an already-empty node.
-                client = await connect_with_retry(address)
-                if client is None:
-                    print(f"    [!] couldn't connect to {node_id} to erase — "
-                          f"enrolled anyway; wipe it later.")
-                else:
-                    try:
-                        await smart_erase(Node(name=node_id, address=address,
-                                               client=client), ask=ask)
-                    finally:
-                        await client.disconnect()
+            # One connection does the config work: smart-erase (unless suppressed)
+            # AND stamp the segment into the node's log header, so no separate
+            # connect is needed and the offloaded log becomes self-describing.
+            # The segment write is not gated by erase — it's independent config.
+            client = await connect_with_retry(address)
+            if client is None:
+                print(f"    [!] couldn't connect to {node_id} — enrolled in the "
+                      f"montage anyway, but its segment was NOT written to the "
+                      f"node; re-run enroll or set it later.")
+            else:
+                node = Node(name=node_id, address=address, client=client)
+                try:
+                    if not no_erase:
+                        # Check the log and only wipe (with a y/N confirm) if the
+                        # node holds data — no 30s wipe on an already-empty node.
+                        await smart_erase(node, ask=ask)
+                    await set_segment(node, seg)
+                finally:
+                    await client.disconnect()
             assignments.append((node_id, seg, lbl))
             used.add(node_id)
             print(f"    -> {seg} = {node_id}\n")
@@ -932,6 +996,72 @@ async def enroll(segments, montage_path, registry_path, reuse, erase,
     save_registry(registry_path, merge_registry(registry, assignments))
     print(f"[enroll] wrote {montage_path} and updated {registry_path}.")
     print("[enroll] label your boards now so you can --reuse next time.")
+
+
+async def read_segments(montage_path, registry_path, subject, session,
+                        scan_timeout):
+    """Build a montage by reading each node's OWN segment assignment.
+
+    The §2.2 "user only confirms" flow: once nodes have been enrolled (their
+    segment written to the header), the montage no longer has to be hand-typed —
+    connect to whatever is advertising, read each node's self-reported segment,
+    and assemble the montage from that. Column order follows the canonical segment
+    code so the result is deterministic. Nodes reporting no assignment are listed
+    and skipped (never guessed).
+    """
+    _ensure_bleak()
+    registry = load_registry(registry_path)
+    loop = asyncio.get_event_loop()
+
+    async def ask(msg):
+        return await loop.run_in_executor(None, input, msg)
+
+    print("[from-nodes] scanning for advertising boards...")
+    present = await _scan_names(scan_timeout)
+    if not present:
+        raise SystemExit("[from-nodes] no HULC node advertising.")
+
+    found, unassigned = {}, []
+    for node_id, address in present.items():
+        client = await connect_with_retry(address)
+        if client is None:
+            print(f"    [!] couldn't connect to {node_id} — skipped.")
+            continue
+        try:
+            seg = await _read_segment(Node(name=node_id, address=address,
+                                           client=client))
+        finally:
+            await client.disconnect()
+        if seg is None:
+            unassigned.append(node_id)
+            print(f"    {node_id}: no segment assigned — enroll it first.")
+        elif seg in found:
+            print(f"    [!] {seg} already read from {found[seg]}; {node_id} also "
+                  f"reports it — skipping the duplicate.")
+        else:
+            found[seg] = node_id
+            print(f"    {node_id}: {seg}")
+
+    if not found:
+        raise SystemExit("[from-nodes] no node reported a segment — run enroll.")
+    if unassigned:
+        print(f"[from-nodes] {len(unassigned)} node(s) had no assignment: "
+              f"{', '.join(unassigned)}")
+
+    # Deterministic column order: canonical segment code.
+    ordered = sorted(found.items(), key=lambda kv: SEGMENT_CODES[kv[0]])
+    assignments = [(nid, seg, registry.get(nid, {}).get("label", ""))
+                   for seg, nid in ordered]
+    print("[from-nodes] montage from node headers:")
+    for nid, seg, lbl in assignments:
+        print(f"        {seg:<14} <- {nid}{'  (' + lbl + ')' if lbl else ''}")
+    if (await ask("[from-nodes] write this montage? [Y/n] ")
+            ).strip().lower() not in ("", "y"):
+        print("[from-nodes] aborted; montage not written.")
+        return
+    write_montage(montage_path, build_montage(assignments, subject, session))
+    save_registry(registry_path, merge_registry(registry, assignments))
+    print(f"[from-nodes] wrote {montage_path} and updated {registry_path}.")
 
 
 def enroll_selftest():
@@ -1018,11 +1148,20 @@ def _main_sub(argv) -> None:
     pn.add_argument("--montage", default=DEFAULT_MONTAGE)
     pn.add_argument("--registry", default=DEFAULT_REGISTRY)
     pn.add_argument("--reuse", action="store_true")
-    pn.add_argument("--erase", action="store_true",
-                    help="also wipe each node's flash as it is enrolled")
+    pn.add_argument("--no-erase", action="store_true",
+                    help="skip the smart-erase check on the enroll connection "
+                         "(the segment is still written to each node)")
     pn.add_argument("--subject", default="S01")
     pn.add_argument("--session", default="")
     pn.add_argument("--scan-timeout", type=float, default=8.0)
+
+    pf = sub.add_parser("read-segments",
+                        help="build montage.json from nodes' own segment headers")
+    pf.add_argument("--montage", default=DEFAULT_MONTAGE)
+    pf.add_argument("--registry", default=DEFAULT_REGISTRY)
+    pf.add_argument("--subject", default="S01")
+    pf.add_argument("--session", default="")
+    pf.add_argument("--scan-timeout", type=float, default=8.0)
 
     sub.add_parser("selftest", help="validate the offline enroll logic")
 
@@ -1032,8 +1171,12 @@ def _main_sub(argv) -> None:
     if args.cmd == "enroll":
         segs = norm_segments(args.segments)
         asyncio.run(enroll(segs, args.montage, args.registry, args.reuse,
-                           args.erase, args.subject, args.session,
+                           args.no_erase, args.subject, args.session,
                            args.scan_timeout))
+        return
+    if args.cmd == "read-segments":
+        asyncio.run(read_segments(args.montage, args.registry, args.subject,
+                                  args.session, args.scan_timeout))
         return
     try:
         if args.cmd == "check":
