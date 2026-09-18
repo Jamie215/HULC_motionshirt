@@ -32,7 +32,7 @@ is a permanent per-board property, this is a **one-time** job per board.
 
 ```bash
 # add --erase to also wipe each node's flash in the same pass (see step 1)
-python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r --erase
+python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --erase
 ```
 
 - [ ] When prompted for `upper_arm_r`, power ON **only** that board (all others
@@ -47,7 +47,7 @@ Next time the same (labeled) boards are used, skip the power-cycling — power t
 all on and reuse the saved mapping:
 
 ```bash
-python tools/setup_nodes.py enroll --segments upper_arm_r,forearm_r --reuse
+python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r --reuse
 ```
 
 - [ ] It scans, sees both known ids, offers "reuse previous placement?" and
@@ -65,7 +65,7 @@ If you used `enroll --erase` above, the flash is already wiped — skip this.
 Otherwise, erase both:
 
 ```bash
-python tools/multinode_test.py --erase --count 2
+python tools/multinode_test.py erase --count 2
 ```
 
 - [ ] Both nodes report `OK — log is now 0KB (wipe confirmed)`.
@@ -84,7 +84,7 @@ python tools/multinode_test.py --erase --count 2
 ## 3. (Recommended) Sync + clock-quality check — while still
 
 ```bash
-python tools/multinode_test.py --count 2 --duration 30
+python tools/multinode_test.py check --count 2 --duration 30
 ```
 
 - [ ] Subject **still** (nodes IDLE) for the whole 30 s.
@@ -119,7 +119,7 @@ segments moving together) so reconcile can lock the clock.
 Bring the subject to rest (nodes IDLE), then:
 
 ```bash
-python tools/multinode_test.py --offload --count 2 --out-dir ./capture
+python tools/multinode_test.py offload --count 2 --out-dir ./capture
 ```
 
 - [ ] Each node reports `COMPLETE — saved N bytes`.
@@ -127,7 +127,7 @@ python tools/multinode_test.py --offload --count 2 --out-dir ./capture
 - [ ] If any records are reported missing, just re-run the same command — it
       re-requests only the holes.
 
-*Combine offload + wipe:* `--offload --erase-after-offload --count 2` erases
+*Combine offload + wipe:* `offload --count 2 --erase-after` erases
 each node only after a verified-complete transfer, so the next capture starts
 clean.
 
@@ -195,5 +195,5 @@ python tools/calibrate_segments.py verify redon.csv montage.json \
 
 See `firmware/MULTINODE_TESTING.md` for the offload framing/recovery details and
 `tools/SETUP_AND_CALIBRATION_PLAN.md` for the pipeline stages. Tools used here:
-`setup_nodes.py` (enroll → montage), `multinode_test.py` (erase/sync/offload),
+`multinode_test.py` (enroll → montage; erase/check/offload),
 `analyze_session.py` (one-shot reconcile → render).
