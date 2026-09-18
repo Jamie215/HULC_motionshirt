@@ -1,7 +1,22 @@
+# Python
 Lib/
 venv/
+__pycache__/
+*.pyc
+
+# Captured / aligned recording data — never commit real recordings
 capture*/
-aligned.csv
 *.bin
-*.json
+aligned.csv
+redon.csv
+
+# Per-session generated JSON. Listed by name (not *.json) so intended files
+# like tools/montage.example.json stay tracked.
+montage.json
+nodes_registry.json
+calibration.json
+
+# Generated HTML viewers (analyze_session / floating_fbd --out). Broad because
+# the output name varies; the tracked doc pages are un-ignored just below.
 *.html
+!tools/pipeline_walkthrough.html
