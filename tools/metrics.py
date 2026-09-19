@@ -19,6 +19,9 @@ declares for the montage, so what appears is exactly what the placement supports
 ROM and the per-DOF read-out came first (SETUP_AND_CALIBRATION_PLAN.md §6, build
 step 4); the rest ride on the same decomposition and the same honesty contract.
 
+Every metric's meaning, formula, units, and calibration gate are catalogued in
+tools/METRICS.md (this module is the implementation it indexes).
+
 How a joint angle is computed (the whole chain in four lines)
 -------------------------------------------------------------
     q_seg(t) = q_WS(t) ⊗ q_SB          apply the cached mounting offset (stage 5)

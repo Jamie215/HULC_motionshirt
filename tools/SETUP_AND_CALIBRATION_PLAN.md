@@ -287,7 +287,8 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    **activity asymmetry**, inter-joint **coordination** (cross-correlation +
    lag), and trunk **compensation**. Each derived metric is emitted only when
    `resolve()` says the montage supports it, and carries the same
-   clinical/relative-only honesty flag.
+   clinical/relative-only honesty flag. Every metric's formula, units, and
+   calibration gate are catalogued in `METRICS.md`.
 5. ~~**Full interface** (stage 7) — the metrics + both FBD layouts in one review
    UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
    and bakes a review panel beside the 3-D body: per-joint **ROM** bars

@@ -203,6 +203,9 @@ lifetime — see `SETUP_AND_CALIBRATION_PLAN.md` §3.
 
 ## 5. Capability tiers the resolver emits
 
+This section is the *catalog* — which tier needs what. For **how each metric is
+computed** (formula, units, calibration gate, output field), see `METRICS.md`.
+
 | Tier | Needs | Examples |
 |---|---|---|
 | **segment** | 1 node | elevation, angular speed, smoothness, posture dwell |
