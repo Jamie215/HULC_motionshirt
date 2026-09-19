@@ -261,8 +261,7 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    segment — and `read-segments` builds a montage from the nodes' own headers (the
    §2.2 "user only confirms" flow). Offload drops a `<node_id>.seg.json` sidecar so
    captures are self-describing on disk; `analyze_session` warns when a node's
-   header disagrees with the montage (montage stays authoritative). *(next up:
-   step 4.)*
+   header disagrees with the montage (montage stays authoritative).
 4. ~~**Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
    rest already declared by the resolver. The skeleton linkage exists; the
    per-DOF joint-angle read-out rides along with ROM (same decomposition).~~ —
@@ -277,7 +276,8 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    flagged `clinical: false` (relative-only, same wording as the resolver); a
    blocked joint is reported blocked with the missing node named, never
    fabricated. Angles are unwrapped before ROM so a sweep past ±180° reports its
-   true excursion. Wired into `analyze_session` as stage 5/5 (`metrics.json`).
+   true excursion. Wired into `analyze_session` as stage 4/5 (`metrics.json`),
+   ahead of render so the stage-7 review can bake the metrics panel.
    The remaining declared metrics now ship alongside ROM in the same tool: joint
    angular **velocity** (peak/mean/RMS) and **rep counting** (hysteretic midline
    crossings, calibration-free); segment **angular travel** + active-time

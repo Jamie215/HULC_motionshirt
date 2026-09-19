@@ -219,13 +219,11 @@
     <p class="eyebrow">HULC Motion Shirt · data pipeline</p>
     <h1>From node quaternions to range of motion</h1>
     <p class="lede">Seven stages turn raw orientation logs off each IMU node into
-      per-joint motion metrics. Four exist today; calibration is next; the metric
-      and interface layers are still on paper. Each handoff below names the tool
-      that runs it and the exact data it passes on.</p>
+      per-joint motion metrics. All seven exist today — capture through the review
+      interface. Each handoff below names the tool that runs it and the exact data
+      it passes on.</p>
     <div class="legend">
       <span><i class="dot built"></i> Built &amp; working</span>
-      <span><i class="dot next"></i> Next up</span>
-      <span><i class="dot planned"></i> Planned</span>
     </div>
   </header>
 
@@ -234,9 +232,9 @@
     <li class="b"><span class="gi">02</span><span class="gn">Offload</span></li>
     <li class="b"><span class="gi">03</span><span class="gn">Reconcile</span></li>
     <li class="b"><span class="gi">04</span><span class="gn">Montage &amp; resolve</span></li>
-    <li class="n"><span class="gi">05</span><span class="gn">Calibrate</span></li>
-    <li class="p"><span class="gi">06</span><span class="gn">Metrics</span></li>
-    <li class="p"><span class="gi">07</span><span class="gn">Interface</span></li>
+    <li class="b"><span class="gi">05</span><span class="gn">Calibrate</span></li>
+    <li class="b"><span class="gi">06</span><span class="gn">Metrics</span></li>
+    <li class="b"><span class="gi">07</span><span class="gn">Interface</span></li>
   </ol>
 
   <div class="pipe">
@@ -330,20 +328,19 @@
       <div class="datachip">a capability report: computable joints &amp; metrics, each with its trust gates</div>
     </div>
 
-    <div class="here"><span>You are here — calibration is the next build</span><span class="rule"></span></div>
-
     <!-- 5 -->
-    <div class="stage n">
+    <div class="stage b">
       <div class="rail"><div class="idx">05</div><div class="stem"></div></div>
       <div class="card">
-        <h3>Calibrate <span class="badge next">Next up</span></h3>
-        <p><b>Solve each sensor→segment mounting offset.</b> The mag-referenced
-          Rotation Vector already puts every node in a shared world frame, so the
+        <h3>Calibrate <span class="badge built">Built</span></h3>
+        <p><b>Solve each sensor→segment mounting offset.</b>
+          <span class="tool">calibrate_segments.py</span> uses the mag-referenced
+          Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
           <b>neutral / N-pose</b> solves that offset and sets the anatomical zero.
           Validity is <b>per-don</b> — re-wearing shifts the straps — so the
           result is <b>cached and verified</b>: reuse it if a quick still-pose
-          check passes, re-pose only when it drifts. Until it exists, every angle
+          check passes, re-pose only when it drifts. Without it, every angle
           is flagged <b>relative-only</b>. This gates ROM.</p>
         <div class="shape">
           <div class="lbl">emits · calibration.json (per segment)</div>
@@ -358,18 +355,24 @@ upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency
     </div>
 
     <!-- 6 -->
-    <div class="stage p">
+    <div class="stage b">
       <div class="rail"><div class="idx">06</div><div class="stem"></div></div>
       <div class="card">
-        <h3>Metric plugins <span class="badge planned">Planned</span></h3>
-        <p><b>Functions over the aligned + calibrated stream.</b> Each metric the
-          resolver declared becomes a small plugin: joint <b>angle series</b> and
-          <b>ROM</b>, movement <b>smoothness</b>, <b>activity asymmetry</b> (which
-          arm is used more), <b>posture dwell</b>, <b>rep count</b>. ROM is just the
-          first — the contract is already fixed, so adding one is filling in a
-          function, not reworking the pipeline. Every value ships with its quality
-          gates: <span class="mono">dropout</span>, <span class="mono">sync_confidence</span>,
-          <span class="mono">sensor_cal</span>.</p>
+        <h3>Metric plugins <span class="badge built">Built</span></h3>
+        <p><b>Functions over the aligned + calibrated stream.</b>
+          <span class="tool">metrics.py</span> computes every metric the resolver
+          declared for the montage: per-DOF joint <b>angle series</b> and
+          <b>ROM</b>, joint <b>velocity</b> and <b>rep count</b>, segment
+          <b>travel</b>, <b>elevation</b>, movement <b>smoothness</b> (SPARC) and
+          <b>posture dwell</b>, plus the derived tier — L/R <b>symmetry</b>,
+          <b>activity asymmetry</b> (which arm is used more), inter-joint
+          <b>coordination</b>, trunk <b>compensation</b>. Each value carries the
+          same honesty flag as the resolver: a joint without both nodes calibrated
+          reads <b>relative-only</b>, a blocked joint names its missing node.</p>
+        <div class="shape">
+          <div class="lbl">emits · metrics.json (per joint / segment / derived)</div>
+          <pre>elbow_r → flex_ext ROM 6.2…96.4° (range 90°),  peak 309°/s,  <span class="k">"clinical"</span>:true</pre>
+        </div>
       </div>
     </div>
     <div class="flow">
@@ -378,16 +381,25 @@ upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency
     </div>
 
     <!-- 7 -->
-    <div class="stage p">
+    <div class="stage b">
       <div class="rail"><div class="idx">07</div></div>
       <div class="card">
-        <h3>Interface &amp; visualization <span class="badge planned">Planned</span></h3>
-        <p><b>The thing all of this feeds.</b> Two modes: a <b>live</b> skeleton
-          driven by the quaternions to sanity-check placement before a capture, and
-          a <b>post-hoc</b> view — per-joint ROM arcs and angle traces, an
-          upper-extremity heatmap, left/right asymmetry, posture-dwell histograms.
-          Every value is rendered next to its confidence, so a low-trust number
-          never reads as a clean one.</p>
+        <h3>Interface &amp; visualization <span class="badge built">Built</span></h3>
+        <p><b>The thing all of this feeds.</b>
+          <span class="tool">floating_fbd.py</span> bakes the whole review into one
+          self-contained HTML page (no external scripts) — a hand-rolled 3-D body
+          you orbit, in two layouts: <b>floating</b> segments (orientation only) and
+          a connected <b>skeleton</b> by forward kinematics. A <b>raw↔calibrated</b>
+          toggle and jump-to-neutral let you <i>see</i> whether calibration worked
+          before trusting an angle. Beside it, a <b>metrics panel</b> reads out ROM,
+          velocity, reps and the derived tier. Every value keeps its honesty flag —
+          relative-only rows dim in raw view — so a low-trust number never reads as
+          a clean one. (Capture is offload-based, so this is post-hoc; there is no
+          live stream.)</p>
+        <div class="shape">
+          <div class="lbl">emits · one review page (open from file://)</div>
+          <pre>session.html — 3-D floating/skeleton viewer + metrics panel, self-contained</pre>
+        </div>
       </div>
     </div>
 
@@ -427,9 +439,10 @@ torso → <span class="no">absent</span></pre>
   </section>
 
   <footer>
-    Reference for the HULC Motion Shirt analysis pipeline · stages 1–4 in
-    <span class="mono">firmware/</span> and <span class="mono">tools/</span>,
-    stages 5–7 in design. Orientation-only by design — no endpoint position
-    without a separate forward-kinematics layer.
+    Reference for the HULC Motion Shirt analysis pipeline · all seven stages built,
+    in <span class="mono">firmware/</span> and <span class="mono">tools/</span>
+    (run the post-offload chain with <span class="mono">analyze_session.py</span>).
+    Orientation-only by design — no endpoint position without a separate
+    forward-kinematics layer.
   </footer>
 </div>
