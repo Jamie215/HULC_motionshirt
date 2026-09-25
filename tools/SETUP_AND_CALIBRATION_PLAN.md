@@ -220,8 +220,13 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   facing → a dashed "front?" arrow.
 > - **Forearm rotation** — limb boxes roll with the measured twist; forearm and
 >   hand are flat with a lighter palm face and a thumb nub, and a corner panel
->   reads the live pronation/supination angle (same math as `metrics.py`).
->   Playback runs at 1× / 2× / 5×.
+>   reads the live angles of every joint (same math as `metrics.py`, checked to
+>   within 0.005° per sample). Playback runs at 1× / 2× / 5×.
+> - **Trust at a glance** — header chips for calibration, front direction,
+>   sensor sync and data gaps (from reconcile's `aligned.quality.json`), with
+>   per-card warnings on joints / timing comparisons that depend on a low-sync or
+>   gappy sensor. Right side drawn warm, left cool; labels appear on hover or
+>   with the Labels toggle.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 

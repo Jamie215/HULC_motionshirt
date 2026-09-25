@@ -105,6 +105,7 @@ from calibrate_segments import (  # noqa: E402
 )
 from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
 from metrics import resolve_anatomical_frame  # noqa: E402
+from reconcile_nodes import quality_path  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
 IDENTITY_Q = [1.0, 0.0, 0.0, 0.0]
@@ -156,7 +157,7 @@ def _anat_chain():
 
 
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
-                metrics=None):
+                metrics=None, quality=None):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
@@ -167,6 +168,9 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     `metrics` (an optional metrics.py report dict) rides along in the scene so the
     stage-7 review panel reads out beside the 3-D body — one page, one payload. It
     holds only session SUMMARY stats (no per-frame arrays), so it stays compact.
+
+    `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
+    confidence and data loss, shown as header chips and per-card warnings.
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
     n = len(t_ms)
@@ -251,6 +255,15 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
         # highlight the two bones it spans in the 3-D view. Real body-model
         # adjacency (JOINTS), not a viewer guess.
         "joint_segments": {k: [j.proximal, j.distal] for k, j in JOINTS.items()},
+        # joint -> Euler sequence + DOF slots, so the viewer computes live angles
+        # with the same body model (and conventions) as metrics.py
+        "joint_defs": {k: {"proximal": j.proximal, "distal": j.distal,
+                           "seq": j.decomposition.split()[0],
+                           "dofs": [{"key": d.key, "seq_index": d.seq_index}
+                                    for d in j.dofs]}
+                       for k, j in JOINTS.items()},
+        # reconcile's sync / data-loss summary (or null for an older session)
+        "quality": quality,
         "segments": segments,
         "t_ms": [round(float(t), 1) for t in t_keep],
         "frames": frames,
@@ -294,8 +307,11 @@ def cmd_render(args):
     montage = load_montage(args.montage)
     calibration = _load_calibration(args.calibration) if args.calibration else None
     metrics = _load_json(args.metrics) if args.metrics else None
+    # the reconcile quality sidecar: given explicitly, or found next to the CSV
+    qpath = args.quality or quality_path(args.aligned_csv)
+    quality = _load_json(qpath) if os.path.exists(qpath) else None
     scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
-                        metrics=metrics)
+                        metrics=metrics, quality=quality)
     html = render_html(scene)
     # UTF-8 always: the page is <meta charset="utf-8"> and carries non-ASCII glyphs
     # (↔, °, ·, —). Without this, Python on Windows defaults to cp1252 and the
@@ -333,6 +349,14 @@ def cmd_render(args):
     else:
         print("[viewer] no metrics given — 3-D view only. Pass --metrics metrics.json "
               "for the stage-7 review panel.")
+    if quality:
+        low = [n["column"] for n in quality.get("nodes", [])
+               if not n.get("reference") and not n.get("sync_reliable", True)]
+        print(f"[viewer] sync / data-loss summary attached ({os.path.basename(qpath)})"
+              + (f" — LOW sync confidence: {', '.join(low)}" if low else ""))
+    else:
+        print("[viewer] no sync summary found (re-run reconcile_nodes.py to write "
+              "aligned.quality.json) — the page shows 'Sync not recorded'.")
     print(f"[viewer] open it in a browser: file://{os.path.abspath(args.out)}")
 
 
@@ -443,6 +467,11 @@ def selftest():
                                      float(t_ms[0]), float(t_ms[-1]),
                                      "synth.csv", facing_deg=30.0)
         scene_face = build_scene(csv, montage, cal_face, max_frames=50)
+        qual = {"schema_version": "1.0", "confidence_min": 0.4, "nodes": [
+            {"column": "n0", "reference": True, "sync_reliable": True},
+            {"column": "n1", "reference": False, "sync_confidence": 0.2,
+             "sync_reliable": False, "gap_frac": 0.0, "longest_gap_ms": 0.0}]}
+        scene_q = build_scene(csv, montage, cal, max_frames=50, quality=qual)
 
     ok = True
 
@@ -501,12 +530,20 @@ def selftest():
           "skeleton-only viewer with FRONT compass, Front/Side/Top views and "
           "facing-placed shoulders")
     check('data-speed="2"' in html and 'data-speed="5"' in html
-          and "acc+=dt*SPEED" in html and "function proSup" in html
+          and "acc+=dt*SPEED" in html and "function liveAngles" in html
           and len(scene_face["meta"]["anatomical_frame_quat"] or []) == 4
           # no confident facing -> no frame baked (readout stays blank)
           and (scene["meta"]["anatomical_frame_quat"] is None)
           == (not scene["meta"]["heading"]["confident"]),
-          "1×/2×/5× playback + live forearm rotation (anatomical frame baked)")
+          "1×/2×/5× playback + live joint angles (anatomical frame baked)")
+    jd = scene["joint_defs"]
+    check(jd["elbow_r"]["seq"] == "ZXY" and jd["shoulder_r"]["seq"] == "YXY"
+          and {d["key"] for d in jd["shoulder_r"]["dofs"]}
+          == {"plane_elev", "elevation", "axial_rot"}
+          and scene["quality"] is None
+          and scene_q["quality"]["nodes"][1]["sync_reliable"] is False
+          and 'id="labels"' in html and "function syncChips" in html,
+          "joint defs + sync/data-loss summary baked; labels toggle present")
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
@@ -579,6 +616,9 @@ def main():
     pr.add_argument("montage", help="montage JSON (column<->segment mapping)")
     pr.add_argument("--calibration", help="calibration.json from "
                     "calibrate_segments.py (enables raw<->calibrated toggle)")
+    pr.add_argument("--quality", help="sync / data-loss summary from "
+                    "reconcile_nodes.py (default: <aligned>.quality.json next to "
+                    "the CSV, if present)")
     pr.add_argument("--metrics", help="metrics.json from metrics.py (adds the "
                     "stage-7 review panel: ROM / velocity / reps / derived)")
     pr.add_argument("--out", default="skeleton.html",
@@ -640,6 +680,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     cursor:default}
   .chip.good{background:color-mix(in srgb,var(--built) 16%,transparent);color:var(--built)}
   .chip.warn{background:color-mix(in srgb,var(--planned) 18%,transparent);color:var(--planned)}
+  .chip.muted{background:color-mix(in srgb,var(--faint) 16%,transparent);color:var(--muted)}
   .sub{color:var(--muted);font-size:13.5px;margin-top:4px}
   main{flex:1;position:relative;min-height:0}
   #view{position:absolute;inset:0;display:block;width:100%;height:100%;
@@ -656,14 +697,16 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .sw{width:12px;height:12px;border-radius:3px;flex:none}
   .legrow .st{margin-left:auto;font-size:11px;color:var(--built)}
   .legrow .st.no{color:var(--planned)}
+  .legrow{cursor:default;border-radius:5px;margin:0 -4px;padding:2px 4px}
+  .legrow:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}
   .key{color:var(--muted);line-height:1.45}
   .key div{padding:1px 0}
   .key .dim{color:var(--faint);margin-top:4px}
   .live{margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid var(--line);
     font-size:13px}
-  .lv-row{display:flex;justify-content:space-between;gap:14px;padding:1px 0;
-    font-variant-numeric:tabular-nums}
-  .lv-row b{color:var(--accent-ink);font-weight:600}
+  .lv-j{padding:3px 0}
+  .lv-j .n{color:var(--muted);font-size:12px}
+  .lv-j .v{font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent-ink)}
   .lv-na{color:var(--faint)}
   .lv-why{color:var(--faint);font-size:11px;margin-top:3px}
   footer{border-top:1px solid var(--line);background:var(--surface);
@@ -678,6 +721,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     overflow:hidden}
   .toggle button{border:none;border-radius:0;padding:7px 12px}
   .toggle button.on{background:var(--accent);color:#fff}
+  #labels.on{background:var(--accent);border-color:var(--accent);color:#fff}
   input[type=range]{flex:1;min-width:160px;accent-color:var(--accent)}
   .tlabel{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;
     min-width:150px;text-align:right}
@@ -744,6 +788,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <div>Dark dot on the hand = thumb</div>
       <div>Dashed limb = no sensor there</div>
       <div>Orange dashed = sensor not calibrated</div>
+      <div>Hover a sensor or a metric to highlight it</div>
       <div class="dim">Drag to rotate &middot; scroll to zoom</div>
     </div>
   </div>
@@ -765,6 +810,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <button data-mode="raw">Raw</button>
     <button data-mode="cal">Calibrated</button>
   </div>
+  <button id="labels" title="Show the name of every body part">Labels</button>
   <button id="neutral">Go to neutral pose</button>
   <input type="range" id="scrub" min="0" max="0" value="0" step="1">
   <div class="tlabel mono" id="tlabel">0 ms</div>
@@ -797,14 +843,17 @@ const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
 const NECK       = 0.052*STAT;
 
 // Per-segment colour. The skeleton's lengths / thicknesses live in ANAT below.
+// Right side = warm (reds / oranges), left side = cool (blues), darkest at the
+// shoulder and lightest at the hand, trunk a neutral slate — so a glance tells
+// the sides apart and the order along each arm.
 const SEG = {
-  torso:       {color:[59,130,196]},
-  upper_arm_r: {color:[228,87,46]},
-  upper_arm_l: {color:[242,165,65]},
-  forearm_r:   {color:[23,163,152]},
-  forearm_l:   {color:[124,181,24]},
-  hand_r:      {color:[111,75,216]},
-  hand_l:      {color:[214,84,155]},
+  torso:       {color:[112,124,140]},
+  upper_arm_r: {color:[196,52,40]},
+  forearm_r:   {color:[232,112,40]},
+  hand_r:      {color:[240,170,50]},
+  upper_arm_l: {color:[30,82,170]},
+  forearm_l:   {color:[48,138,214]},
+  hand_l:      {color:[110,190,236]},
 };
 // Plain-language names for sensors / joints / movements (display only).
 const NAMES={torso:'Trunk', upper_arm_r:'Right upper arm', upper_arm_l:'Left upper arm',
@@ -818,7 +867,7 @@ const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
 // segments the metrics panel is hovering — brightened in the scene so a
 // joint/segment row visibly points at the bone(s) it measures.
-let HILITE = new Set();
+let HILITE = new Set(), SHOW_LABELS = false;
 const hlBoost = (seg,c) => HILITE.has(seg)
   ? [Math.min(255,c[0]*1.28+34),Math.min(255,c[1]*1.28+34),Math.min(255,c[2]*1.28+34)]
   : c;
@@ -987,42 +1036,71 @@ function fkPose(){
   return {pos, ghosts, shoulder};
 }
 
-// ---- live forearm pronation (+) / supination (-), degrees ----
-// Exactly metrics.py's chain: q_rel = conj(q_UA) ⊗ q_FA re-expressed in the
-// anatomical frame, mirrored for the left arm, ZXY slot 2 = atan2(-R20, R22).
-// Only in the calibrated view with a known front; null otherwise (or near the
-// ZXY pole, where the angle is undefined).
-const QWA=DATA.meta.anatomical_frame_quat;
+// ---- live joint angles (degrees), the same chain as metrics.py ----
+// q_rel = conj(q_prox) ⊗ q_dist re-expressed in the baked anatomical frame,
+// mirrored for the left side, split in the joint's sequence (ZXY elbow/wrist,
+// YXY shoulder read clinically: plane+180°, elevation, plane+axial). A slot near
+// its singularity reads null. Calibrated view with a known front only.
+const QWA=DATA.meta.anatomical_frame_quat, JDEF=DATA.joint_defs||{};
 const qconj=q=>[q[0],-q[1],-q[2],-q[3]];
-function proSup(side){
-  if(mode!=='cal'||!QWA) return null;
-  const ua='upper_arm_'+side, fa='forearm_'+side;
-  if(!present.has(ua)||!present.has(fa)) return null;
-  const B=s=>bodies.find(b=>b.seg===s);
-  const bu=B(ua), bf=B(fa); if(!bu.calibrated||!bf.calibrated) return null;
-  let q=qmul(qmul(qconj(QWA), qmul(qconj(segQuat(bu,frame)),segQuat(bf,frame))), QWA);
-  if(side==='l') q=[q[0],-q[1],-q[2],q[3]];
-  const [w,x,y,z]=q, R20=2*(x*z-w*y), R21=2*(y*z+w*x), R22=1-2*(x*x+y*y);
-  if(Math.sqrt(Math.max(0,1-R21*R21))<Math.sin(10*Math.PI/180)) return null;
-  return Math.atan2(-R20,R22)*180/Math.PI;
+const D2R=Math.PI/180, GUARD=Math.sin(10*D2R);
+const wrapPi=a=>Math.PI-((((Math.PI-a)%(2*Math.PI))+2*Math.PI)%(2*Math.PI));
+const bodyOf=seg=>bodies.find(b=>b.seg===seg);
+function rotm(q){
+  const n=Math.hypot(q[0],q[1],q[2],q[3])||1, [w,x,y,z]=q.map(v=>v/n);
+  return [[1-2*(y*y+z*z),2*(x*y-w*z),2*(x*z+w*y)],
+          [2*(x*y+w*z),1-2*(x*x+z*z),2*(y*z-w*x)],
+          [2*(x*z-w*y),2*(y*z+w*x),1-2*(x*x+y*y)]];
 }
+function liveAngles(jk){
+  const J=JDEF[jk]; if(!J||mode!=='cal'||!QWA) return null;
+  const bp=bodyOf(J.proximal), bd=bodyOf(J.distal);
+  if(!bp||!bd||!bp.calibrated||!bd.calibrated) return null;
+  let q=qmul(qmul(qconj(QWA), qmul(qconj(segQuat(bp,frame)),segQuat(bd,frame))), QWA);
+  if(J.distal.endsWith('_l')) q=[q[0],-q[1],-q[2],q[3]];
+  const R=rotm(q), cl=v=>Math.max(-1,Math.min(1,v));
+  let a, ok;
+  if(J.seq==='ZXY'){
+    const b=Math.asin(cl(R[2][1]));
+    a=[Math.atan2(-R[0][1],R[1][1]), b, Math.atan2(-R[2][0],R[2][2])];
+    const w=Math.abs(Math.cos(b))>=GUARD; ok=[w,true,w];
+  } else if(J.seq==='YXY'){
+    const b=Math.acos(cl(R[1][1]));
+    let al=Math.atan2(R[0][1],R[2][1]), ga=Math.atan2(R[1][0],-R[1][2]);
+    if(Math.abs(Math.sin(b))<1e-6){ al=Math.atan2(-R[2][0],R[0][0]); ga=0; }
+    a=[wrapPi(al+Math.PI), b, wrapPi(al+ga)];
+    ok=[Math.abs(Math.sin(b))>=GUARD, true, b<=Math.PI-10*D2R];
+  } else return null;
+  const out={};
+  for(const d of J.dofs) out[d.key]=ok[d.seq_index]?a[d.seq_index]/D2R:null;
+  return out;
+}
+// kept for existing callers: the forearm's pronation (+) / supination (-)
+function proSup(side){ const a=liveAngles('elbow_'+side); return a?a.pro_sup:null; }
 
-// live readout panel (corner of the scene): current forearm rotation per side
+// live readout box: every joint whose two sensors are placed, right side first
 const liveEl=document.getElementById('live');
+const LIVE_ORDER=['shoulder_r','elbow_r','wrist_r','shoulder_l','elbow_l','wrist_l'];
+const LIVE_FMT={elevation:v=>`${Math.round(v)}° raise`,
+                plane_elev:v=>`direction ${Math.round(v)}°`};
+function fmtLive(key,v){
+  if(v==null) return null;
+  if(LIVE_FMT[key]) return LIVE_FMT[key](v);
+  const info=DOF_INFO[key]; if(!info||!info.pos) return `${Math.round(v)}°`;
+  return Math.abs(v)<0.5?`0° ${info.pos}`:`${Math.round(Math.abs(v))}° ${v>0?info.pos:info.neg}`;
+}
 function updateLive(){
-  const rows=[];
-  for(const [side,name] of [['r','Right'],['l','Left']]){
-    if(!present.has('forearm_'+side)) continue;
-    const ps=proSup(side);
-    const txt=ps==null ? '<span class="lv-na">—</span>'
-      : Math.abs(ps)<3 ? 'neutral'
-      : `<b>${ps>0?'pronation':'supination'}</b> ${Math.abs(ps).toFixed(0)}°`;
-    rows.push(`<div class="lv-row"><span>${name} forearm</span><span>${txt}</span></div>`);
-  }
-  const why=mode!=='cal'?'switch to Calibrated to read it':!QWA?'needs the front direction':'';
-  liveEl.hidden=!rows.length;
-  liveEl.innerHTML=`<h2>Forearm rotation</h2>${rows.join('')}`+
-    (why?`<div class="lv-why">${why}</div>`:'');
+  const joints=LIVE_ORDER.filter(k=>JDEF[k]&&present.has(JDEF[k].proximal)&&present.has(JDEF[k].distal));
+  liveEl.hidden=!joints.length; if(!joints.length) return;
+  const why=mode!=='cal'?'Switch to Calibrated to read the angles.'
+          :!QWA?'Needs the front direction (see the header).':'';
+  const rows=why?'':joints.map(k=>{
+    const a=liveAngles(k);
+    const vals=a?JDEF[k].dofs.map(d=>fmtLive(d.key,a[d.key])).filter(Boolean):[];
+    return `<div class="lv-j"><div class="n">${nameOf(k)}</div>`+
+      `<div class="v">${vals.length?vals.join(' · '):'<span class="lv-na">—</span>'}</div></div>`;
+  }).join('');
+  liveEl.innerHTML=`<h2>Live angles</h2>${rows}`+(why?`<div class="lv-why">${why}</div>`:'');
 }
 
 // ---- the renderer ----
@@ -1229,13 +1307,14 @@ function renderSkeleton(){
   // "· raw"); ghosts at their midpoint, faint and flagged "no node". The torso
   // trapezoid is self-evident, so it goes unlabelled.
   for(const b of bodies){
-    if(b.seg==='torso') continue;
+    if(b.seg==='torso' || !(SHOW_LABELS || HILITE.has(b.seg))) continue;
     const raw=!b.calibrated;
     label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)),
           raw?shortOf(b.seg)+' · not calibrated':shortOf(b.seg),
           raw?rgb([204,120,20]):undefined);
   }
   for(const g of ghosts){
+    if(!SHOW_LABELS) continue;
     const mid=scl(add(g.prox,g.dist),0.5);
     label([mid[0],mid[1],mid[2]+0.05], shortOf(g.seg)+' · no sensor', cssVar('--faint'));
   }
@@ -1330,6 +1409,10 @@ const FACING=FRONT_KNOWN
   : HEADING.source==='torso_auto'
     ? 'The chest sensor could not tell which way the person faced, so the FRONT arrow is a guess.'
     : 'No chest sensor, so the FRONT arrow is a guess. Enter the facing at calibration to fix this.';
+const labelsBtn=document.getElementById('labels');
+labelsBtn.addEventListener('click',()=>{
+  SHOW_LABELS=!SHOW_LABELS; labelsBtn.classList.toggle('on',SHOW_LABELS);
+});
 const speedBox=document.getElementById('speed');
 speedBox.addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
@@ -1356,12 +1439,25 @@ neutralBtn.addEventListener('click',()=>{
 
 // legend: one row per sensor, with its calibration state
 const leg=document.getElementById('legend');
+// ---- sync / data-loss quality (reconcile sidecar), per sensor ----
+const QUAL=DATA.quality;
+const qualOf=seg=>{
+  if(!QUAL) return null;
+  const s=DATA.segments.find(x=>x.segment===seg); if(!s) return null;
+  return (QUAL.nodes||[]).find(n=>n.column===s.column)||null;
+};
+const lowSync=seg=>{const q=qualOf(seg); return !!(q&&!q.reference&&q.sync_reliable===false);};
+const hasGaps=seg=>{const q=qualOf(seg); return !!(q&&(q.gap_frac>0.01||q.longest_gap_ms>=500));};
 for(const s of DATA.segments){
   const g=SEG[s.segment]||{color:[136,136,136]};
   const row=document.createElement('div'); row.className='legrow';
+  const issues=[lowSync(s.segment)?'low sync':'', hasGaps(s.segment)?'data gaps':''].filter(Boolean);
+  const bad=!s.calibrated||issues.length;
+  const st=[s.calibrated?'calibrated':'not calibrated',...issues].join(' · ');
   row.innerHTML=`<span class="sw" style="background:${rgb(g.color)}"></span>`+
-    `<span>${nameOf(s.segment)}</span>`+
-    `<span class="st${s.calibrated?'':' no'}">${s.calibrated?'calibrated':'not calibrated'}</span>`;
+    `<span>${nameOf(s.segment)}</span><span class="st${bad?' no':''}">${st}</span>`;
+  row.addEventListener('mouseenter',()=>{HILITE=new Set([s.segment]);});
+  row.addEventListener('mouseleave',()=>{HILITE=new Set();});
   leg.appendChild(row);
 }
 // header: who / what / how long, plus two status chips
@@ -1379,7 +1475,31 @@ document.getElementById('chips').innerHTML=
     : ncal
       ? chip('warn',`${ncal} of ${DATA.segments.length} calibrated`,'Some sensors were not calibrated; their angles are relative only.')
       : chip('warn','Not calibrated','No calibration: angles are relative only.'))+
-  chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING);
+  chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING)+
+  syncChips();
+// Sync: did every sensor's clock line up with the first one (enough shared
+// motion)? Data gaps: stretches where a sensor recorded nothing.
+function syncChips(){
+  if(DATA.segments.length<2) return '';
+  if(!QUAL) return chip('muted','Sync not recorded',
+    'This session was reconciled before sync quality was saved. Re-run the pipeline to record it.');
+  const per=DATA.segments.map(s=>({s, q:qualOf(s.segment)})).filter(x=>x.q);
+  const conf=per.filter(x=>!x.q.reference).map(x=>
+    `${nameOf(x.s.segment)}: ${x.q.sync_confidence==null?'—':x.q.sync_confidence.toFixed(2)}`).join('\n');
+  const low=per.filter(x=>lowSync(x.s.segment)).map(x=>nameOf(x.s.segment));
+  const gaps=per.filter(x=>hasGaps(x.s.segment));
+  let out=low.length
+    ? chip('warn',`Sync low: ${low.join(', ')}`,
+        `These sensors shared too little motion with the first sensor to line up their clocks reliably, so timing-based results (joint timing, fast-movement angles) may be off. Add a shared movement at the start of the session.\n\nSync confidence (need ${QUAL.confidence_min}):\n${conf}`)
+    : chip('good','Sensors in sync',`Every sensor's clock lined up with the first one.\n\nSync confidence:\n${conf}`);
+  if(gaps.length){
+    const worst=gaps.reduce((a,b)=>b.q.gap_frac>a.q.gap_frac?b:a);
+    out+=chip('warn',`Data gaps: ${gaps.map(x=>nameOf(x.s.segment)).join(', ')}`,
+      gaps.map(x=>`${nameOf(x.s.segment)}: ${(x.q.gap_frac*100).toFixed(1)}% missing, longest ${(x.q.longest_gap_ms/1000).toFixed(1)} s`).join('\n')+
+      `\n\nMissing stretches are filled by interpolation, so movement inside them is not measured.`);
+  }
+  return out;
+}
 
 // ---- session metrics panel (built from the baked metrics.json) ----
 // Plain-language session summary beside the 3-D body. Only what was actually
@@ -1427,8 +1547,12 @@ function jointCard(j){
   const rows=dofs.map(d=>{
     const info=DOF_INFO[d.key]||{name:d.name};
     const range=`${r0(d.rom.range_deg)}°`;
-    const span=rel ? `from ${r0(d.rom.min_deg)}° to ${r0(d.rom.max_deg)}°`
-                   : `from ${signed(d.rom.min_deg,info)} to ${signed(d.rom.max_deg,info)}`;
+    // metrics unwraps angles (so a sweep past ±180° stays continuous), which can
+    // leave the whole span offset by a multiple of 360°; shift it back so its
+    // middle reads within -180…180° (the range itself is unchanged)
+    const k=Math.round(d.rom.median_deg/360)*360, lo=d.rom.min_deg-k, hi=d.rom.max_deg-k;
+    const span=rel ? `from ${r0(lo)}° to ${r0(hi)}°`
+                   : `from ${signed(lo,info)} to ${signed(hi,info)}`;
     const bits=[span];
     if(d.velocity&&d.velocity.peak_deg_s) bits.push(`fastest ${r0(d.velocity.peak_deg_s)}°/s`);
     if(info.note) bits.push(info.note);
@@ -1440,10 +1564,15 @@ function jointCard(j){
   }).join('');
   const reps=(j.reps&&j.reps.count)?`<span class="tag info">${j.reps.count} rep${j.reps.count===1?'':'s'}</span>`:'';
   const tag=rel?`<span class="tag rel" title="Angles are relative to the start pose, not the body: ${relReason()}.">relative only</span>`:'';
+  const segs=(DATA.joint_segments||{})[j.key]||[];
+  const syncNote=segs.some(lowSync)
+    ?`<div class="mnote">Sensor timing uncertain (low sync) — angles during fast movement may be off.</div>`:'';
+  const gapNote=segs.some(hasGaps)
+    ?`<div class="mnote">A sensor here has data gaps — movement inside them is not measured.</div>`:'';
   return `<div class="mcard" data-i="${ROWS.push({kind:'joint',data:j})-1}">`+
     `<div class="mhead"><span class="mname">${esc(nameOf(j.key))}</span>${tag}${reps}</div>`+
     rows+(rel?`<div class="mnote">Relative only (${relReason()}): ranges are right, but zero is the start pose rather than the anatomical position.</div>`:'')+
-    `</div>`;
+    syncNote+gapNote+`</div>`;
 }
 function segCard(sg){
   const rows=[];
@@ -1495,8 +1624,16 @@ function derivedCard(dv){
   }
   if(!rows.length) return '';
   const tag=rel?`<span class="tag rel">relative only</span>`:'';
+  // timing comparisons depend on the sensors' clocks lining up
+  let note='';
+  if(t.startsWith('coordination_')){
+    const segs=new Set(); for(const jk of (M.pair||dv.requires||[]))
+      for(const sg of (DATA.joint_segments||{})[jk]||[]) segs.add(sg);
+    const low=[...segs].filter(lowSync).map(nameOf);
+    if(low.length) note=`<div class="mnote">Timing may be off: the clock of ${low.join(', ')} didn't line up reliably (low sync).</div>`;
+  }
   return `<div class="mcard${rel?' clin-gated':''}" data-i="${ROWS.push({kind:'derived',data:dv})-1}">`+
-    `<div class="mhead"><span class="mname">${esc(title)}</span>${tag}</div>${rows.join('')}</div>`;
+    `<div class="mhead"><span class="mname">${esc(title)}</span>${tag}</div>${rows.join('')}${note}</div>`;
 }
 const ROWS=[];         // index -> {kind,data}, so a hovered card knows its segments
 const MET=DATA.metrics, metricsEl=document.getElementById('metrics'),

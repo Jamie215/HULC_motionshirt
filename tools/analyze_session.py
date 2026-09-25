@@ -163,6 +163,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
          "4/5 metrics (per-DOF joint angles + range of motion)")
 
     # 5. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
+    #    (it also picks up reconcile's aligned.quality.json for the sync chips)
     _run([py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
           montage_path, "--calibration", calib, "--metrics", metrics,
           "--out", out_html],
@@ -263,6 +264,11 @@ def selftest():
         ok = ok and fused
         check(fused, "stage-7 page fuses the 3-D scene + a metrics panel, "
               "self-contained")
+        # reconcile's sync / data-loss sidecar reaches the page (sync chips)
+        qual = (os.path.exists(os.path.join(tmp, "aligned.quality.json"))
+                and '"quality":{"schema_version"' in html)
+        ok = ok and qual
+        check(qual, "reconcile's sync / data-loss summary is baked into the page")
     except SystemExit as e:
         ok = False; check(False, f"end-to-end run failed: {e}")
 
