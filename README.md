@@ -119,7 +119,7 @@ number a placement can't support.
 | 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from a short neutral pose, with a cache-and-verify contract so re-donning is cheap → `calibration.json` |
 | 6 Metrics | `metrics.py` | Per-DOF joint angles → range of motion, angular velocity, reps, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
 | 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views |
-| (optional) OpenSense | `opensense_ik.py` | The same session solved on OpenSim's Rajagopal model (IMUPlacer + IMU IK), reported through the same metrics + viewer — a cross-check with a per-frame fit residual. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
+| (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
 
 `analyze_session.py` orchestrates stages 3–7 in one command, binding each log
 to its segment automatically from the montage.
@@ -165,8 +165,8 @@ python tools/multinode_test.py selftest
 - [`pipeline_walkthrough.html`](tools/pipeline_walkthrough.html) — the whole
   pipeline at a glance.
 - [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) — default chain vs
-  OpenSense on synthetic ground truth and a real capture (why the default
-  stays primary); [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)
+  OpenSense (two models) on synthetic ground truth and a real capture, with a
+  draft methods paragraph; [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)
   — what OpenSense can and cannot recover for each montage.
 - `montage.example.json` — a filled-in montage to copy.
 
