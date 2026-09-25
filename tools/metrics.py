@@ -473,6 +473,50 @@ def cross_correlation(a, b, fs):
             "lag_s": round(float(-lags[k] / fs), 3) if fs > 0 else 0.0}
 
 
+def mirror_left(q):
+    """Mirror a left-side anatomical rotation into its right-side equivalent.
+
+    Both sides share one anatomical frame (X anterior, Y superior, Z right), so
+    the same clinical movement is a mirror-image rotation on the left: flexion
+    (about Z) matches, but abduction (about X) and axial rotation (about Y) flip
+    sign. Reflecting through the sagittal plane (Z -> -Z) maps a rotation's
+    quaternion [w,x,y,z] -> [w,-x,-y,z], after which a left joint decomposes
+    exactly like a right one and every DOF reads with the same clinical sign.
+    """
+    return q * np.array([1.0, -1.0, -1.0, 1.0])
+
+
+def _wrap_pi(a):
+    """Wrap angle(s) in radians to (-π, π]."""
+    return np.pi - np.mod(np.pi - a, 2.0 * np.pi)
+
+
+def _shoulder_clinical(euler, guard):
+    """Map a raw YXY split onto the clinical shoulder reading.
+
+    Raw slots (α, β, γ) with β = arccos ∈ [0, π]. Returned slots:
+      plane of elevation = α + π   ISB's negative-elevation branch of the same
+                                   rotation (Ry(α)Rx(β)Ry(γ) = Ry(α+π)Rx(−β)Ry(γ+π)),
+                                   so 0° = abduction (frontal plane), +90° =
+                                   forward flexion, −90° = extension; elevation
+                                   stays reported as the positive magnitude β.
+      elevation          = β
+      axial rotation     = α + γ   true humeral rotation, internal positive. ISB's
+                                   own third angle trades with the plane (at a
+                                   90° plane, zero twist reads −90°); the sum
+                                   does not, and it is exactly the part that
+                                   stays defined with the arm at the side.
+    Validity: plane is undefined at both poles (arm at the side, arm overhead);
+    axial rotation only overhead (β ≈ π, where the sum is the ill-defined part).
+    """
+    alpha, beta, gamma = euler[:, 0], euler[:, 1], euler[:, 2]
+    out = np.stack([_wrap_pi(alpha + np.pi), beta, _wrap_pi(alpha + gamma)], axis=-1)
+    plane_ok = np.abs(np.sin(beta)) >= np.sin(guard)
+    axial_ok = beta <= np.pi - guard
+    return (out, (plane_ok, np.ones_like(plane_ok), axial_ok),
+            ("arm at the side / overhead", "", "arm overhead"))
+
+
 # ---------------------------------------------------------------------------
 # Joint-level metrics (two adjacent nodes)
 # ---------------------------------------------------------------------------
@@ -492,24 +536,28 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
     q_rel = qnorm(qmul(qconj(q_prox), q_dist))
     if q_wa is not None:
         q_rel = qnorm(qmul(qmul(qconj(q_wa), q_rel), q_wa))
+        if joint.distal.endswith("_l"):
+            q_rel = mirror_left(q_rel)
     sequence = joint.decomposition.split()[0]
     euler = euler_from_quat(q_rel, sequence)          # (N,3) radians, slot order
-
-    # Middle angle governs the singularity: proper Euler (e.g. YXY) is singular at
-    # middle≈0/π (|sin|→0); Tait-Bryan (e.g. ZXY) at middle≈±90° (|cos|→0).
-    proper = sequence[0] == sequence[2]
-    mid = euler[:, 1]
-    sing = np.abs(np.sin(mid)) if proper else np.abs(np.cos(mid))
-    well_defined = sing >= np.sin(np.radians(SINGULARITY_GUARD_DEG))
+    guard = np.radians(SINGULARITY_GUARD_DEG)
+    if sequence == "YXY":
+        euler, slot_ok, slot_pole = _shoulder_clinical(euler, guard)
+    else:
+        # Tait-Bryan (e.g. ZXY): singular at middle ≈ ±90° (|cos| -> 0), where
+        # the two outer angles lose their meaning; the middle one never does.
+        well = np.abs(np.cos(euler[:, 1])) >= np.sin(guard)
+        slot_ok = (well, np.ones_like(well), well)
+        slot_pole = ("±90°", "", "±90°")
 
     dofs, series = [], {}
     for d in joint.dofs:
         # Unwrap in radians (removes the ±π sawtooth) THEN convert, so a real sweep
         # past the wrap point stays continuous and ROM is the true excursion.
         ang = np.degrees(np.unwrap(euler[:, d.seq_index]))
-        outer = d.seq_index != 1        # the middle slot is never singular
+        well_defined = slot_ok[d.seq_index]
         entry = {"key": d.key, "name": d.name, "plane": d.plane}
-        if outer and not well_defined.all():
+        if not well_defined.all():
             # Only trust this DOF where the split is well-conditioned.
             defined_frac = float(well_defined.mean())
             if well_defined.sum() >= 2:
@@ -522,7 +570,7 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
             entry["defined_frac"] = round(defined_frac, 3)
             entry["singularity_note"] = (
                 f"undefined within {SINGULARITY_GUARD_DEG:.0f}° of the {sequence} "
-                f"singularity ({'neutral/overhead' if proper else '±90°'}); "
+                f"singularity ({slot_pole[d.seq_index]}); "
                 f"reported over the {defined_frac * 100:.0f}% of samples where it "
                 f"is well-conditioned")
             series[d.key] = np.where(well_defined, ang, np.nan)
@@ -1097,9 +1145,8 @@ def selftest():
              for s, c in (("torso", "n0"), ("upper_arm_r", "n1"))}
     label_ok, label_msg = True, []
     for move, axis, plane_ok in (
-            ("flexion", [0, 0, 1], lambda p: abs(abs(p) - 90.0) < 0.5),
-            ("abduction", [-1, 0, 0],
-             lambda p: min(abs(p), abs(abs(p) - 180.0)) < 0.5)):
+            ("flexion", [0, 0, 1], lambda p: abs(p - 90.0) < 0.5),
+            ("abduction", [-1, 0, 0], lambda p: abs(p) < 0.5)):
         q_wa_l = anatomical_frame_quat(120.0)
         lq = {"torso": _to_world(np.tile(IDENTITY, (nl, 1)), q_wa_l),
               "upper_arm_r": _to_world(
@@ -1117,6 +1164,62 @@ def selftest():
     ok = ok and label_ok
     print(f"[selftest] shoulder labels: {'; '.join(label_msg)}; primary=elevation "
           f"{'OK' if label_ok else 'FAIL'}")
+
+    # (6c) Sign conventions, both sides. Each clinical movement is built for the
+    #      RIGHT arm in anatomical axes; the same movement on the LEFT arm is its
+    #      mirror image through the sagittal plane. Both sides must read the same
+    #      value with the same sign:
+    #        elbow   flexion +, pronation +        wrist  flexion +, ulnar dev +
+    #        shoulder plane 0° = abduction, +90° = flexion; elevation +;
+    #                 axial rotation internal +, independent of the plane.
+    A = lambda ax, deg: _q_axis(ax, np.radians(deg))          # noqa: E731
+    Rx_abd, Rz_flex, Ry_int = [-1, 0, 0], [0, 0, 1], [0, 1, 0]
+    ident = IDENTITY
+    # (case, shoulder S, elbow E, wrist W, {dof path: expected deg})
+    cases = [
+        ("elbow flex 60", ident, A(Rz_flex, 60), ident, {("elbow", "flex_ext"): 60}),
+        ("pronation 40", ident, A(Ry_int, 40), ident, {("elbow", "pro_sup"): 40}),
+        ("wrist flex 30", ident, ident, A(Rz_flex, 30), {("wrist", "flex_ext"): 30}),
+        ("ulnar dev 20", ident, ident, A([1, 0, 0], 20), {("wrist", "rad_uln"): 20}),
+        ("sh flex 60", A(Rz_flex, 60), ident, ident,
+         {("shoulder", "plane_elev"): 90, ("shoulder", "elevation"): 60}),
+        ("sh abd 60", A(Rx_abd, 60), ident, ident,
+         {("shoulder", "plane_elev"): 0, ("shoulder", "elevation"): 60}),
+        ("sh abd 60 + IR 20", qmul(A(Rx_abd, 60), A(Ry_int, 20)), ident, ident,
+         {("shoulder", "axial_rot"): 20}),
+        ("sh flex 60 + IR 20", qmul(A(Rz_flex, 60), A(Ry_int, 20)), ident, ident,
+         {("shoulder", "axial_rot"): 20}),
+        ("sh ER 30 at side", A(Ry_int, -30), ident, ident,
+         {("shoulder", "axial_rot"): -30}),
+    ]
+    nc = 10
+    tc = np.arange(nc) * 20.0
+    csegs = ["torso", "upper_arm_r", "forearm_r", "hand_r",
+             "upper_arm_l", "forearm_l", "hand_l"]
+    cmont = {"schema_version": "1.0", "subject": {"id": "S"},
+             "session": {"id": "signs"}, "calibration": {"captured": True},
+             "nodes": [{"node_id": sg, "column": f"n{i}", "segment": sg,
+                        "calibrated": True} for i, sg in enumerate(csegs)]}
+    cmeta = {sg: {"column": f"n{i}", "node_id": sg} for i, sg in enumerate(csegs)}
+    q_wa_c = anatomical_frame_quat(-35.0)
+    sign_ok, bad = True, []
+    for name, S, E, W, want in cases:
+        ua = S; fa = qmul(ua, E); ha = qmul(fa, W)
+        anat = {"torso": IDENTITY, "upper_arm_r": ua, "forearm_r": fa, "hand_r": ha,
+                "upper_arm_l": mirror_left(ua), "forearm_l": mirror_left(fa),
+                "hand_l": mirror_left(ha)}
+        cq = {sg: _to_world(np.tile(q, (nc, 1)), q_wa_c) for sg, q in anat.items()}
+        crep = compute_metrics(cmont, tc, cq, cmeta, _frame_cal(cq, -35.0))
+        byj = {j["key"]: {d["key"]: d for d in j["dofs"]} for j in crep["joints"]}
+        for (jb, dk), v in want.items():
+            for side in ("r", "l"):
+                got = byj[f"{jb}_{side}"][dk]["rom"]["median_deg"]
+                if abs(got - v) > 0.5:
+                    sign_ok = False
+                    bad.append(f"{name} {jb}_{side}.{dk}={got} (want {v})")
+    ok = ok and sign_ok
+    print(f"[selftest] sign conventions, right AND left, {len(cases)} movements: "
+          f"{'OK' if sign_ok else 'FAIL ' + '; '.join(bad)}")
 
     # (7) Singularity guard: a shoulder oscillating in the frontal plane THROUGH
     #     the neutral pole would, unguarded, report a spurious ~180° plane-of-
@@ -1144,14 +1247,18 @@ def selftest():
     sh = next(j for j in srep["joints"] if j["key"] == "shoulder_r")
     flex_sh = next(d for d in sh["dofs"] if d["key"] == "plane_elev")  # outer slot
     elev_sh = next(d for d in sh["dofs"] if d["key"] == "elevation")   # middle slot
+    axial_sh = next(d for d in sh["dofs"] if d["key"] == "axial_rot")
     guard_ok = (flex_sh.get("defined_frac", 1.0) < 1.0            # outer flagged
                 and "defined_frac" not in elev_sh                # middle untouched
+                # axial rotation stays defined at the side (no twist -> ~0 range)
+                and "defined_frac" not in axial_sh
+                and axial_sh["rom"]["range_deg"] < 0.5
                 and (flex_sh["rom"] is None
                      or flex_sh["velocity"]["peak_deg_s"] < 2000))  # no ∞ velocity
     ok = ok and guard_ok
     print(f"[selftest] shoulder singularity guard: plane_elev defined "
-          f"{flex_sh.get('defined_frac')} (outer, flagged), elevation full "
-          f"(middle), peak vel physical {'OK' if guard_ok else 'FAIL'}")
+          f"{flex_sh.get('defined_frac')} (flagged), elevation + axial_rot full, "
+          f"peak vel physical {'OK' if guard_ok else 'FAIL'}")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — Euler round-trip, injected "
           f"ROM recovery at any facing, anatomical-axis + calibration gating, wrap handling, metric primitives "

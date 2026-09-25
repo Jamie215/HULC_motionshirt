@@ -67,7 +67,7 @@ axes, so once the facing is known we also emit the anatomical frame at neutral:
 
     X = anterior (the subject's forward), Y = superior (up, along a hanging
     limb), Z = X × Y = the subject's right  (right-handed; one frame for both
-    sides, so left-side abduction / axial-rotation signs are mirrored)
+    sides — metrics.py mirrors left joints so their signs match the right)
 
 as `q_WA` (world-from-anatomical). Because every calibrated segment is identity
 at neutral, each segment's anatomical frame is q_seg ⊗ q_WA, and a joint's

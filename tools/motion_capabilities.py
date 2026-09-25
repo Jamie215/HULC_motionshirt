@@ -210,13 +210,14 @@ JOINTS = {
         key="shoulder_r", name="Right shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_r",
         dofs=(
-            # ISB YXY names: the first angle is the DIRECTION the arm is raised
-            # in, the second HOW FAR it is raised in that plane (always >= 0),
-            # the third the twist about the humerus. With elevation kept
-            # positive, a forward raise reads plane -90° on both sides; a
-            # sideways raise reads ±180° (right) / 0° (left) — 180° off the
-            # clinical "0° = abduction, 90° = flexion" reading. The first and
-            # third are undefined with the arm at the side (singularity guard).
+            # ISB YXY names, read clinically by metrics._shoulder_clinical (same
+            # on both sides — left joints are mirrored first):
+            #   plane of elevation — DIRECTION of the raise: 0° = abduction,
+            #     +90° = forward flexion, -90° = extension; undefined with the
+            #     arm at the side or overhead.
+            #   elevation — HOW FAR it is raised in that plane (>= 0).
+            #   axial rotation — twist about the humerus, internal positive,
+            #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
             DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
@@ -230,13 +231,14 @@ JOINTS = {
         key="shoulder_l", name="Left shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_l",
         dofs=(
-            # ISB YXY names: the first angle is the DIRECTION the arm is raised
-            # in, the second HOW FAR it is raised in that plane (always >= 0),
-            # the third the twist about the humerus. With elevation kept
-            # positive, a forward raise reads plane -90° on both sides; a
-            # sideways raise reads ±180° (right) / 0° (left) — 180° off the
-            # clinical "0° = abduction, 90° = flexion" reading. The first and
-            # third are undefined with the arm at the side (singularity guard).
+            # ISB YXY names, read clinically by metrics._shoulder_clinical (same
+            # on both sides — left joints are mirrored first):
+            #   plane of elevation — DIRECTION of the raise: 0° = abduction,
+            #     +90° = forward flexion, -90° = extension; undefined with the
+            #     arm at the side or overhead.
+            #   elevation — HOW FAR it is raised in that plane (>= 0).
+            #   axial rotation — twist about the humerus, internal positive,
+            #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
             DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),

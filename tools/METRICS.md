@@ -65,9 +65,20 @@ angle_dof = (α|β|γ)[seq_index]                pick the slot that IS this clin
   compass (Z = up), while the ISB sequences assume anatomical axes — without
   `q_WA` a pure elbow flexion lands in whichever slot the facing puts it. No
   confident facing ⇒ no `q_WA` ⇒ the joint is `clinical: false`.
-- One frame serves both sides, so flexion is positive on both arms, while
-  left-side abduction/adduction and axial-rotation signs are mirrored relative to
-  the right. Symmetry metrics compare ranges, so they are unaffected.
+- One frame serves both sides, so for a **left** joint `q_anat` is mirrored
+  through the sagittal plane (`mirror_left`: `[w,x,y,z] → [w,−x,−y,z]`) before
+  the split. A left joint then decomposes exactly like a right one and every DOF
+  has the same clinical sign on both sides:
+
+  | Joint | DOF | Positive = |
+  |---|---|---|
+  | elbow | `flex_ext` | flexion |
+  | elbow | `pro_sup` | pronation |
+  | wrist | `flex_ext` | flexion |
+  | wrist | `rad_uln` | ulnar deviation |
+  | shoulder | `plane_elev` | 0° abduction plane, +90° forward flexion, −90° extension |
+  | shoulder | `elevation` | raised (always ≥ 0) |
+  | shoulder | `axial_rot` | internal rotation |
 - The Euler `sequence` and the `seq_index` each clinical DOF occupies both come from
   `motion_capabilities.JOINTS` — the one body model. This tool never re-declares
   anatomy or invents a convention.
@@ -79,7 +90,11 @@ and their angles become ill-defined (a *proper* sequence like `YXY` at the middl
 angle ≈ 0/π — the shoulder's "arm at the side" pole; a *Tait-Bryan* sequence like
 `ZXY` at middle ≈ ±90°). Within `SINGULARITY_GUARD_DEG` (10°) of that value the
 outer-slot DOFs are marked undefined for those samples, so a joint resting at the
-pole never emits a spurious 180° swing or an infinite velocity. Affected DOFs carry
+pole never emits a spurious 180° swing or an infinite velocity. The shoulder is
+the exception for axial rotation: it is reported as the *sum* of the outer
+angles, which is exactly what stays defined at the side, so only
+`plane_elev` is masked there (both are masked overhead, where the sum is the
+ill-defined part). Affected DOFs carry
 `defined_frac` (share of samples that were well-conditioned) and a
 `singularity_note`, and their series carry `NaN` at the masked samples so every
 downstream consumer skips them the same way.
@@ -109,9 +124,9 @@ that swung the most when none is declared or it is singular all session.
 
 | Key | Name | Meaning |
 |---|---|---|
-| `plane_elev` | Plane of elevation | *Direction* the arm is raised in. With elevation kept ≥ 0: forward raise ≈ −90° (both sides); sideways raise ≈ ±180° (right) / 0° (left). Undefined with the arm at the side. |
+| `plane_elev` | Plane of elevation | *Direction* the arm is raised in: 0° = abduction (frontal plane), +90° = forward flexion, −90° = extension. Raw YXY slot 0 + 180° — ISB's negative-elevation branch of the same rotation, so elevation can be reported positive. Undefined with the arm at the side or overhead. |
 | `elevation` | Elevation | *How far* the arm is raised, in whatever plane — a forward and a sideways 60° raise both read 60°. Primary DOF. |
-| `axial_rot` | Axial rotation (int / ext) | Twist about the humerus. Like `plane_elev`, only meaningful once the arm is elevated; the two can trade ±180° between them. |
+| `axial_rot` | Axial rotation (int / ext) | Twist about the humerus, internal positive: raw slot 0 + slot 2. ISB's own third angle trades with the plane (20° of internal rotation reads +20° in abduction but −70° in forward flexion); the sum reads +20° in both, and it stays defined with the arm at the side. Undefined only overhead. |
 
 ---
 
