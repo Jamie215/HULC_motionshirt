@@ -114,7 +114,7 @@ number a placement can't support.
 | Stage | Tool | What it does |
 |-------|------|--------------|
 | 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` | Nodes log autonomously; the central offloads each node's `.bin` |
-| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating angular speed), so alignment doesn't depend on BLE latency → `aligned.csv` |
+| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating angular speed), so alignment doesn't depend on BLE latency → `aligned.csv`, plus `aligned.quality.json` (per-sensor sync confidence and data gaps, shown in the review page) |
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
 | 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from a short neutral pose, with a cache-and-verify contract so re-donning is cheap → `calibration.json` |
 | 6 Metrics | `metrics.py` | Per-DOF joint angles → range of motion, angular velocity, reps, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |

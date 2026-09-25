@@ -46,6 +46,8 @@ BLE format stays the compact 20-byte binary — this tool runs after offload.
 """
 
 import argparse
+import json
+import os
 import struct
 import sys
 
@@ -89,8 +91,12 @@ def _best_offset(raw: bytes) -> int:
     return best_off
 
 
-def load_log(path: str):
-    """Decode + sanitize a binary node log → (t_ms int64[N], quat float64[N,4])."""
+def load_log(path: str, stats=None):
+    """Decode + sanitize a binary node log → (t_ms int64[N], quat float64[N,4]).
+
+    `stats` (optional dict) is filled with the record counts, for the quality
+    sidecar: n_records (complete records on disk) and n_valid (kept).
+    """
     with open(path, "rb") as f:
         raw = f.read()
     n = len(raw) // RECORD_SIZE
@@ -130,6 +136,8 @@ def load_log(path: str):
         idx = np.array([], dtype=np.int64)
 
     dropped = n - len(idx)
+    if stats is not None:
+        stats.update(n_records=int(n), n_valid=int(len(idx)))
     if dropped:
         print(f"[warn] {path}: dropped {dropped}/{n} bad records "
               f"(erased/NaN/non-monotonic); {len(idx)} valid.")
@@ -395,15 +403,57 @@ def to_A_clock(tB, offset_ms, drift_ppm):
     return tB + offset_ms + drift_ppm * 1e-6 * (tB - tB0)
 
 
+# A gap between consecutive samples longer than this many median intervals (and
+# at least GAP_MIN_MS) counts as data loss for the quality sidecar.
+GAP_FACTOR = 3.0
+GAP_MIN_MS = 250.0
+
+
+def gap_stats(t_ms, lo, hi):
+    """Data-loss summary of one node's sample times within the overlap [lo, hi].
+
+    Returns gap_frac (share of the overlap covered by gaps), longest_gap_ms and
+    n_gaps, where a gap is an interval > GAP_FACTOR × the median interval (and
+    >= GAP_MIN_MS). Only the part of each gap beyond one normal interval counts.
+    """
+    t = np.asarray(t_ms, dtype=float)
+    t = t[(t >= lo) & (t <= hi)]
+    span = float(hi - lo)
+    if t.size < 2 or span <= 0:
+        return {"gap_frac": 0.0, "longest_gap_ms": 0.0, "n_gaps": 0}
+    d = np.diff(t)
+    med = float(np.median(d))
+    big = d[d > max(GAP_FACTOR * med, GAP_MIN_MS)]
+    # time missing at the edges of the overlap counts too
+    edges = [e for e in (t[0] - lo, hi - t[-1]) if e > max(GAP_FACTOR * med, GAP_MIN_MS)]
+    lost = float(np.sum(big - med)) + float(sum(edges))
+    longest = float(max([*big, *edges], default=0.0))
+    return {"gap_frac": round(min(1.0, lost / span), 4),
+            "longest_gap_ms": round(longest, 1),
+            "n_gaps": int(big.size + len(edges))}
+
+
+def quality_path(out_csv):
+    """Sidecar path next to the aligned CSV: aligned.csv -> aligned.quality.json."""
+    return os.path.splitext(out_csv)[0] + ".quality.json"
+
+
 def align_and_emit(paths, out_csv, fs=None):
-    logs = [load_log(p) for p in paths]
+    stats = [{} for _ in paths]
+    logs = [load_log(p, st) for p, st in zip(paths, stats)]
     tA, qA = logs[0]
     ref_name = paths[0]
 
     # Estimate each other node's mapping onto node-0's clock.
     mapped = [(tA.astype(float), qA)]
+    sync = [{"reference": True, "offset_ms": 0.0, "sync_confidence": None,
+             "sync_reliable": True}]
     for p, (tB, qB) in zip(paths[1:], logs[1:]):
         est = estimate_offset_drift(tA, qA, tB, qB)
+        sync.append({"reference": False,
+                     "offset_ms": round(float(est["offset_ms"]), 1),
+                     "sync_confidence": round(float(est["confidence"]), 3),
+                     "sync_reliable": bool(est["offset_reliable"])})
         drift_note = (f"drift {est['drift_ppm']:+.1f} ppm"
                       if est["drift_resolved"]
                       else "drift negligible/unresolved (not applied)")
@@ -447,6 +497,20 @@ def align_and_emit(paths, out_csv, fs=None):
                    comments="", fmt="%.6f")
         print(f"[reconcile] wrote {len(grid)} aligned samples @ {fs:.1f} Hz "
               f"-> {out_csv}")
+        # Quality sidecar: per-node sync confidence + data loss, so the review
+        # page can show how far to trust timing-sensitive numbers.
+        nodes = []
+        for i, (p, (tm, _), sy, st) in enumerate(zip(paths, mapped, sync, stats)):
+            nodes.append({"column": f"n{i}", "log": os.path.basename(p), **sy,
+                          "n_records": st.get("n_records"),
+                          "n_valid": st.get("n_valid"),
+                          **gap_stats(tm, lo, hi)})
+        qual = {"schema_version": "1.0", "confidence_min": CONFIDENCE_MIN,
+                "overlap_ms": round(float(hi - lo), 1), "nodes": nodes}
+        with open(quality_path(out_csv), "w") as f:
+            json.dump(qual, f, indent=2)
+        print(f"[reconcile] wrote sync / data-loss summary -> "
+              f"{quality_path(out_csv)}")
     return header, data
 
 
@@ -566,10 +630,20 @@ def selftest() -> int:
     # within the design target (25-50 ms); AND shared motion reads reliable while
     # independent motion is correctly flagged unreliable.
     tol_ms = 30.0
+    # Data-loss summary: 10 s at 10 Hz with samples 5.0-5.9 s missing -> one
+    # 1100 ms gap, 1000 ms of it lost (beyond one normal interval) = 10%.
+    tg = np.concatenate([np.arange(0, 5000, 100), np.arange(6000, 10001, 100)])
+    gs = gap_stats(tg, 0.0, 10000.0)
+    gaps_ok = (gs["n_gaps"] == 1 and abs(gs["longest_gap_ms"] - 1100.0) < 1e-6
+               and abs(gs["gap_frac"] - 0.1) < 1e-3
+               and gap_stats(np.arange(0, 10001, 100), 0.0, 10000.0)["n_gaps"] == 0)
+    print(f"[selftest] data-loss summary: {gs} (want 1 gap of 1100 ms, 10% lost) "
+          f"{'OK' if gaps_ok else 'FAIL'}")
     ok = (off_err < tol_ms and mean_err < tol_ms
-          and est["offset_reliable"] and not est_ind["offset_reliable"])
+          and est["offset_reliable"] and not est_ind["offset_reliable"]
+          and gaps_ok)
     print(f"[selftest] {'PASS' if ok else 'FAIL'} "
-          f"(alignment < {tol_ms:.0f} ms; confidence gate correct)")
+          f"(alignment < {tol_ms:.0f} ms; confidence gate correct; gap summary)")
     return 0 if ok else 1
 
 
