@@ -92,65 +92,153 @@ from reconcile_nodes import quality_path  # noqa: E402
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = [1.0, 0.0, 0.0, 0.0]
 
-# our segment -> the model body its node is placed on. The forearm node goes on
-# the RADIUS (it carries pro/supination), not the ulna.
-SEGMENT_BODY = {
-    "torso": "torso",
-    "upper_arm_r": "humerus_r", "forearm_r": "radius_r", "hand_r": "hand_r",
-    "upper_arm_l": "humerus_l", "forearm_l": "radius_l", "hand_l": "hand_l",
+# ---------------------------------------------------------------------------
+# Model profiles — how each supported OpenSim model maps onto our montage
+# ---------------------------------------------------------------------------
+# segment_body : our segment -> the model body its node is placed on. The
+#                forearm node goes on the RADIUS (it carries pro/supination).
+# trunk        : coordinates the torso node drives (locked upright without it)
+# chains       : per arm, (segment, coordinates between it and the segment
+#                above) from the shoulder down
+# ranges       : widened / adjusted coordinate ranges, degrees
+# neutral      : coordinate values (degrees) of our N-pose per forearm option
+#                — the model's default pose is set to it, because IMUPlacer
+#                assumes the neutral hold IS the default pose
+PROFILES = {
+    # Rajagopal et al. 2016 (IEEE TBME 63(10)) — full body, both arms. A gait
+    # model: its arm is a simplified chain (ball-joint shoulder, no scapula).
+    "rajagopal": {
+        "title": "Rajagopal 2016 full-body model (OpenSense variant)",
+        "segment_body": {
+            "torso": "torso",
+            "upper_arm_r": "humerus_r", "forearm_r": "radius_r", "hand_r": "hand_r",
+            "upper_arm_l": "humerus_l", "forearm_l": "radius_l", "hand_l": "hand_l"},
+        "trunk": ("pelvis_tilt", "pelvis_list", "pelvis_rotation"),
+        "chains": {side: [(f"upper_arm_{side}",
+                           tuple(f"{c}_{side}" for c in ("arm_flex", "arm_add", "arm_rot"))),
+                          (f"forearm_{side}",
+                           (f"elbow_flex_{side}", f"pro_sup_{side}")),
+                          (f"hand_{side}",
+                           (f"wrist_flex_{side}", f"wrist_dev_{side}"))]
+                   for side in ("r", "l")},
+        # shoulder flexion is capped at 90° and pro/sup stops at thumb-forward
+        # in the shipped model; both are widened for rehab motion
+        "ranges": {f"{c}_{side}": r for side in ("r", "l") for c, r in {
+            "arm_flex": (-90, 180), "arm_add": (-180, 90), "arm_rot": (-180, 180),
+            "elbow_flex": (-15, 160), "pro_sup": (-10, 190),
+            "wrist_flex": (-90, 90), "wrist_dev": (-40, 50)}.items()},
+        # pro_sup 0 = palms forward (full supination); 90 = palms to thighs
+        "neutral": {"palms-in": {"pro_sup_r": 90.0, "pro_sup_l": 90.0},
+                    "palms-forward": {"pro_sup_r": 0.0, "pro_sup_l": 0.0}},
+        "elbow_coords": {"r": ("elbow_flex_r", "pro_sup_r"),
+                         "l": ("elbow_flex_l", "pro_sup_l")},
+    },
+    # Thoracoscapular Shoulder Model — Seth, Dong, Matias & Delp 2019 (Front
+    # Neurorobot 13:90), scapulothoracic joint from Seth et al. 2016 (PLoS ONE
+    # 11(1)). Upper-limb model, RIGHT arm only; ISB-style glenohumeral
+    # coordinates (plane of elevation, elevation, axial rotation); wrist welded.
+    # No node measures the clavicle or scapula, so they are held at the
+    # model's resting posture and the glenohumeral joint carries all
+    # humerothoracic motion (elevation widened to 180° to allow for that).
+    "thoracoscapular": {
+        "title": "Thoracoscapular Shoulder Model (Seth et al. 2019)",
+        "segment_body": {"torso": "thorax", "upper_arm_r": "humerus",
+                         "forearm_r": "radius", "hand_r": "hand"},
+        "trunk": ("ground_thorax_rot_x", "ground_thorax_rot_y",
+                  "ground_thorax_rot_z"),
+        "chains": {"r": [("upper_arm_r", ("plane_elv", "shoulder_elv", "axial_rot")),
+                         ("forearm_r", ("elbow_flexion", "pro_sup")),
+                         ("hand_r", ())]},           # wrist welded: not solvable
+        # plane and axial rotation widened: near the arm-at-side pose they
+        # trade off (only their sum is defined), and the neutral pose uses
+        # axial 54°, which the shipped ±90° would leave 36° of room above
+        "ranges": {"plane_elv": (-180, 180), "shoulder_elv": (-45, 180),
+                   "axial_rot": (-180, 180), "elbow_flexion": (-15, 160),
+                   "pro_sup": (-100, 100)},
+        # upright thorax; humerus hanging vertical and facing forward (the
+        # resting scapula tilts the glenoid, so that takes 6° of glenohumeral
+        # elevation — solved numerically, 0.3° residual); elbow straight. The
+        # model's forearm
+        # zero is already the neutral (thumb-forward) forearm: checked from the
+        # bone geometry (the distal radius is anterior at 0, lateral at -90).
+        "neutral": {
+            "palms-in": {"ground_thorax_rot_x": 0.0, "ground_thorax_rot_y": 0.0,
+                         "ground_thorax_rot_z": 0.0, "plane_elv": -69.5,
+                         "shoulder_elv": 6.2, "axial_rot": 53.7,
+                         "elbow_flexion": 0.0, "pro_sup": 0.0},
+            "palms-forward": {"ground_thorax_rot_x": 0.0, "ground_thorax_rot_y": 0.0,
+                              "ground_thorax_rot_z": 0.0, "plane_elv": -69.5,
+                              "shoulder_elv": 6.2, "axial_rot": 53.7,
+                              "elbow_flexion": 0.0, "pro_sup": -90.0}},
+        "elbow_coords": {"r": ("elbow_flexion", "pro_sup")},
+    },
 }
-TRUNK_COORDS = ("pelvis_tilt", "pelvis_list", "pelvis_rotation")
-SHOULDER = ("arm_flex", "arm_add", "arm_rot")
-ELBOW = ("elbow_flex", "pro_sup")
-WRIST = ("wrist_flex", "wrist_dev")
-# widened ranges (degrees) — see "Model preparation" above
-RANGES = {"arm_flex": (-90, 180), "arm_add": (-180, 90), "arm_rot": (-180, 180),
-          "elbow_flex": (-15, 160), "pro_sup": (-10, 190),
-          "wrist_flex": (-90, 90), "wrist_dev": (-40, 50)}
-# model pro_sup at the neutral pose: 0 = palms forward, 90 = palms to thighs
-FOREARM_NEUTRAL_DEG = {"palms-in": 90.0, "palms-forward": 0.0}
+DEFAULT_PROFILE = "rajagopal"
+
+
+def detect_profile(model_path):
+    """Pick the profile from the model's bodies (no OpenSim needed: the body
+    names are plain XML)."""
+    with open(model_path, encoding="utf-8", errors="ignore") as f:
+        txt = f.read()
+    if '<Body name="scapula"' in txt and '<Body name="thorax"' in txt:
+        return "thoracoscapular"
+    if '<Body name="humerus_r"' in txt:
+        return "rajagopal"
+    raise SystemExit(f"[opensense] {os.path.basename(model_path)}: not a supported "
+                     f"model (supported: {', '.join(PROFILES)})")
+
+
+def check_montage(profile, present_segments):
+    """The model must have a body for every node the montage places."""
+    missing = sorted(set(present_segments) - set(profile["segment_body"]))
+    if missing:
+        raise SystemExit(f"[opensense] the {profile['title']} has no body for "
+                         f"{', '.join(missing)} — use a model that covers them "
+                         f"(e.g. rajagopal for the left arm)")
 
 
 # ---------------------------------------------------------------------------
 # Model plan — which coordinates the montage can drive (pure logic, testable)
 # ---------------------------------------------------------------------------
-def plan_free_coords(present_segments):
+def plan_free_coords(present_segments, profile=None):
     """Coordinates left free for IK; every other coordinate is locked.
 
     Trunk: only with a torso node (otherwise it is held upright). Each arm:
     free from the shoulder down to the DEEPEST node on that side — the chain
     above the most proximal node must stay free to absorb its orientation, and
     nothing below the deepest node is observable."""
+    profile = profile or PROFILES[DEFAULT_PROFILE]
     free = set()
     if "torso" in present_segments:
-        free.update(TRUNK_COORDS)
-    for side in ("r", "l"):
-        depth = max((i for i, seg in enumerate(
-            (f"upper_arm_{side}", f"forearm_{side}", f"hand_{side}"))
-            if seg in present_segments), default=-1)
-        groups = (SHOULDER, ELBOW, WRIST)[:depth + 1]
-        for g in groups:
-            free.update(f"{c}_{side}" for c in g)
+        free.update(profile["trunk"])
+    for chain in profile["chains"].values():
+        depth = max((i for i, (seg, _) in enumerate(chain)
+                     if seg in present_segments), default=-1)
+        for _, coords in chain[:depth + 1]:
+            free.update(coords)
     return free
 
 
-def prepare_model(model_in, model_out, present_segments, forearm_neutral):
+def prepare_model(model_in, model_out, present_segments, forearm_neutral,
+                  profile):
     import opensim as osim
     osim.Logger.setLevelString("error")   # the model's meshes are not needed
     m = osim.Model(model_in)
     cs = m.getCoordinateSet()
-    free = plan_free_coords(present_segments)
+    free = plan_free_coords(present_segments, profile)
+    for name, val in profile["neutral"][forearm_neutral].items():
+        cs.get(name).setDefaultValue(math.radians(val))
     for i in range(cs.getSize()):
         c = cs.get(i)
         c.set_locked(c.getName() not in free)
-        base = c.getName()[:-2] if c.getName()[-2:] in ("_r", "_l") else None
-        if base in RANGES:
-            lo, hi = RANGES[base]
+        # enforce the ranges during IK (some models ship with clamping off,
+        # letting a solve wander past 360° or into a hyperextended branch)
+        c.set_clamped(c.getName() in free)
+        if c.getName() in profile["ranges"]:
+            lo, hi = profile["ranges"][c.getName()]
             c.setRangeMin(math.radians(lo))
             c.setRangeMax(math.radians(hi))
-    for side in ("r", "l"):
-        cs.get(f"pro_sup_{side}").setDefaultValue(
-            math.radians(FOREARM_NEUTRAL_DEG[forearm_neutral]))
     m.printToXML(model_out)
     return free
 
@@ -169,11 +257,11 @@ def write_sto(path, times_s, cols, rate_hz):
                 ",".join(f"{v:.8f}" for v in cols[b][k]) for b in cols) + "\n")
 
 
-def to_model_frame(seg_quats, q_wa):
+def to_model_frame(seg_quats, q_wa, segment_body):
     """World-from-sensor -> model-ground-from-sensor. The model's ground axes
     are the anatomical axes (X anterior, Y up, Z right), so this is conj(q_WA)."""
     qc = qconj(q_wa)
-    return {SEGMENT_BODY[s]: qnorm(qmul(qc, q)) for s, q in seg_quats.items()}
+    return {segment_body[s]: qnorm(qmul(qc, q)) for s, q in seg_quats.items()}
 
 
 def neutral_average(cols, t_ms, t0, t1):
@@ -274,7 +362,7 @@ def write_aligned(path, t_ms, seg_q, montage):
 # The whole path
 # ---------------------------------------------------------------------------
 def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
-        forearm_neutral="palms-in", render=True):
+        forearm_neutral="palms-in", render=True, profile_name=None):
     try:
         import opensim  # noqa: F401
     except ImportError:
@@ -297,10 +385,14 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
         raise SystemExit("[opensense] calibration.json has no neutral window")
     os.makedirs(outdir, exist_ok=True)
 
+    profile_name = profile_name or detect_profile(model_path)
+    profile = PROFILES[profile_name]
     t_ms, seg_quats, seg_meta = load_aligned(aligned_csv, montage)
     t_ms, seg_quats, _ = trim_to_analysis(t_ms, seg_quats, calibration)
     present = set(seg_quats)
-    cols = to_model_frame(seg_quats, q_wa)
+    check_montage(profile, present)
+    body = profile["segment_body"]
+    cols = to_model_frame(seg_quats, q_wa, body)
     rate = 1000.0 / float(np.median(np.diff(t_ms)))
     t_s = (t_ms - t_ms[0]) / 1000.0
     cal_sto = os.path.join(outdir, "neutral.sto")
@@ -309,19 +401,20 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
     write_sto(motion_sto, t_s, cols, rate)
 
     model_prep = os.path.join(outdir, "prepared_model.osim")
-    free = prepare_model(model_path, model_prep, present, forearm_neutral)
-    print(f"[opensense] {len(present)} node(s) on "
-          f"{', '.join(SEGMENT_BODY[s] for s in sorted(present))}; "
+    free = prepare_model(model_path, model_prep, present, forearm_neutral,
+                         profile)
+    print(f"[opensense] {profile['title']}: {len(present)} node(s) on "
+          f"{', '.join(body[s] for s in sorted(present))}; "
           f"free coordinates: {', '.join(sorted(free))}")
     t_start = max(0.0, (nw[0] - t_ms[0]) / 1000.0)
     calibrated, mot, err, secs = solve(model_prep, cal_sto, motion_sto, outdir,
                                        t_start, float(t_s[-1]))
     print(f"[opensense] IK solved {len(t_s)} frames in {secs:.0f} s -> {mot}")
 
-    bodies = [SEGMENT_BODY[s] for s in present]
+    bodies = [body[s] for s in present]
     t_ik, q_body, coords = body_orientations(calibrated, mot, bodies)
     # model ground -> world axes: q_w = q_WA ⊗ q_g ⊗ conj(q_WA)
-    seg_q = {s: qnorm(qmul(qmul(q_wa, q_body[SEGMENT_BODY[s]]), qconj(q_wa)))
+    seg_q = {s: qnorm(qmul(qmul(q_wa, q_body[body[s]]), qconj(q_wa)))
              for s in present}
     t_ik_ms = t_ms[0] + t_ik * 1000.0
     aligned_out = os.path.join(outdir, "opensense_aligned.csv")
@@ -346,6 +439,8 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
     rep["pose_solver"] = {
         "name": "OpenSim OpenSense (IMUPlacer + IMU IK)",
         "model": os.path.basename(model_path),
+        "profile": profile_name,
+        "model_title": profile["title"],
         "forearm_neutral": forearm_neutral,
         "free_coordinates": sorted(free),
         "ik_seconds": round(secs, 1),
@@ -387,26 +482,46 @@ def selftest():
         ok = ok and c
         print(f"[selftest] {'ok ' if c else 'FAIL'}: {msg}")
 
-    full_r = plan_free_coords({"torso", "upper_arm_r", "forearm_r", "hand_r"})
-    check(full_r == set(TRUNK_COORDS) | {f"{c}_r" for c in SHOULDER + ELBOW + WRIST},
-          "full right arm frees trunk + the whole right chain, nothing on the left")
-    no_torso = plan_free_coords({"upper_arm_r", "forearm_r"})
-    check(not (no_torso & set(TRUNK_COORDS)) and "elbow_flex_r" in no_torso
+    raj, tsm = PROFILES["rajagopal"], PROFILES["thoracoscapular"]
+    full_r = plan_free_coords({"torso", "upper_arm_r", "forearm_r", "hand_r"}, raj)
+    want = set(raj["trunk"]) | {c for _, g in raj["chains"]["r"] for c in g}
+    check(full_r == want,
+          "rajagopal: full right arm frees trunk + the whole right chain only")
+    no_torso = plan_free_coords({"upper_arm_r", "forearm_r"}, raj)
+    check(not (no_torso & set(raj["trunk"])) and "elbow_flex_r" in no_torso
           and "wrist_flex_r" not in no_torso,
           "no torso node -> trunk locked upright; nothing below the deepest node")
-    distal = plan_free_coords({"forearm_r", "hand_r"})
+    distal = plan_free_coords({"forearm_r", "hand_r"}, raj)
     check({"arm_flex_r", "elbow_flex_r", "wrist_flex_r"} <= distal,
           "forearm+hand only -> chain above the forearm stays free to absorb it")
-    check(plan_free_coords(set()) == set(), "no nodes -> everything locked")
+    check(plan_free_coords(set(), raj) == set(), "no nodes -> everything locked")
+    t_ua = plan_free_coords({"torso", "upper_arm_r"}, tsm)
+    check(t_ua == set(tsm["trunk"]) | {"plane_elv", "shoulder_elv", "axial_rot"}
+          and not any(c.startswith(("clav", "scapula")) for c in t_ua),
+          "thoracoscapular: torso+upper arm frees thorax + glenohumeral only "
+          "(clavicle/scapula held)")
+    try:
+        check_montage(tsm, {"upper_arm_l"})
+        check(False, "thoracoscapular must reject a left-arm node")
+    except SystemExit:
+        check(True, "thoracoscapular (right arm only) rejects a left-arm node")
 
     # frames: a sensor aligned with the anatomical axes lands on model identity
     from calibrate_segments import anatomical_frame_quat
     q_wa = anatomical_frame_quat(-45.0)
-    cols = to_model_frame({"forearm_r": q_wa[None, :]}, q_wa)
+    cols = to_model_frame({"forearm_r": q_wa[None, :]}, q_wa, raj["segment_body"])
     check(np.allclose(np.abs(cols["radius_r"][0]), IDENTITY, atol=1e-9),
           "world->model frame: an anatomically aligned sensor reads identity")
 
     tmp = tempfile.mkdtemp(prefix="hulc_osense_")
+    for body, want_p in (('<Body name="thorax">\n<Body name="scapula">',
+                          "thoracoscapular"),
+                         ('<Body name="pelvis">\n<Body name="humerus_r">',
+                          "rajagopal")):
+        mp = os.path.join(tmp, f"{want_p}.osim")
+        with open(mp, "w") as f:
+            f.write(body)
+        check(detect_profile(mp) == want_p, f"model detected as {want_p}")
     p = os.path.join(tmp, "x.sto")
     write_sto(p, [0.0, 0.1], {"radius_r": np.array([IDENTITY, IDENTITY])}, 10.0)
     with open(p) as f:
@@ -414,8 +529,9 @@ def selftest():
     check("DataType=Quaternion" in txt and "radius_r_imu" in txt
           and "1.00000000,0.00000000" in txt, "OpenSense .sto layout")
 
-    print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — model plan (what each montage "
-          f"frees), world->model frame, .sto export. The solve itself needs "
+    print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — model plans for both profiles "
+          f"(what each montage frees), profile detection, world->model frame, .sto "
+          f"export. The solve itself needs "
           f"OpenSim + the model: see tools/OPENSENSE_FEASIBILITY.md.")
     return 0 if ok else 1
 
@@ -431,7 +547,9 @@ def main():
     pr.add_argument("--model", default=os.environ.get("HULC_OPENSENSE_MODEL"),
                     help="Rajagopal2015_opensense.osim (or $HULC_OPENSENSE_MODEL)")
     pr.add_argument("--outdir", default="opensense")
-    pr.add_argument("--forearm-neutral", choices=sorted(FOREARM_NEUTRAL_DEG),
+    pr.add_argument("--profile", choices=sorted(PROFILES),
+                    help="model profile (default: detected from the model)")
+    pr.add_argument("--forearm-neutral", choices=["palms-forward", "palms-in"],
                     default="palms-in",
                     help="forearm in the neutral hold (default: palms-in, "
                          "palms facing the thighs — the N-pose)")
@@ -443,7 +561,8 @@ def main():
         sys.exit(selftest())
     if args.cmd == "run":
         run(args.aligned_csv, args.montage, args.calibration, args.model,
-            args.outdir, args.forearm_neutral, render=not args.no_render)
+            args.outdir, args.forearm_neutral, render=not args.no_render,
+            profile_name=args.profile)
         return
     ap.error("choose a command: run | selftest")
 

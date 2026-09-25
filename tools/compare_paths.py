@@ -189,18 +189,24 @@ def wrapped_err(a, b):
     return e[np.isfinite(e)]
 
 
-def run_case(model, montage_name, segs, cond, outdir, seed):
+TRUTH_BODY = opensense_ik.PROFILES["rajagopal"]["segment_body"]
+
+
+def run_case(model, truth_model, montage_name, segs, cond, outdir, seed):
+    """Truth is always played on the Rajagopal model; `model` is the solver's
+    model (the same one, or another — then the solver's joints differ from the
+    'subject's', as a real arm's would)."""
     rng = np.random.default_rng(seed)
     fine_t = np.arange(0, DUR_S, 1 / FINE_HZ)
     coords = truth_coords(fine_t)
-    bodies = [opensense_ik.SEGMENT_BODY[s] for s in segs]
-    absq, rel = body_truth(model, fine_t, coords, bodies)
+    bodies = [TRUTH_BODY[s] for s in segs]
+    absq, rel = body_truth(truth_model, fine_t, coords, bodies)
     fs = 60.0 if cond == "clean" else 8.33
     grid = np.arange(0, DUR_S, 1 / fs)
     nodes = node_streams(absq, fine_t, grid, cond, rng)
     t_ms = grid * 1000.0
 
-    seg_quats = {s: nodes[opensense_ik.SEGMENT_BODY[s]] for s in segs}
+    seg_quats = {s: nodes[TRUTH_BODY[s]] for s in segs}
     montage = {"schema_version": "1.0", "subject": {"id": "SYN"},
                "session": {"id": f"{montage_name}_{cond}"},
                "calibration": {"neutral_pose": "N-pose", "captured": True},
@@ -240,7 +246,7 @@ def run_case(model, montage_name, segs, cond, outdir, seed):
     def truth_on(times_ms):
         idx = np.clip(np.round(times_ms / 1000.0 * FINE_HZ).astype(int), 0,
                       len(fine_t) - 1)
-        return joint_series(times_ms, {s: rel[opensense_ik.SEGMENT_BODY[s]][idx]
+        return joint_series(times_ms, {s: rel[TRUTH_BODY[s]][idx]
                                        for s in segs}, IDENT, set(segs))
     tr_ours, tr_os = truth_on(tt), truth_on(to)
 
@@ -268,10 +274,13 @@ def run_case(model, montage_name, segs, cond, outdir, seed):
     # left-right axis, so a trunk-frame "truth" split leaks flexion into pro/sup).
     if "elbow_r" in ours:
         import opensim as osim
+        prof = opensense_ik.PROFILES[opensense_ik.detect_profile(model)]
+        c_flex, c_ps = prof["elbow_coords"]["r"]
+        ps0 = prof["neutral"]["palms-in"].get(c_ps, 0.0)       # solver's neutral
         mot = osim.TimeSeriesTable(os.path.join(osd, "ik_orientations.mot"))
         t_os = np.asarray(mot.getIndependentColumn()) + tt[0] / 1000.0
         tc, tco = truth_coords(tt / 1000.0), truth_coords(t_os)
-        neutral_ps = opensense_ik.FOREARM_NEUTRAL_DEG["palms-in"]
+        neutral_ps = 90.0                   # truth (Rajagopal) palms-in pro_sup
 
         def rms(e):
             e = e[np.isfinite(e)]
@@ -280,28 +289,37 @@ def run_case(model, montage_name, segs, cond, outdir, seed):
             "default": {"flex_ext": rms(ours["elbow_r"]["flex_ext"] - tc["elbow_flex_r"]),
                         "pro_sup": rms(ours["elbow_r"]["pro_sup"]
                                        - (tc["pro_sup_r"] - neutral_ps))},
-            "opensense": {"flex_ext": rms(mot.getDependentColumn("elbow_flex_r")
+            "opensense": {"flex_ext": rms(mot.getDependentColumn(c_flex)
                                           .to_numpy() - tco["elbow_flex_r"]),
-                          "pro_sup": rms(mot.getDependentColumn("pro_sup_r")
-                                         .to_numpy() - tco["pro_sup_r"])}}
+                          "pro_sup": rms(mot.getDependentColumn(c_ps).to_numpy()
+                                         - ps0 - (tco["pro_sup_r"] - neutral_ps))}}
     return res
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[2])
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model", required=True,
+                    help="the solver's model (Rajagopal or Thoracoscapular)")
+    ap.add_argument("--truth-model",
+                    help="Rajagopal2015_opensense.osim to play the truth on "
+                         "(default: --model, which must then be Rajagopal)")
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "hulc_cmp"))
     ap.add_argument("--only", nargs="*", help="case prefixes, e.g. ua_fa_realistic")
     args = ap.parse_args()
-    cases = [("full_right", ["torso", "upper_arm_r", "forearm_r", "hand_r"]),
-             ("ua_fa", ["upper_arm_r", "forearm_r"])]
+    truth_model = args.truth_model or args.model
+    prof = opensense_ik.PROFILES[opensense_ik.detect_profile(args.model)]
+    full = [s for s in ("torso", "upper_arm_r", "forearm_r", "hand_r")
+            if s in prof["segment_body"] and (s != "hand_r" or prof["chains"]["r"][2][1])]
+    cases = [("full_right", full),
+             ("ua_fa", ["upper_arm_r", "forearm_r"]),
+             ("torso_ua", ["torso", "upper_arm_r"])]
     results = []
     for seed, (name, segs) in enumerate(cases):
         for cond in ("clean", "realistic"):
             tag = f"{name}_{cond}"
             if args.only and not any(tag.startswith(o) for o in args.only):
                 continue
-            r = run_case(args.model, name, segs, cond, args.out, seed)
+            r = run_case(args.model, truth_model, name, segs, cond, args.out, seed)
             results.append(r)
             print(f"\n=== {tag}: neutral {r['neutral_window'][0]:.0f}–"
                   f"{r['neutral_window'][1]:.0f} ms, facing {r['facing']}")
