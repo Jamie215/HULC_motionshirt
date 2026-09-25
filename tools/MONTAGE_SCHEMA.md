@@ -184,6 +184,12 @@ resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
    on-body backup. (Optionally add a **functional** move — a known single-DOF
    motion — to fix axis directions, recorded in `calibration.functional`.)
 
+The pose zeroes each segment, but its axes stay on the world compass. To tie
+joint axes to the body (X anterior, Y superior, Z right), calibration also needs
+the subject's **facing** — recovered from the torso node, or stated with
+`--facing-deg` — and records the result as `anatomical_frame` in
+`calibration.json`. Joint angles are clinical only when it is present.
+
 Every calibration-dependent metric (all joint angles/ROM, posture dwell) is
 gated on `calibration.captured` **and** the relevant nodes' `calibrated` flag.
 When either is false the resolver still lists the metric but attaches a

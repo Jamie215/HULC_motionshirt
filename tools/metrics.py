@@ -22,28 +22,37 @@ step 4); the rest ride on the same decomposition and the same honesty contract.
 Every metric's meaning, formula, units, and calibration gate are catalogued in
 tools/METRICS.md (this module is the implementation it indexes).
 
-How a joint angle is computed (the whole chain in four lines)
+How a joint angle is computed (the whole chain in five lines)
 -------------------------------------------------------------
     q_seg(t) = q_WS(t) ⊗ q_SB          apply the cached mounting offset (stage 5)
     q_rel(t) = conj(q_seg_prox) ⊗ q_seg_dist   distal-relative-to-proximal
-    (α,β,γ)  = euler(q_rel, sequence)   decompose in the joint's ISB/Wu sequence
+    q_anat   = conj(q_WA) ⊗ q_rel ⊗ q_WA        re-express in anatomical axes
+    (α,β,γ)  = euler(q_anat, sequence)  decompose in the joint's ISB/Wu sequence
     angle_dof = (α|β|γ)[seq_index]      pick the slot that IS this clinical DOF
+
+q_WA is the anatomical frame at neutral (X anterior, Y superior, Z right) from
+calibration.json's `anatomical_frame` block. It matters: the mounting offset
+zeroes each segment but leaves its axes on the WORLD compass (Z = up), and the
+ISB sequences assume anatomical axes — without q_WA a pure elbow flexion lands
+in whichever slot the subject's facing happens to put it.
 
 The Euler sequence and the slot each clinical DOF occupies both come from
 motion_capabilities.JOINTS (the one body model) — this tool never re-declares
 anatomy or invents a convention. Because calibration zeroes q_rel at the neutral
-pose, every angle here is measured from anatomical zero, so ROM is clinical, not
-"relative to whatever the arm happened to be doing at t=0".
+pose and q_WA ties the axes to the body, every angle here is measured from
+anatomical zero about anatomical axes, so ROM is clinical, not "relative to
+whatever the arm happened to be doing at t=0".
 
 Honesty (the same contract the resolver prints)
 -----------------------------------------------
 * It only computes a joint the montage can actually resolve — both adjacent nodes
   present — reusing motion_capabilities.resolve(). A blocked joint is reported
   blocked, with the missing node named, never a fabricated number.
-* A joint whose two nodes are not BOTH anatomically calibrated is flagged
-  `clinical: false` and its angles are RELATIVE-only (the mounting offset is
-  identity, so zero is "pose at the neutral window" at best, not the anatomical
-  landmark). Same wording as the resolver.
+* A joint whose two nodes are not BOTH anatomically calibrated, or whose
+  anatomical axes are unknown (no confident facing -> no q_WA), is flagged
+  `clinical: false` and its angles are RELATIVE-only (zero is "pose at the
+  neutral window" at best, and without q_WA the DOF split uses world axes, so
+  its labels need not match the anatomy). Same wording as the resolver.
 * Wrap-around is unwrapped before ROM so a sweep through ±180° doesn't fake a
   360° range.
 
@@ -79,7 +88,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # already written and tested in calibrate_segments.py.
 from motion_capabilities import JOINTS, resolve  # noqa: E402
 from calibrate_segments import (  # noqa: E402
-    qmul, qconj, qnorm, load_aligned, load_montage,
+    qmul, qconj, qnorm, load_aligned, load_montage, anatomical_frame_quat,
+    build_anatomical_frame,
 )
 
 SCHEMA_VERSION = "1.0"
@@ -211,6 +221,23 @@ def apply_calibration(seg_quats, calibration):
             out[seg] = q
             calibrated[seg] = False
     return out, calibrated
+
+
+def resolve_anatomical_frame(calibration):
+    """q_WA (world-from-anatomical) from a calibration, or None if unknown.
+
+    Reads the `anatomical_frame` block; a calibration written before that block
+    existed falls back to its confident `heading`, so older files still work.
+    """
+    cal = calibration or {}
+    af = cal.get("anatomical_frame")
+    if af is not None:
+        return (qnorm(np.asarray(af["quat"], dtype=float))
+                if af.get("quat") else None)
+    h = cal.get("heading", {})
+    if h.get("confident") and "facing_deg" in h:
+        return anatomical_frame_quat(h["facing_deg"])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +476,13 @@ def cross_correlation(a, b, fs):
 # ---------------------------------------------------------------------------
 # Joint-level metrics (two adjacent nodes)
 # ---------------------------------------------------------------------------
-def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical):
+def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
+                          q_wa=None):
     """Per-DOF angle series → ROM, velocity, and reps for one computable joint.
+
+    `q_wa` is the anatomical frame at neutral; the relative rotation is
+    re-expressed in it before decomposition. None -> decomposed in world axes
+    (only ever reported as relative-only).
 
     Returns (report_dict, {dof_key: angle_series_deg}); the series are handed back
     so the derived tier (symmetry / coordination) can reuse them without
@@ -458,6 +490,8 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical):
     singularity band, so downstream consumers skip those the same way ROM does.
     """
     q_rel = qnorm(qmul(qconj(q_prox), q_dist))
+    if q_wa is not None:
+        q_rel = qnorm(qmul(qmul(qconj(q_wa), q_rel), q_wa))
     sequence = joint.decomposition.split()[0]
     euler = euler_from_quat(q_rel, sequence)          # (N,3) radians, slot order
 
@@ -619,6 +653,7 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
 def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration):
     """Build the full metrics report from a loaded aligned stream + calibration."""
     q_seg, calibrated = apply_calibration(seg_quats, calibration)
+    q_wa = resolve_anatomical_frame(calibration)
     caps = resolve(montage)
     fs = _fs_hz(t_ms)
 
@@ -636,11 +671,16 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration):
             calibrated.get(joint.distal, False)
         jm, series = compute_joint_metrics(
             cap.target, joint, q_seg[joint.proximal], q_seg[joint.distal],
-            t_ms, clinical=both_cal)
+            t_ms, clinical=both_cal and q_wa is not None, q_wa=q_wa)
         if not both_cal:
             jm["warning"] = ("angles/ROM are RELATIVE only — one or both nodes "
                              "lack anatomical calibration; capture a neutral pose "
                              "for clinical angles")
+        elif q_wa is None:
+            jm["warning"] = ("angles/ROM are RELATIVE only — anatomical axes are "
+                             "unknown (no confident facing), so the DOF split uses "
+                             "world axes and its labels may not match the anatomy; "
+                             "add a torso node or calibrate with --facing-deg")
         joints_out.append(jm)
         joint_series[cap.target] = series
 
@@ -674,6 +714,7 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration):
         "subject": montage.get("subject", {}),
         "session": montage.get("session", {}),
         "calibration_used": bool(calibration),
+        "anatomical_axes": q_wa is not None,
         "sample_rate_hz": round(fs, 2),
         "n_samples": int(len(t_ms)),
         "duration_s": round(float((t_ms[-1] - t_ms[0]) / 1000.0), 2),
@@ -697,6 +738,9 @@ def print_report(rep):
     print(f"Metrics — subject {subj}, session {sess}")
     print(f"  {rep['n_samples']} samples over {rep['duration_s']} s   "
           f"calibration: {cal_label}")
+    if rep["calibration_used"] and not rep.get("anatomical_axes"):
+        print("  ! anatomical axes unknown (no confident facing) — joint angles "
+              "are RELATIVE-only")
 
     print(f"\nJOINT range of motion ({len(rep['joints'])} computable)")
     for j in rep["joints"]:
@@ -788,6 +832,21 @@ def _quat_from_euler(sequence, angles):
     return qnorm(q)
 
 
+def _to_world(q_anat, q_wa):
+    """World quaternion(s) of a calibrated segment whose anatomical rotation from
+    neutral is q_anat — the inverse of the q_WA re-expression in the joint chain."""
+    return qnorm(qmul(qmul(q_wa, q_anat), qconj(q_wa)))
+
+
+def _frame_cal(segments, facing_deg):
+    """Identity-offset calibration with a stated facing (-> anatomical axes)."""
+    heading = {"source": "manual", "confident": True, "facing_deg": facing_deg}
+    return {"segments": {s: {"mounting_offset_quat": list(IDENTITY)}
+                         for s in segments},
+            "heading": heading,
+            "anatomical_frame": build_anatomical_frame(heading)}
+
+
 def _geodesic_deg(a, b):
     d = np.clip(abs(float(np.dot(qnorm(a), qnorm(b)))), 0.0, 1.0)
     return np.degrees(2.0 * np.arccos(d))
@@ -819,17 +878,18 @@ def selftest():
         print(f"           {seq}: max orientation error {worst:.2e}° "
               f"{'OK' if good else 'FAIL'}")
 
-    # (2) Physical check: a pure right-elbow FLEXION sweep 0->90° must show up as
-    #     ~90° range on flex_ext and ~0 on pro_sup, using the real body model +
-    #     the same apply-calibration/compute path the CLI uses.
-    print("[selftest] injected right-elbow flexion sweep 0->90°:")
+    # (2) Physical check: a pure right-elbow FLEXION sweep 0->90° — a rotation of
+    #     the forearm about the subject's left-right axis (anatomical Z) — must
+    #     show up as ~90° on flex_ext and ~0 on pro_sup WHATEVER direction the
+    #     subject faces. Motion is built in anatomical axes and mapped into the
+    #     world through the stated facing, so this catches a decomposition that
+    #     silently uses world axes.
+    print("[selftest] injected right-elbow flexion sweep 0->90°, any facing:")
     n = 200
     t_ms = np.arange(n) * 20.0
     sweep = np.radians(np.linspace(0.0, 90.0, n))
-    # Flexion is the Z (first) slot of the elbow's ZXY sequence. Put the upper arm
-    # at identity and rotate the forearm about Z — so q_rel = Rz(sweep).
-    ua = np.tile(IDENTITY, (n, 1))
-    fa = np.stack([_q_axis([0, 0, 1], s) for s in sweep])
+    ua_anat = np.tile(IDENTITY, (n, 1))
+    fa_anat = np.stack([_q_axis([0, 0, 1], x) for x in sweep])
     montage = {
         "schema_version": "1.0", "subject": {"id": "S"}, "session": {"id": "t"},
         "calibration": {"captured": True},
@@ -839,23 +899,46 @@ def selftest():
             {"node_id": "FA", "column": "n1", "segment": "forearm_r",
              "calibrated": True}],
     }
-    seg_quats = {"upper_arm_r": qnorm(ua), "forearm_r": qnorm(fa)}
     seg_meta = {"upper_arm_r": {"column": "n0", "node_id": "UA"},
                 "forearm_r": {"column": "n1", "node_id": "FA"}}
-    # Calibration with identity offsets => clinical=true, angles unchanged.
-    cal = {"segments": {s: {"mounting_offset_quat": list(IDENTITY)}
-                        for s in seg_quats}}
-    rep = compute_metrics(montage, t_ms, seg_quats, seg_meta, cal)
-    elbow = next(j for j in rep["joints"] if j["key"] == "elbow_r")
-    flex = next(d for d in elbow["dofs"] if d["key"] == "flex_ext")
-    pro = next(d for d in elbow["dofs"] if d["key"] == "pro_sup")
-    flex_ok = abs(flex["rom"]["range_deg"] - 90.0) < 0.5
-    pro_ok = abs(pro["rom"]["range_deg"]) < 0.5
-    clin_ok = elbow["clinical"] is True
+    flex_ok = pro_ok = clin_ok = True
+    for facing in (0.0, 45.0, 90.0, 200.0):
+        q_wa = anatomical_frame_quat(facing)
+        seg_quats = {"upper_arm_r": _to_world(ua_anat, q_wa),
+                     "forearm_r": _to_world(fa_anat, q_wa)}
+        cal = _frame_cal(seg_quats, facing)
+        rep = compute_metrics(montage, t_ms, seg_quats, seg_meta, cal)
+        elbow = next(j for j in rep["joints"] if j["key"] == "elbow_r")
+        flex = next(d for d in elbow["dofs"] if d["key"] == "flex_ext")
+        pro = next(d for d in elbow["dofs"] if d["key"] == "pro_sup")
+        f_ok = (abs(flex["rom"]["range_deg"] - 90.0) < 0.5
+                and flex["rom"]["max_deg"] > 89.5)       # flexion reads positive
+        p_ok = abs(pro["rom"]["range_deg"]) < 0.5
+        flex_ok, pro_ok = flex_ok and f_ok, pro_ok and p_ok
+        clin_ok = clin_ok and elbow["clinical"] is True
+        print(f"           facing {facing:5.0f}°: flex_ext range "
+              f"{flex['rom']['range_deg']:.2f}° (want 90) "
+              f"{'OK' if f_ok else 'FAIL'}; pro_sup range "
+              f"{pro['rom']['range_deg']:.2f}° (want 0) {'OK' if p_ok else 'FAIL'}")
     ok = ok and flex_ok and pro_ok and clin_ok
-    print(f"           flex_ext range {flex['rom']['range_deg']:.2f}° (want 90) "
-          f"{'OK' if flex_ok else 'FAIL'}; pro_sup range "
-          f"{pro['rom']['range_deg']:.2f}° (want 0) {'OK' if pro_ok else 'FAIL'}")
+    # A pure forearm TWIST (about the long axis, anatomical Y) must land on
+    # pro_sup, not flex_ext — the exact swap the world-axis bug produced.
+    twist = np.stack([_q_axis([0, 1, 0], x) for x in sweep])
+    q_wa = anatomical_frame_quat(30.0)
+    tq = {"upper_arm_r": _to_world(ua_anat, q_wa), "forearm_r": _to_world(twist, q_wa)}
+    trep = compute_metrics(montage, t_ms, tq, seg_meta, _frame_cal(tq, 30.0))
+    tel = next(j for j in trep["joints"] if j["key"] == "elbow_r")
+    t_flex = next(d for d in tel["dofs"] if d["key"] == "flex_ext")["rom"]
+    t_pro = next(d for d in tel["dofs"] if d["key"] == "pro_sup")["rom"]
+    twist_ok = abs(t_pro["range_deg"] - 90.0) < 0.5 and t_flex["range_deg"] < 0.5
+    ok = ok and twist_ok
+    print(f"           forearm twist 0->90°: pro_sup {t_pro['range_deg']:.2f}° "
+          f"(want 90), flex_ext {t_flex['range_deg']:.2f}° (want 0) "
+          f"{'OK' if twist_ok else 'FAIL'}")
+    q_wa = anatomical_frame_quat(0.0)
+    seg_quats = {"upper_arm_r": _to_world(ua_anat, q_wa),
+                 "forearm_r": _to_world(fa_anat, q_wa)}
+    cal = _frame_cal(seg_quats, 0.0)
 
     # (3) Same joint, NO calibration -> must be flagged relative-only, and the
     #     shoulder must be BLOCKED (no torso node) rather than fabricated.
@@ -868,12 +951,24 @@ def selftest():
     print(f"[selftest] no-cal elbow flagged relative-only: "
           f"{'OK' if rel_ok else 'FAIL'}; shoulder blocked (no torso): "
           f"{'OK' if block_ok else 'FAIL'}")
+    #     Calibrated offsets but NO facing -> axes unknown -> still relative-only.
+    no_axes = {"segments": cal["segments"],
+               "heading": {"source": "none", "confident": False},
+               "anatomical_frame": build_anatomical_frame(
+                   {"source": "none", "confident": False})}
+    rep_na = compute_metrics(montage, t_ms, seg_quats, seg_meta, no_axes)
+    el_na = next(j for j in rep_na["joints"] if j["key"] == "elbow_r")
+    axes_ok = (el_na["clinical"] is False and "axes" in el_na.get("warning", "")
+               and rep_na["anatomical_axes"] is False)
+    ok = ok and axes_ok
+    print(f"[selftest] calibrated but no facing -> relative-only (axes unknown): "
+          f"{'OK' if axes_ok else 'FAIL'}")
 
     # (4) Unwrap: a flexion sweep crossing 180° must report its true range, not a
     #     spurious ~360° jump from the atan2 branch cut.
     big = np.radians(np.linspace(150.0, 210.0, n))       # 60° sweep across ±180
-    fa_big = np.stack([_q_axis([0, 0, 1], s) for s in big])
-    sq = {"upper_arm_r": qnorm(ua), "forearm_r": qnorm(fa_big)}
+    fa_big = _to_world(np.stack([_q_axis([0, 0, 1], x) for x in big]), q_wa)
+    sq = {"upper_arm_r": seg_quats["upper_arm_r"], "forearm_r": fa_big}
     rep3 = compute_metrics(montage, t_ms, sq, seg_meta, cal)
     fb = next(d for d in next(j for j in rep3["joints"] if j["key"] == "elbow_r")
               ["dofs"] if d["key"] == "flex_ext")
@@ -928,8 +1023,11 @@ def selftest():
     # elbow flex phased to start at full extension (a trough) -> clean rep counts
     fa_r = qmul(ua_r, _cyc([0, 0, 1], 30.0, 5, -np.pi / 2))  # R elbow (range 60)
     fa_l = qmul(ua_l, _cyc([0, 0, 1], 20.0, 3, -np.pi / 2))  # L elbow (range 40)
-    segq = {"torso": torso, "upper_arm_r": qnorm(ua_r), "forearm_r": qnorm(fa_r),
-            "upper_arm_l": qnorm(ua_l), "forearm_l": qnorm(fa_l)}
+    # Built in anatomical axes, then placed in the world for a subject facing 30°.
+    q_wa6 = anatomical_frame_quat(30.0)
+    segq = {s: _to_world(q, q_wa6) for s, q in (
+        ("torso", torso), ("upper_arm_r", ua_r), ("forearm_r", fa_r),
+        ("upper_arm_l", ua_l), ("forearm_l", fa_l))}
     cols = {"torso": "n0", "upper_arm_r": "n1", "forearm_r": "n2",
             "upper_arm_l": "n3", "forearm_l": "n4"}
     bmont = {"schema_version": "1.0", "subject": {"id": "S"},
@@ -937,7 +1035,7 @@ def selftest():
              "nodes": [{"node_id": s, "column": cols[s], "segment": s,
                         "calibrated": True} for s in segq]}
     bmeta = {s: {"column": cols[s], "node_id": s} for s in segq}
-    bcal = {"segments": {s: {"mounting_offset_quat": list(IDENTITY)} for s in segq}}
+    bcal = _frame_cal(segq, 30.0)
     brep = compute_metrics(bmont, tb, segq, bmeta, bcal)
 
     er = next(j for j in brep["joints"] if j["key"] == "elbow_r")
@@ -987,11 +1085,12 @@ def selftest():
                   "calibrated": True},
                  {"node_id": "U", "column": "n1", "segment": "upper_arm_r",
                   "calibrated": True}]}
-    ssegq = {"torso": qnorm(np.tile(IDENTITY, (ns, 1))),
-             "upper_arm_r": qnorm(ua_sing)}
+    q_wa7 = anatomical_frame_quat(-60.0)
+    ssegq = {"torso": _to_world(np.tile(IDENTITY, (ns, 1)), q_wa7),
+             "upper_arm_r": _to_world(ua_sing, q_wa7)}
     smeta = {s: {"column": c, "node_id": s}
              for s, c in (("torso", "n0"), ("upper_arm_r", "n1"))}
-    scal = {"segments": {s: {"mounting_offset_quat": list(IDENTITY)} for s in ssegq}}
+    scal = _frame_cal(ssegq, -60.0)
     srep = compute_metrics(smont, tns, ssegq, smeta, scal)
     sh = next(j for j in srep["joints"] if j["key"] == "shoulder_r")
     flex_sh = next(d for d in sh["dofs"] if d["key"] == "flex_ext")   # outer slot
@@ -1006,7 +1105,7 @@ def selftest():
           f"(middle), peak vel physical {'OK' if guard_ok else 'FAIL'}")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — Euler round-trip, injected "
-          f"ROM recovery, calibration gating, wrap handling, metric primitives "
+          f"ROM recovery at any facing, anatomical-axis + calibration gating, wrap handling, metric primitives "
           f"(reps/SPARC/xcorr), the full derived tier, and the singularity guard.")
     return 0 if ok else 1
 

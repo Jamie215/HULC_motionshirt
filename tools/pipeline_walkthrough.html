@@ -337,7 +337,9 @@
           <span class="tool">calibrate_segments.py</span> uses the mag-referenced
           Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
-          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero.
+          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero;
+          the subject's facing (from the torso node) turns the world axes into
+          anatomical ones (forward / up / right) for the joint decomposition.
           Validity is <b>per-don</b> — re-wearing shifts the straps — so the
           result is <b>cached and verified</b>: reuse it if a quick still-pose
           check passes, re-pose only when it drifts. Without it, every angle

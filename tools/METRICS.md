@@ -26,8 +26,11 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
   nodes is reported in `blocked_joints` with the missing node named — never a
   guessed angle.
 - **`clinical: false` ⇒ relative-only.** A joint (or segment) whose node(s) are
-  not anatomically calibrated still produces numbers, but its zero is "the pose at
-  the neutral window," not the anatomical landmark. It is flagged, and in the
+  not anatomically calibrated — or, for a joint, whose anatomical axes are unknown
+  because no confident facing was recovered (top-level `anatomical_axes: false`) —
+  still produces numbers, but its zero is "the pose at the neutral window," not
+  the anatomical landmark, and without anatomical axes the DOF labels need not
+  match the movement. It is flagged, and in the
   stage-7 viewer its rows dim in raw view. Calibration is what turns an orientation
   into an *anatomical* angle (`MONTAGE_SCHEMA.md` §4).
 - **Unwrap before range.** Angle series are unwrapped (`np.unwrap`) before ROM, so
@@ -47,12 +50,24 @@ Every joint metric starts from the same four steps (`metrics.py` module docstrin
 ```
 q_seg(t) = q_WS(t) ⊗ q_SB                     apply the cached mounting offset (stage 5)
 q_rel(t) = conj(q_seg_prox) ⊗ q_seg_dist      distal relative to proximal
-(α,β,γ)  = euler(q_rel, sequence)             decompose in the joint's ISB/Wu sequence
+q_anat   = conj(q_WA) ⊗ q_rel ⊗ q_WA          re-express in anatomical axes
+(α,β,γ)  = euler(q_anat, sequence)            decompose in the joint's ISB/Wu sequence
 angle_dof = (α|β|γ)[seq_index]                pick the slot that IS this clinical DOF
 ```
 
 - `q_SB` is the sensor→bone mounting offset from `calibration.json`; **identity when
   uncalibrated** (⇒ `clinical: false`).
+- `q_WA` is the **anatomical frame at neutral** from `calibration.json`'s
+  `anatomical_frame` block: X = anterior, Y = superior (along a hanging limb),
+  Z = X × Y = the subject's right. It is built from gravity plus the subject's
+  facing (torso heading, or `--facing-deg` when there is no torso node). The
+  mounting offset alone zeroes each segment but leaves its axes on the world
+  compass (Z = up), while the ISB sequences assume anatomical axes — without
+  `q_WA` a pure elbow flexion lands in whichever slot the facing puts it. No
+  confident facing ⇒ no `q_WA` ⇒ the joint is `clinical: false`.
+- One frame serves both sides, so flexion is positive on both arms, while
+  left-side abduction/adduction and axial-rotation signs are mirrored relative to
+  the right. Symmetry metrics compare ranges, so they are unaffected.
 - The Euler `sequence` and the `seq_index` each clinical DOF occupies both come from
   `motion_capabilities.JOINTS` — the one body model. This tool never re-declares
   anatomy or invents a convention.
@@ -143,7 +158,7 @@ All defined at the top of `metrics.py`:
 {
   "schema_version": "1.0",
   "subject": { ... }, "session": { ... },
-  "calibration_used": true,
+  "calibration_used": true, "anatomical_axes": true,
   "sample_rate_hz": 50.0, "n_samples": 4000, "duration_s": 79.98,
   "joints": [ { "key","name","clinical","decomposition",
                 "dofs": [ { "key","name","plane",
@@ -178,6 +193,7 @@ All defined at the top of `metrics.py`:
   python tools/metrics.py selftest
   ```
 
-  round-trips every Euler sequence, recovers a known injected ROM sweep, checks the
-  calibration gate and wrap handling, and exercises the rep/SPARC/cross-correlation
+  round-trips every Euler sequence, recovers a known injected flexion sweep (and
+  a forearm twist) at several facings, checks the calibration and anatomical-axis
+  gates and wrap handling, and exercises the rep/SPARC/cross-correlation
   primitives and the full derived tier.

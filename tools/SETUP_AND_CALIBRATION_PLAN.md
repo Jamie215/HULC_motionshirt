@@ -267,13 +267,15 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    per-DOF joint-angle read-out rides along with ROM (same decomposition).~~ —
    **done** (`metrics.py` `compute` / `selftest`). For every *computable* joint
    (via `motion_capabilities.resolve`) it applies the cached mounting offsets
-   (`q_seg = q_WS ⊗ q_SB`), forms the distal-relative-to-proximal quaternion, and
-   decomposes it in the joint's declared ISB/Wu sequence — reading the exact slot
+   (`q_seg = q_WS ⊗ q_SB`), forms the distal-relative-to-proximal quaternion,
+   re-expresses it in the anatomical frame from calibration (X anterior, Y
+   superior, Z right — built from the facing), and decomposes it in the joint's
+   declared ISB/Wu sequence — reading the exact slot
    each clinical DOF occupies from the new `DOF.seq_index` on the body model (one
    source of truth; a 2-DOF joint drops the unused slot). Emits per-DOF **ROM**
    (min/max/range/median), the peak angular velocity, and calibration-free
-   segment angular speed. A joint whose two nodes aren't both calibrated is
-   flagged `clinical: false` (relative-only, same wording as the resolver); a
+   segment angular speed. A joint whose two nodes aren't both calibrated, or
+   with no anatomical frame (no confident facing), is flagged `clinical: false` (relative-only, same wording as the resolver); a
    blocked joint is reported blocked with the missing node named, never
    fabricated. Angles are unwrapped before ROM so a sweep past ±180° reports its
    true excursion. Wired into `analyze_session` as stage 4/5 (`metrics.json`),
