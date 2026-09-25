@@ -186,6 +186,9 @@ class DOF:
                               # metric plugin (metrics.py) reads angle[seq_index];
                               # a 2-DOF joint drops the unused middle/last slot.
     needs_calibration: bool = True   # anatomical-frame cal needed for a valid number
+    plausible_deg: tuple = None      # physiological (lo, hi) in clinical degrees,
+                                     # from neutral; metrics flags angles beyond
+                                     # it. None = no hard limit (e.g. a plane).
 
 
 @dataclass(frozen=True)
@@ -220,7 +223,8 @@ JOINTS = {
             #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
-            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2,
+                plausible_deg=(-120.0, 120.0)),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         primary="elevation",
@@ -241,7 +245,8 @@ JOINTS = {
             #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
-            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2,
+                plausible_deg=(-120.0, 120.0)),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         primary="elevation",
@@ -252,10 +257,15 @@ JOINTS = {
         key="elbow_r", name="Right elbow + forearm",
         proximal="upper_arm_r", distal="forearm_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
+            # limits allow ~10–15° beyond the textbook range for soft-tissue
+            # and sensor slop; pro/sup is from the neutral (palms-in) pose
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0,
+                plausible_deg=(-20.0, 165.0)),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2,
+                plausible_deg=(-110.0, 110.0)),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
+        primary="flex_ext",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
                "forearm axial rotation vs the humerus; sensitive to forearm "
                "node roll placement — calibrate axial zero explicitly.",
@@ -264,10 +274,15 @@ JOINTS = {
         key="elbow_l", name="Left elbow + forearm",
         proximal="upper_arm_l", distal="forearm_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
+            # limits allow ~10–15° beyond the textbook range for soft-tissue
+            # and sensor slop; pro/sup is from the neutral (palms-in) pose
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0,
+                plausible_deg=(-20.0, 165.0)),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2,
+                plausible_deg=(-110.0, 110.0)),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
+        primary="flex_ext",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
                "forearm axial rotation vs the humerus; sensitive to forearm "
                "node roll placement — calibrate axial zero explicitly.",
@@ -276,19 +291,25 @@ JOINTS = {
         key="wrist_r", name="Right wrist",
         proximal="forearm_r", distal="hand_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0,
+                plausible_deg=(-100.0, 100.0)),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1,
+                plausible_deg=(-45.0, 55.0)),
         ),
         decomposition="ZXY (flex/ext, deviation)",
+        primary="flex_ext",
     ),
     "wrist_l": Joint(
         key="wrist_l", name="Left wrist",
         proximal="forearm_l", distal="hand_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0,
+                plausible_deg=(-100.0, 100.0)),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1,
+                plausible_deg=(-45.0, 55.0)),
         ),
         decomposition="ZXY (flex/ext, deviation)",
+        primary="flex_ext",
     ),
 }
 

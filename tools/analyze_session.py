@@ -121,7 +121,7 @@ def _run(cmd, step):
 
 
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
-        facing_deg=None):
+        facing_deg=None, opensense_model=None):
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -169,12 +169,24 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
           "--out", out_html],
          "5/5 render (stage-7 review: viewer + metrics panel)")
 
+    # 6. (optional) the OpenSense path — the same session solved on OpenSim's
+    #    musculoskeletal model, reported through the same metrics + viewer.
+    os_dir = os.path.join(outdir, "opensense")
+    if opensense_model:
+        _run([py, os.path.join(TOOLS, "opensense_ik.py"), "run", aligned,
+              montage_path, "--calibration", calib, "--model", opensense_model,
+              "--outdir", os_dir],
+             "6/6 OpenSense path (pose solved on the OpenSim model)")
+
     print("\n===== DONE =====")
     print(f"  aligned stream : {aligned}")
     print(f"  calibration    : {calib}")
     print(f"  metrics        : {metrics}")
     print(f"  review (html)  : {out_html}   (3-D viewer + metrics panel)")
     print(f"  open it        : file://{os.path.abspath(out_html)}")
+    if opensense_model:
+        print(f"  opensense      : {os.path.join(os_dir, 'opensense_metrics.json')}"
+              f" + opensense.html")
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +309,10 @@ def main():
                     help="subject's facing at neutral, degrees clockwise from "
                          "world +Y; gives anatomical joint axes when the montage "
                          "has no torso node")
+    pr.add_argument("--opensense-model", metavar="OSIM",
+                    help="also solve the session with OpenSim OpenSense on this "
+                         "model (Rajagopal2015_opensense.osim; needs "
+                         "`pip install opensim`) -> <outdir>/opensense/")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
 
@@ -305,7 +321,7 @@ def main():
         sys.exit(selftest())
     if args.cmd == "run":
         run(args.montage, args.capture_dir, args.out, args.outdir,
-            args.window, args.fs, args.facing_deg)
+            args.window, args.fs, args.facing_deg, args.opensense_model)
         return
     ap.error("choose a command: run | selftest")
 

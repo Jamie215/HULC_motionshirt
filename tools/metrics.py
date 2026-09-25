@@ -89,7 +89,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import JOINTS, resolve  # noqa: E402
 from calibrate_segments import (  # noqa: E402
     qmul, qconj, qnorm, load_aligned, load_montage, anatomical_frame_quat,
-    build_anatomical_frame,
+    build_anatomical_frame, analysis_start_ms,
 )
 
 SCHEMA_VERSION = "1.0"
@@ -109,6 +109,21 @@ ACTIVE_SPEED_DEG_S = 20.0
 # A repetition only counts if the primary DOF actually swings at least this far —
 # below it the "cycles" are noise/tremor, not reps.
 REP_MIN_AMPLITUDE_DEG = 15.0
+# A single swing slower than this is a pause or a change of task, not part of a
+# set — it ends a rep bout.
+REP_MAX_LEG_S = 8.0
+# Holding still at one end of a swing for longer than this is a pause between
+# sets (bouts), not the turnaround of a rep.
+REP_PAUSE_S = 5.0
+# The neutral (N-pose) forearm: palms facing the thighs, i.e. turned this far
+# from the anatomical position (palms forward). See joint_frame_deg().
+NEUTRAL_FOREARM_DEG = 90.0
+# Two consecutive samples of one angle this far apart are not motion (the
+# fastest limb motion is well under 1000°/s): a wrap glitch or corrupt data.
+JUMP_MAX_DEG = 120.0
+# Fraction of samples allowed outside a DOF's physiological limits before the
+# DOF is flagged (a few noisy samples at the extremes are expected).
+PLAUSIBLE_OUTSIDE_FRAC = 0.02
 # Posture-dwell histogram edges (segment elevation from vertical, degrees).
 POSTURE_BIN_EDGES_DEG = [0, 30, 60, 90, 120, 150, 180]
 # SPARC (spectral arc length) smoothness — Balasubramanian et al. 2015 defaults.
@@ -313,30 +328,110 @@ def velocity_stats(angle_deg, t_ms, mask=None):
             "rms_deg_s": round(float(np.sqrt(np.mean(v * v))), 1)}
 
 
-def count_reps(angle_deg, min_amplitude_deg=REP_MIN_AMPLITUDE_DEG):
+def _turning_points(a, thr):
+    """Indices of the alternating extremes of `a` that differ by >= thr (zig-zag).
+
+    A swing only registers once the signal has come back by `thr` from its
+    extreme, so wiggles smaller than `thr` never make a turning point."""
+    n = len(a)
+    if n < 2:
+        return []
+    pts, lo, hi, ext, direction = [], 0, 0, 0, 0
+    for i in range(1, n):
+        x = a[i]
+        if direction == 0:
+            if x > a[hi]:
+                hi = i
+            if x < a[lo]:
+                lo = i
+            if a[hi] - a[lo] >= thr:
+                pts.append(min(lo, hi))
+                direction, ext = (1, hi) if hi > lo else (-1, lo)
+        elif direction == 1:
+            if x > a[ext]:
+                ext = i
+            elif a[ext] - x >= thr:
+                pts.append(ext); direction, ext = -1, i
+        else:
+            if x < a[ext]:
+                ext = i
+            elif x - a[ext] >= thr:
+                pts.append(ext); direction, ext = 1, i
+    if pts and abs(a[ext] - a[pts[-1]]) >= thr:
+        pts.append(ext)
+    return pts
+
+
+def rep_threshold(angle_deg, min_amplitude_deg=REP_MIN_AMPLITUDE_DEG):
+    """Swing size that counts as a rep: a quarter of the session's robust range,
+    never below `min_amplitude_deg` (tremor / noise floor)."""
+    a = np.asarray(angle_deg, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size < 3:
+        return float(min_amplitude_deg)
+    lo, hi = np.percentile(a, [2, 98])
+    return max(float(min_amplitude_deg), 0.25 * float(hi - lo))
+
+
+def find_rep_bouts(angle_deg, t_ms=None, min_amplitude_deg=REP_MIN_AMPLITUDE_DEG,
+                   max_leg_s=REP_MAX_LEG_S):
+    """Repetitions grouped into bouts (phases of the session).
+
+    A rep is one out-and-back swing of at least rep_threshold(): two consecutive
+    zig-zag legs. Each swing is measured from its own local extremes, so a set of
+    curls counts correctly even when a bigger movement elsewhere in the session
+    sets the overall range. With `t_ms`, a leg slower than `max_leg_s` (a pause,
+    or a change of task) ends the bout, so a session of curls, then rotations,
+    then curls reports each phase on its own.
+    Returns [{"t_start_ms", "t_end_ms", "reps", "mean_amplitude_deg"}]."""
+    a = np.asarray(angle_deg, dtype=float)
+    if a.size < 3 or not np.all(np.isfinite(a)):
+        return []
+    pts = _turning_points(a, rep_threshold(a, min_amplitude_deg))
+    if len(pts) < 3:
+        return []
+    thr = rep_threshold(a, min_amplitude_deg)
+    t = (np.asarray(t_ms, dtype=float) if t_ms is not None
+         else np.arange(a.size, dtype=float))
+    # A bout breaks where the motion PAUSES: the signal dwells at an extreme for
+    # more than REP_PAUSE_S before the next swing leaves it, or one swing takes
+    # longer than max_leg_s. The pause point is shared: it ends one bout and
+    # starts the next, so neither loses the half-rep that touches it.
+    bouts, cur, start_t = [], [pts[0]], [float(t[pts[0]])]
+    for k in range(len(pts) - 1):
+        p0, p1 = pts[k], pts[k + 1]
+        seg = np.abs(a[p0:p1 + 1] - a[p0]) <= 0.1 * thr
+        depart = p0 + int(np.nonzero(seg)[0][-1])
+        if t_ms is not None and ((t[depart] - t[p0]) / 1000.0 > REP_PAUSE_S or
+                                 (t[p1] - t[depart]) / 1000.0 > max_leg_s):
+            bouts.append(cur)
+            cur = [p0]
+            start_t.append(float(t[depart]))
+        cur.append(p1)
+    bouts.append(cur)
+    out = []
+    for b, t0 in zip(bouts, start_t):
+        reps = (len(b) - 1) // 2
+        if reps < 1:
+            continue
+        amps = np.abs(np.diff(a[b[:2 * reps + 1]]))
+        out.append({"t_start_ms": round(t0, 1),
+                    "t_end_ms": round(float(t[b[2 * reps]]), 1),
+                    "reps": int(reps),
+                    "mean_amplitude_deg": round(float(np.mean(amps)), 1)})
+    return out
+
+
+def count_reps(angle_deg, min_amplitude_deg=REP_MIN_AMPLITUDE_DEG, t_ms=None):
     """Count movement repetitions in an angle series (calibration-free).
 
-    A rep = one full oscillation. We use hysteretic midline crossings: the signal
-    must dip below (mid − h) and rise back above (mid + h) to score one cycle,
-    where the band h is 25% of the swing. That rejects tremor/noise wiggles while
-    counting genuine flex→extend→flex cycles, and it works on RELATIVE angles too
-    (only the shape matters, not the anatomical zero) — hence needs_calibration
-    is False for this metric in the resolver.
+    A rep = one full out-and-back swing, found by zig-zag turning points (see
+    find_rep_bouts); wiggles under the threshold (tremor / noise) never count.
+    It works on RELATIVE angles too (only the shape matters, not the anatomical
+    zero) — hence needs_calibration is False for this metric in the resolver.
     """
-    a = np.asarray(angle_deg, dtype=float)
-    amp = float(np.max(a) - np.min(a))
-    if amp < min_amplitude_deg or a.size < 3:
-        return 0
-    mid = 0.5 * (np.max(a) + np.min(a))
-    h = 0.25 * amp
-    reps, armed = 0, False           # armed = we've seen the low half since last rep
-    for x in a:
-        if x < mid - h:
-            armed = True
-        elif x > mid + h and armed:
-            reps += 1
-            armed = False
-    return reps
+    return sum(b["reps"] for b in find_rep_bouts(angle_deg, t_ms,
+                                                  min_amplitude_deg))
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +568,27 @@ def cross_correlation(a, b, fs):
             "lag_s": round(float(-lags[k] / fs), 3) if fs > 0 else 0.0}
 
 
+def joint_frame_deg(joint):
+    """Rotation (degrees, about the long axis Y) from the body's anatomical
+    frame to the joint's own frame at the neutral pose.
+
+    The N-pose holds the palms facing the thighs, i.e. the forearm and hand are
+    turned NEUTRAL_FOREARM_DEG from the anatomical position (palms forward) the
+    ZXY wrist split assumes. Splitting the wrist in the body frame would then
+    read flexion as radial/ulnar deviation and vice versa; splitting it in the
+    hand's own neutral frame keeps flexion on flexion. Mirrored for the left
+    side (metrics mirrors left joints after this). Elbow and shoulder are
+    unaffected (their proximal segment does not turn with the forearm)."""
+    if joint.distal.startswith("hand_"):
+        return NEUTRAL_FOREARM_DEG if joint.distal.endswith("_r") else -NEUTRAL_FOREARM_DEG
+    return 0.0
+
+
+def joint_frame_quat(joint):
+    h = np.radians(joint_frame_deg(joint)) / 2.0
+    return np.array([np.cos(h), 0.0, np.sin(h), 0.0])
+
+
 def mirror_left(q):
     """Mirror a left-side anatomical rotation into its right-side equivalent.
 
@@ -535,7 +651,8 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
     """
     q_rel = qnorm(qmul(qconj(q_prox), q_dist))
     if q_wa is not None:
-        q_rel = qnorm(qmul(qmul(qconj(q_wa), q_rel), q_wa))
+        frame = qmul(q_wa, joint_frame_quat(joint))
+        q_rel = qnorm(qmul(qmul(qconj(frame), q_rel), frame))
         if joint.distal.endswith("_l"):
             q_rel = mirror_left(q_rel)
     sequence = joint.decomposition.split()[0]
@@ -555,6 +672,10 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
         # Unwrap in radians (removes the ±π sawtooth) THEN convert, so a real sweep
         # past the wrap point stays continuous and ROM is the true excursion.
         ang = np.degrees(np.unwrap(euler[:, d.seq_index]))
+        # unwrap anchors on the first sample; shift by whole turns so the
+        # session's middle reads within ±180° (a glitchy first sample must not
+        # push the whole series a turn away)
+        ang = ang - 360.0 * np.round(np.median(ang) / 360.0)
         well_defined = slot_ok[d.seq_index]
         entry = {"key": d.key, "name": d.name, "plane": d.plane}
         if not well_defined.all():
@@ -578,6 +699,8 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
             entry["rom"] = _rom(ang)
             entry["velocity"] = velocity_stats(ang, t_ms)
             series[d.key] = ang
+        entry["plausibility"] = check_plausibility(
+            series[d.key], d, clinical and q_wa is not None)
         dofs.append(entry)
 
     # Reps (and the derived tier) use the joint's declared primary DOF — for the
@@ -589,10 +712,12 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
     primary = (declared[0] if declared
                else max(rom_dofs, key=lambda d: d["rom"]["range_deg"])
                if rom_dofs else dofs[0])
-    reps = {"count": 0, "primary_dof": primary["key"]}
+    reps = {"count": 0, "primary_dof": primary["key"], "bouts": []}
     if primary["rom"] is not None:
-        reps["count"] = count_reps(series[primary["key"]][
-            np.isfinite(series[primary["key"]])])
+        ser = series[primary["key"]]
+        fin = np.isfinite(ser)
+        reps["bouts"] = find_rep_bouts(ser[fin], np.asarray(t_ms)[fin])
+        reps["count"] = sum(b["reps"] for b in reps["bouts"])
     report = {
         "key": jkey, "name": joint.name,
         "clinical": clinical,
@@ -600,7 +725,44 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
         "dofs": dofs,
         "reps": reps,
     }
+    bad = [f"{d['name']}: {'; '.join(d['plausibility']['issues'])}"
+           for d in dofs if not d["plausibility"]["ok"]]
+    if bad:
+        report["plausibility_warning"] = (
+            "physically implausible angles — check the calibration pose, the "
+            "facing and sensor slip before trusting this joint: " + " | ".join(bad))
     return report, series
+
+
+def check_plausibility(angle_deg, dof, anatomical):
+    """Flag angle series that a real joint cannot produce.
+
+    Always: a range over 360° (a joint cannot turn a full circle — a wrap or
+    calibration artifact), and sample-to-sample jumps over JUMP_MAX_DEG. With
+    anatomical axes, also the DOF's physiological limits (`dof.plausible_deg`):
+    more than 2% of samples outside them means the zero or the axes are off.
+    """
+    a = np.asarray(angle_deg, dtype=float)
+    f = a[np.isfinite(a)]
+    issues, out = [], {}
+    if f.size >= 2:
+        span = float(np.max(f) - np.min(f))
+        if span > 360.0:
+            issues.append(f"range {span:.0f}° exceeds a full turn")
+        steps = np.abs(np.diff(a))
+        jumps = int(np.sum(steps[np.isfinite(steps)] > JUMP_MAX_DEG))
+        if jumps:
+            issues.append(f"{jumps} jump(s) > {JUMP_MAX_DEG:.0f}° between samples")
+        out["jumps"] = jumps
+        lim = getattr(dof, "plausible_deg", None)
+        if anatomical and lim:
+            frac = float(np.mean((f < lim[0]) | (f > lim[1])))
+            out["outside_limits_frac"] = round(frac, 3)
+            out["limits_deg"] = list(lim)
+            if frac > PLAUSIBLE_OUTSIDE_FRAC:
+                issues.append(f"{frac * 100:.0f}% of samples outside the "
+                              f"physiological {lim[0]:.0f}…{lim[1]:.0f}°")
+    return {"ok": not issues, "issues": issues, **out}
 
 
 # ---------------------------------------------------------------------------
@@ -711,8 +873,29 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
 # ---------------------------------------------------------------------------
 # Top-level assembly
 # ---------------------------------------------------------------------------
-def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration):
-    """Build the full metrics report from a loaded aligned stream + calibration."""
+def trim_to_analysis(t_ms, seg_quats, calibration):
+    """Drop the samples before the neutral hold (setup, not protocol).
+
+    Returns (t_ms, seg_quats, start_ms or None). Leaves the stream untouched
+    when there is no calibration window, or nothing (or too little) to keep."""
+    t0 = analysis_start_ms(calibration)
+    if t0 is None or t0 <= t_ms[0]:
+        return t_ms, seg_quats, None
+    keep = t_ms >= t0
+    if keep.sum() < 3:
+        return t_ms, seg_quats, None
+    return t_ms[keep], {s: q[keep] for s, q in seg_quats.items()}, t0
+
+
+def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
+    """Build the full metrics report from a loaded aligned stream + calibration.
+
+    With `trim` (default) the analysis starts at the neutral hold, so setup
+    motion before the protocol never enters the ROM / rep / activity numbers."""
+    t_full0 = float(t_ms[0])
+    start = None
+    if trim:
+        t_ms, seg_quats, start = trim_to_analysis(t_ms, seg_quats, calibration)
     q_seg, calibrated = apply_calibration(seg_quats, calibration)
     q_wa = resolve_anatomical_frame(calibration)
     caps = resolve(montage)
@@ -779,6 +962,9 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration):
         "sample_rate_hz": round(fs, 2),
         "n_samples": int(len(t_ms)),
         "duration_s": round(float((t_ms[-1] - t_ms[0]) / 1000.0), 2),
+        "analysis_window_ms": [round(float(t_ms[0]), 1), round(float(t_ms[-1]), 1)],
+        "trimmed_before_neutral_s": (round((start - t_full0) / 1000.0, 2)
+                                     if start is not None else 0.0),
         "joints": joints_out,
         "blocked_joints": blocked_out,
         "segments": segments_out,
@@ -799,6 +985,10 @@ def print_report(rep):
     print(f"Metrics — subject {subj}, session {sess}")
     print(f"  {rep['n_samples']} samples over {rep['duration_s']} s   "
           f"calibration: {cal_label}")
+    if rep.get("trimmed_before_neutral_s"):
+        print(f"  analysis starts at the neutral hold "
+              f"({rep['analysis_window_ms'][0]:.0f} ms) — dropped "
+              f"{rep['trimmed_before_neutral_s']:.1f} s of pre-protocol setup")
     if rep["calibration_used"] and not rep.get("anatomical_axes"):
         print("  ! anatomical axes unknown (no confident facing) — joint angles "
               "are RELATIVE-only")
@@ -809,6 +999,7 @@ def print_report(rep):
         reps = j.get("reps", {})
         rep_s = (f"   reps {reps['count']} ({reps['primary_dof']})"
                  if reps.get("count") else "")
+        bouts = reps.get("bouts") or []
         print(f"  {j['key']:<12} {j['name']}{tag}{rep_s}")
         print(f"       decomposition: {j['decomposition']}")
         for d in j["dofs"]:
@@ -822,6 +1013,17 @@ def print_report(rep):
             print(f"       {d['name']:<28} ROM {r['range_deg']:6.1f}°  "
                   f"[{r['min_deg']:+.0f}…{r['max_deg']:+.0f}]  "
                   f"peak {v['peak_deg_s']:.0f}°/s{frac}")
+            pl = d.get("plausibility") or {}
+            for issue in pl.get("issues", []):
+                print(f"         ! implausible: {issue}")
+        if len(bouts) > 1:
+            print("       rep bouts: " + ", ".join(
+                f"{b['reps']}× @ {b['t_start_ms'] / 1000:.0f}–"
+                f"{b['t_end_ms'] / 1000:.0f} s (~{b['mean_amplitude_deg']:.0f}°)"
+                for b in bouts))
+        if j.get("plausibility_warning"):
+            print("       ! check calibration pose / facing / sensor slip before "
+                  "trusting this joint")
     for b in rep["blocked_joints"]:
         print(f"  {b['key']:<12} {b['name']}  ✗ blocked: missing "
               f"{', '.join(b['missing'])}")
@@ -861,7 +1063,8 @@ def cmd_compute(args):
         print(f"[metrics] no calibration at {args.calibration} — reporting "
               f"RELATIVE-only.", file=sys.stderr)
 
-    rep = compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration)
+    rep = compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration,
+                          trim=not args.keep_pre_neutral)
     if args.out:
         with open(args.out, "w") as f:
             json.dump(rep, f, indent=2)
@@ -1057,6 +1260,31 @@ def selftest():
     xc = cross_correlation(five, np.roll(five, 10), fs8)
     # peak_r < 1 because a 10-sample lag drops edge samples from the overlap.
     xc_ok = xc["peak_r"] > 0.9 and abs(xc["lag_s"] - 0.2) < 0.04
+    #   rep bouts: 4 big curls, a 12 s rest, then 3 small rotations. A global
+    #   midline would miss the small set; per-swing zig-zag counts both phases.
+    tb = np.arange(0, 40000, 50.0)
+    sb = np.zeros_like(tb)
+    c1 = tb < 12000
+    sb[c1] = 70 * (1 - np.cos(2 * np.pi * tb[c1] / 3000.0))           # 0..140°
+    c2 = (tb >= 24000) & (tb < 36000)
+    sb[c2] = 20 * (1 - np.cos(2 * np.pi * (tb[c2] - 24000) / 4000.0))  # 0..40°
+    bouts = find_rep_bouts(sb, tb)
+    bouts_ok = [b["reps"] for b in bouts] == [4, 3]
+    #   plausibility: a clean flexion passes; a >360° span, a jump and a
+    #   out-of-limit hyperextension are each flagged.
+    from motion_capabilities import JOINTS as _J
+    fdof = _J["elbow_r"].dofs[0]
+    clean = check_plausibility(np.linspace(0, 130, 100), fdof, True)
+    turn = check_plausibility(np.linspace(-400, 20, 100), fdof, False)
+    hyper = check_plausibility(np.r_[np.full(80, -60.0), np.linspace(0, 90, 20)],
+                               fdof, True)
+    plaus_ok = (clean["ok"] and not turn["ok"] and turn["jumps"] == 0
+                and not hyper["ok"] and hyper["outside_limits_frac"] > 0.5)
+    ok = ok and bouts_ok and plaus_ok
+    print(f"[selftest] rep bouts {[b['reps'] for b in bouts]} (want [4, 3]) "
+          f"{'OK' if bouts_ok else 'FAIL'}; plausibility flags clean/turn/"
+          f"hyperextension {clean['ok']}/{turn['ok']}/{hyper['ok']} "
+          f"(want True/False/False) {'OK' if plaus_ok else 'FAIL'}")
     ok = ok and reps_ok and sparc_ok and xc_ok
     print(f"[selftest] primitives: reps(5-cycle)={reps5} tremor={tremor} "
           f"{'OK' if reps_ok else 'FAIL'}; SPARC smooth {sp_smooth} > jerky "
@@ -1175,12 +1403,18 @@ def selftest():
     A = lambda ax, deg: _q_axis(ax, np.radians(deg))          # noqa: E731
     Rx_abd, Rz_flex, Ry_int = [-1, 0, 0], [0, 0, 1], [0, 1, 0]
     ident = IDENTITY
+    # wrist motion is defined in the hand's OWN neutral frame (the N-pose has
+    # the palms facing the thighs, NEUTRAL_FOREARM_DEG from palms-forward)
+    Fh = A(Ry_int, NEUTRAL_FOREARM_DEG)
+    in_hand = lambda q: qmul(qmul(Fh, q), qconj(Fh))          # noqa: E731
     # (case, shoulder S, elbow E, wrist W, {dof path: expected deg})
     cases = [
         ("elbow flex 60", ident, A(Rz_flex, 60), ident, {("elbow", "flex_ext"): 60}),
         ("pronation 40", ident, A(Ry_int, 40), ident, {("elbow", "pro_sup"): 40}),
-        ("wrist flex 30", ident, ident, A(Rz_flex, 30), {("wrist", "flex_ext"): 30}),
-        ("ulnar dev 20", ident, ident, A([1, 0, 0], 20), {("wrist", "rad_uln"): 20}),
+        ("wrist flex 30", ident, ident, in_hand(A(Rz_flex, 30)),
+         {("wrist", "flex_ext"): 30}),
+        ("ulnar dev 20", ident, ident, in_hand(A([1, 0, 0], 20)),
+         {("wrist", "rad_uln"): 20}),
         ("sh flex 60", A(Rz_flex, 60), ident, ident,
          {("shoulder", "plane_elev"): 90, ("shoulder", "elevation"): 60}),
         ("sh abd 60", A(Rx_abd, 60), ident, ident,
@@ -1284,6 +1518,9 @@ def main():
     pc.add_argument("--out", help="write the metrics report as JSON here")
     pc.add_argument("--json", action="store_true",
                     help="also print the report as JSON to stdout")
+    pc.add_argument("--keep-pre-neutral", action="store_true",
+                    help="analyze the whole record, including the setup before "
+                         "the neutral hold (default: start at the neutral hold)")
     pc.set_defaults(func=cmd_compute)
 
     ps = sub.add_parser("selftest", help="validate the math (no hardware)")
