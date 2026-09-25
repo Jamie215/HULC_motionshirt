@@ -20,3 +20,4 @@ calibration.json
 # the output name varies; the tracked doc pages are un-ignored just below.
 *.html
 !tools/pipeline_walkthrough.html
+metrics.json
