@@ -218,6 +218,10 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   ground arrow marks FRONT (BACK / L / R around it), the chest face is lighter
 >   and the head has a nose; Front / Side / Top buttons snap the camera. Unknown
 >   facing → a dashed "front?" arrow.
+> - **Forearm rotation** — limb boxes roll with the measured twist; forearm and
+>   hand are flat with a lighter palm face and a thumb nub, and a corner panel
+>   reads the live pronation/supination angle (same math as `metrics.py`).
+>   Playback runs at 1× / 2× / 5×.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 

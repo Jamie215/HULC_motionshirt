@@ -29,6 +29,17 @@ subject's left/right (from the calibration facing), a ground arrow marks FRONT
 nose. Front / Side / Top buttons snap the camera to those views. When the facing
 is unknown the arrow reads "front?" and the forward direction is nominal.
 
+Forearm rotation
+----------------
+Each limb box rolls with its bone's measured twist (its cross-section follows
+the bone's own anterior axis, not a fixed world reference). The forearm and hand
+are flat slabs with a lighter FRONT (palm-side) face and a thumb nub on the
+lateral side, so palm-forward / thumb-out reads as supinated and palm-back /
+thumb-in as pronated. A corner panel shows the live pronation/supination angle
+per forearm, computed exactly as metrics.py does (q_rel in the baked anatomical
+frame, left mirrored, ZXY slot 2) — calibrated view with a known front only.
+Playback runs at 1× / 2× / 5×.
+
 Facing (heading) auto-correction
 --------------------------------
 The mag-referenced world gives orientation but not how the subject's forward
@@ -93,6 +104,7 @@ from calibrate_segments import (  # noqa: E402
     load_aligned, load_montage, qmul, qnorm, _q_list,
 )
 from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
+from metrics import resolve_anatomical_frame  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
 IDENTITY_Q = [1.0, 0.0, 0.0, 0.0]
@@ -206,6 +218,11 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
         "note": h.get("note", ""),
     }
 
+    # Anatomical frame at neutral (X anterior, Y up, Z right) — the same q_WA
+    # metrics.py decomposes in — so the viewer can read the live forearm
+    # pronation/supination angle with identical conventions. None if unknown.
+    q_wa = resolve_anatomical_frame(calibration) if calibration else None
+
     return {
         "schema_version": SCHEMA_VERSION,
         "meta": {
@@ -225,6 +242,8 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "has_root": "torso" in seg_quats,
             "both_arms": both_arms,
             "heading": heading,
+            "anatomical_frame_quat": (None if q_wa is None
+                                      else [round(float(v), 8) for v in q_wa]),
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
@@ -474,6 +493,11 @@ def selftest():
           and "compass()" in html and "RIGHT_W" in html,
           "skeleton-only viewer with FRONT compass, Front/Side/Top views and "
           "facing-placed shoulders")
+    check('data-speed="2"' in html and 'data-speed="5"' in html
+          and "acc+=dt*SPEED" in html and "function proSup" in html
+          and scene["meta"]["anatomical_frame_quat"] is not None
+          and len(scene["meta"]["anatomical_frame_quat"]) == 4,
+          "1×/2×/5× playback + live forearm rotation (anatomical frame baked)")
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
@@ -623,6 +647,16 @@ _HTML_TEMPLATE = r"""<!doctype html>
     color:var(--built)}
   .badge.raw{background:color-mix(in srgb,var(--planned) 22%,transparent);
     color:var(--planned)}
+  .live{position:absolute;right:12px;bottom:12px;background:var(--surface);
+    border:1px solid var(--line);border-radius:10px;padding:9px 12px;
+    box-shadow:var(--shadow);min-width:210px;font-size:12px}
+  .live h2{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--muted)}
+  .lv-row{display:flex;justify-content:space-between;gap:14px;padding:1px 0;
+    font-variant-numeric:tabular-nums}
+  .lv-row b{color:var(--accent-ink);font-weight:600}
+  .lv-na{color:var(--faint)}
+  .lv-why{color:var(--faint);font-size:11px;margin-top:3px}
   footer{border-top:1px solid var(--line);background:var(--surface);
     padding:11px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
   button{font:inherit;cursor:pointer;border:1px solid var(--line);
@@ -702,16 +736,25 @@ _HTML_TEMPLATE = r"""<!doctype html>
     quaternion and hung from its parent's joint. Orientation is measured; the
     bone lengths and joint spots are <b>assumed anatomy</b>. The ground arrow
     marks the subject's <b>front</b>; the chest face is lighter and the head has
-    a nose. Drag to orbit &middot; scroll to zoom.</div>
+    a nose. Each limb's lighter face is its front (the palm side of the forearm
+    and hand), and the dark nub is the thumb: palm forward / thumb out =
+    supinated, palm back / thumb in = pronated. Drag to orbit &middot; scroll to
+    zoom.</div>
   <div class="hint" id="hint"></div>
 </header>
 <main>
   <canvas id="view"></canvas>
   <aside id="metrics" class="hidden" aria-label="Session metrics"></aside>
   <div class="legend"><h2>Segments</h2><div id="legend"></div></div>
+  <div class="live" id="live" hidden></div>
 </main>
 <footer>
   <button id="play" class="primary">&#9654; Play</button>
+  <div class="toggle" id="speed" title="Playback speed">
+    <button data-speed="1" class="on">1&times;</button>
+    <button data-speed="2">2&times;</button>
+    <button data-speed="5">5&times;</button>
+  </div>
   <button id="mstoggle" hidden>&#9776; Metrics</button>
   <div class="toggle" id="view3d" title="Snap the camera">
     <button data-view="front">Front</button>
@@ -802,6 +845,9 @@ const FRONT_KNOWN=!!HEADING.confident;
 const FACE_DEG=FRONT_KNOWN?(HEADING.facing_deg??HEADING.correction_yaw_deg??0):0;
 const _fr=FACE_DEG*Math.PI/180;
 const RIGHT_W=[Math.cos(_fr),-Math.sin(_fr),0];      // subject's right, world, at neutral
+const FWD_W=[Math.sin(_fr),Math.cos(_fr),0];         // subject's forward, world, at neutral
+// A limb's lateral side (thumb side in the anatomical position) at neutral.
+const LATERAL_W=seg=>seg.endsWith('_l')?scl(RIGHT_W,-1):RIGHT_W;
 
 // ---- ASSUMED anatomy for the skeleton ----
 // The connectivity (the anatomical chain from the body model) is real; the
@@ -861,7 +907,7 @@ for(const s of DATA.segments){
 // from its right side. Default: front, a little to the subject's right, above.
 const VIEWS={front:[Math.PI/2,Math.PI*0.46], side:[0,Math.PI*0.46],
              top:[Math.PI/2,0.12]};
-let az=Math.PI/2-0.7, el=Math.PI*0.36, rad=3.15;
+let az=Math.PI/2-0.7, el=Math.PI*0.36, rad=2.7;
 let cam, fwd, right, tup, focal, ccx, ccy;
 function updateCamera(){
   const T=TARGET;
@@ -878,7 +924,7 @@ function project(P){
 
 // ---- playback / view state ----
 const N=DATA.meta.n_frames;
-let frame=0, mode=DATA.meta.has_calibration?'cal':'raw', playing=false;
+let frame=0, mode=DATA.meta.has_calibration?'cal':'raw', playing=false, SPEED=1;
 function segQuat(b,i){
   const q=b.frames[i];
   return mode==='cal' ? qmul(q,b.offset) : q;
@@ -916,7 +962,10 @@ function fkPose(){
   // present bones (solid, real orientation), positions rotated into facing
   const pos={};
   for(const b of bodies)
-    pos[b.seg]={prox:faced(prox(b.seg)), dist:faced(dist(b.seg,q[b.seg]))};
+    pos[b.seg]={prox:faced(prox(b.seg)), dist:faced(dist(b.seg,q[b.seg])),
+      // the bone's own front and lateral directions, so its box rolls with the
+      // measured twist (pronation / supination, humeral rotation)
+      ant:faced(qrot(q[b.seg],FWD_W)), lat:faced(qrot(q[b.seg],LATERAL_W(b.seg)))};
   // ghost bones: absent ancestors (not the torso root) on some present lineage
   const gset=new Set();
   for(const b of bodies){ let s=ANAT_CHAIN[b.seg];
@@ -925,6 +974,44 @@ function fkPose(){
   for(const s of gset) ghosts.push({seg:s, prox:faced(prox(s)), dist:faced(dist(s,IDENT))});
   const shoulder=s=>faced(prox(s));                  // for the girdle
   return {pos, ghosts, shoulder};
+}
+
+// ---- live forearm pronation (+) / supination (-), degrees ----
+// Exactly metrics.py's chain: q_rel = conj(q_UA) ⊗ q_FA re-expressed in the
+// anatomical frame, mirrored for the left arm, ZXY slot 2 = atan2(-R20, R22).
+// Only in the calibrated view with a known front; null otherwise (or near the
+// ZXY pole, where the angle is undefined).
+const QWA=DATA.meta.anatomical_frame_quat;
+const qconj=q=>[q[0],-q[1],-q[2],-q[3]];
+function proSup(side){
+  if(mode!=='cal'||!QWA) return null;
+  const ua='upper_arm_'+side, fa='forearm_'+side;
+  if(!present.has(ua)||!present.has(fa)) return null;
+  const B=s=>bodies.find(b=>b.seg===s);
+  const bu=B(ua), bf=B(fa); if(!bu.calibrated||!bf.calibrated) return null;
+  let q=qmul(qmul(qconj(QWA), qmul(qconj(segQuat(bu,frame)),segQuat(bf,frame))), QWA);
+  if(side==='l') q=[q[0],-q[1],-q[2],q[3]];
+  const [w,x,y,z]=q, R20=2*(x*z-w*y), R21=2*(y*z+w*x), R22=1-2*(x*x+y*y);
+  if(Math.sqrt(Math.max(0,1-R21*R21))<Math.sin(10*Math.PI/180)) return null;
+  return Math.atan2(-R20,R22)*180/Math.PI;
+}
+
+// live readout panel (corner of the scene): current forearm rotation per side
+const liveEl=document.getElementById('live');
+function updateLive(){
+  const rows=[];
+  for(const [side,name] of [['r','Right'],['l','Left']]){
+    if(!present.has('forearm_'+side)) continue;
+    const ps=proSup(side);
+    const txt=ps==null ? '<span class="lv-na">—</span>'
+      : Math.abs(ps)<3 ? 'neutral'
+      : `<b>${ps>0?'pronation':'supination'}</b> ${Math.abs(ps).toFixed(0)}°`;
+    rows.push(`<div class="lv-row"><span>${name} forearm</span><span>${txt}</span></div>`);
+  }
+  const why=mode!=='cal'?'switch to Calibrated to read it':!QWA?'front unknown — not anatomical':'';
+  liveEl.hidden=!rows.length;
+  liveEl.innerHTML=`<h2>Forearm rotation</h2>${rows.join('')}`+
+    (why?`<div class="lv-why">${why}</div>`:'');
 }
 
 // ---- the renderer ----
@@ -967,11 +1054,19 @@ function compass(){
 }
 
 // ---- helpers for the SOLID 3-D skeleton (shaded boxes + balls) ----
-// 8 corners of an oriented box spanning A->B with a w×d cross-section.
-function boxBetween(A,B,w,d){
+// 8 corners of an oriented box spanning A->B with a w×d cross-section. With
+// `front` (the bone's own anterior direction) the depth axis v follows it, so
+// the box ROLLS with the bone's twist and face BOX_FACES[3] (+v) is its front;
+// without it a fixed world reference is used (roll not shown — the ghosts).
+function boxBetween(A,B,w,d,front){
   let ax=sub(B,A); const Ln=Math.hypot(ax[0],ax[1],ax[2])||1; ax=scl(ax,1/Ln);
-  const ref=Math.abs(dot(ax,[0,0,1]))<0.9?[0,0,1]:[0,1,0];
-  const u=norm(cross(ax,ref)), v=cross(ax,u), c=[];
+  let v;
+  if(front){ v=sub(front,scl(ax,dot(front,ax))); }
+  if(!v||Math.hypot(v[0],v[1],v[2])<1e-6){
+    const ref=Math.abs(dot(ax,[0,0,1]))<0.9?[0,0,1]:[0,1,0];
+    v=cross(ax,norm(cross(ax,ref)));
+  }
+  v=norm(v); const u=cross(v,ax), c=[];
   for(const P of [A,B]) for(const sv of [-1,1]) for(const su of [-1,1])
     c.push(add(P, add(scl(u,su*w*0.5), scl(v,sv*d*0.5))));
   return c;                                    // order matches BOX_FACES
@@ -1034,14 +1129,27 @@ function renderSkeleton(){
       if(p) polys.push(p);
     });
   }
-  // each limb as a solid shaded box between its two joints
-  const raws=[];
+  // each limb as a solid shaded box between its two joints, rolled with the
+  // bone's measured twist. Forearm and hand are FLAT (wide side-to-side, thin
+  // front-to-back, like the real limb) so a twist visibly turns the slab; the
+  // FRONT face (palm side in the anatomical position) is tinted lighter, the
+  // same cue as the chest — palm-forward = supinated, palm-back = pronated.
+  const raws=[], thumbs=[];
+  const FLAT={forearm:[1.45,0.72], hand:[1.7,0.42]};      // [width, depth] × thick
+  const lighten=c=>[c[0]*0.5+128,c[1]*0.5+128,c[2]*0.5+128];
   for(const b of bodies){
     if(b.seg==='torso') continue;
     const f=pos[b.seg], t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
-    const box=boxBetween(f.prox, f.dist, t, t);
-    for(const fc of BOX_FACES){ const p=faceOf(box,fc,hlBoost(b.seg,SEG[b.seg].color)); if(p) polys.push(p); }
+    const k=FLAT[b.seg.replace(/_[lr]$/,'')]||[1,1];
+    const box=boxBetween(f.prox, f.dist, t*k[0], t*k[1], f.ant);
+    const col=hlBoost(b.seg,SEG[b.seg].color);
+    BOX_FACES.forEach((fc,i)=>{ const p=faceOf(box,fc,i===3?lighten(col):col); if(p) polys.push(p); });
     if(!b.calibrated) raws.push([project(f.prox), project(f.dist)]);
+    // thumb: on the hand if placed, else at the forearm's wrist end
+    const side=b.seg.slice(-2), isHand=b.seg.startsWith('hand');
+    if(isHand || (b.seg.startsWith('forearm') && !present.has('hand'+side)))
+      thumbs.push({at:add(isHand?scl(add(f.prox,f.dist),0.5):f.dist, scl(f.lat,t*k[0]*0.62)),
+                   r:t*(isHand?0.34:0.3), col:shade(SEG[b.seg].color,0.55)});
   }
   // paint every face far -> near (painter's algorithm) for correct occlusion
   polys.sort((x,y)=>y.depth-x.depth);
@@ -1074,6 +1182,10 @@ function renderSkeleton(){
     ball(pos[b.seg].prox, t*0.62, pc?mix(col,pc):col);   // joint with parent -> blend
     if(!hasChild.has(b.seg)) ball(pos[b.seg].dist, t*0.62, col); // leaf tip -> own colour
   }
+  // thumb nubs (lateral side in the anatomical position): with the palm forward
+  // the thumb points out; pronate and it swings in toward the body.
+  for(const th of thumbs) ball(th.at, th.r, th.col);
+  updateLive();
   // ghost (missing-middle) bones: dashed & flat, clearly "not measured"
   ctx.lineCap='round';
   for(const g of ghosts){
@@ -1208,6 +1320,12 @@ const FACING=FRONT_KNOWN
     : 'front: unknown (no torso node) — FRONT marker is nominal; calibrate with --facing-deg';
 hintEl.innerHTML=FACING+' · a dashed bone has no node; an amber-dashed bone is '+
   'uncalibrated (a kink there may be strap tilt, not motion)';
+const speedBox=document.getElementById('speed');
+speedBox.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  SPEED=+b.dataset.speed;
+  for(const x of speedBox.querySelectorAll('button')) x.classList.toggle('on',x===b);
+});
 function setView(v){
   [az,el]=VIEWS[v];
   for(const b of viewBox.querySelectorAll('button'))
@@ -1372,7 +1490,7 @@ let last=performance.now(), acc=0;
 function tick(now){
   const dt=now-last; last=now;
   if(playing && N>1){
-    acc+=dt;
+    acc+=dt*SPEED;
     while(frame<N-1 && acc>=(DATA.t_ms[frame+1]-DATA.t_ms[frame])){
       acc-=(DATA.t_ms[frame+1]-DATA.t_ms[frame]); setFrame(frame+1);
     }
