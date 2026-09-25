@@ -198,6 +198,9 @@ class Joint:
     dofs: tuple                # tuple[DOF]
     decomposition: str        # advisory: intended Euler sequence (ISB/Wu 2005)
     caveat: str = ""
+    primary: str = ""          # DOF key that carries the joint's main movement
+                               # (reps, L/R symmetry, coordination). Empty ->
+                               # the DOF that swung the most in the session.
 
 
 # ISB / Wu et al. (2005) recommended rotation sequences are carried as advisory
@@ -207,11 +210,19 @@ JOINTS = {
         key="shoulder_r", name="Right shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("abd_add",   "Abduction / adduction",          "frontal",    1),
-            DOF("int_ext_rot","Internal / external rotation",  "transverse", 2),
+            # ISB YXY names: the first angle is the DIRECTION the arm is raised
+            # in, the second HOW FAR it is raised in that plane (always >= 0),
+            # the third the twist about the humerus. With elevation kept
+            # positive, a forward raise reads plane -90° on both sides; a
+            # sideways raise reads ±180° (right) / 0° (left) — 180° off the
+            # clinical "0° = abduction, 90° = flexion" reading. The first and
+            # third are undefined with the arm at the side (singularity guard).
+            DOF("plane_elev", "Plane of elevation",            "transverse", 0),
+            DOF("elevation",  "Elevation",                     "plane of elevation", 1),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
+        primary="elevation",
         caveat="Trunk motion contaminates this unless the torso node is present "
                "and calibrated; without torso, report upper-arm elevation only.",
     ),
@@ -219,11 +230,19 @@ JOINTS = {
         key="shoulder_l", name="Left shoulder (glenohumeral+scapular)",
         proximal="torso", distal="upper_arm_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("abd_add",   "Abduction / adduction",          "frontal",    1),
-            DOF("int_ext_rot","Internal / external rotation",  "transverse", 2),
+            # ISB YXY names: the first angle is the DIRECTION the arm is raised
+            # in, the second HOW FAR it is raised in that plane (always >= 0),
+            # the third the twist about the humerus. With elevation kept
+            # positive, a forward raise reads plane -90° on both sides; a
+            # sideways raise reads ±180° (right) / 0° (left) — 180° off the
+            # clinical "0° = abduction, 90° = flexion" reading. The first and
+            # third are undefined with the arm at the side (singularity guard).
+            DOF("plane_elev", "Plane of elevation",            "transverse", 0),
+            DOF("elevation",  "Elevation",                     "plane of elevation", 1),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
+        primary="elevation",
         caveat="Trunk motion contaminates this unless the torso node is present "
                "and calibrated; without torso, report upper-arm elevation only.",
     ),
@@ -627,6 +646,8 @@ def selftest() -> None:
         slots = [d.seq_index for d in j.dofs]
         assert all(0 <= s < 3 for s in slots), f"{jkey}: seq_index out of range: {slots}"
         assert len(set(slots)) == len(slots), f"{jkey}: duplicate seq_index: {slots}"
+        assert not j.primary or j.primary in {d.key for d in j.dofs}, \
+            f"{jkey}: primary {j.primary!r} is not one of its DOFs"
     print(f"           {len(SEGMENTS)} segments, {len(JOINTS)} joints — OK")
 
     # Segment codes are contiguous 0..N-1 and round-trip through the header

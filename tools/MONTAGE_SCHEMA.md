@@ -149,7 +149,7 @@ consistent. Conventions follow the ISB recommendations (Wu et al., 2005).
 
 | Joint | DOFs | Decomposition | Note |
 |---|---|---|---|
-| shoulder | flex/ext, abd/add, int/ext rotation | `YXY` (plane of elevation, elevation, axial) | Ball joint, large ROM — Euler order matters; gimbal lock near poles. Trunk contaminates without a calibrated torso node. |
+| shoulder | plane of elevation, elevation, axial rotation | `YXY` (plane of elevation, elevation, axial) | Ball joint, large ROM — Euler order matters; gimbal lock near poles. Trunk contaminates without a calibrated torso node. |
 | elbow | flex/ext, pronation/supination | `ZXY` | Pro/sup is a radioulnar rotation seen as forearm axial rotation vs the humerus; sensitive to forearm-node roll — calibrate axial zero explicitly. |
 | wrist | flex/ext, radial/ulnar deviation | `ZXY` | |
 

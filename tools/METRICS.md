@@ -96,10 +96,22 @@ Emitted per computable joint, into `joints[]`. Each joint object has `key`, `nam
 | **Per-DOF angle** | `dofs[].` (series, feeds the rest) | Euler decomposition of `q_rel` in the joint's sequence, unwrapped in radians before converting (§2). | ° | For *anatomical* zero, yes; relative shape works without |
 | **Range of motion** | `dofs[].rom` = `{min_deg,max_deg,range_deg,median_deg}` | `range = max − min` over the unwrapped angle (`_rom`/`_stats`). `null` if the DOF is singular for the whole session. | ° | Gates *clinical* ROM; relative-only when `clinical:false` |
 | **Angular velocity** | `dofs[].velocity` = `{peak_deg_s,mean_abs_deg_s,rms_deg_s}` | `v = d(angle)/dt` via `np.gradient` (`velocity_stats`); peak = max\|v\|, mean = mean\|v\|, RMS = √mean(v²). Differentiated **only within** contiguous valid runs, so a masked singular gap never fakes a huge peak. | °/s | No (shape metric) |
-| **Repetitions** | `reps` = `{count,primary_dof}` | Hysteretic midline crossings on the largest-swinging DOF (`count_reps`): the signal must dip below `mid−h` then rise above `mid+h` to score one cycle, with band `h = 25% of swing` and midline `mid = (max+min)/2`. Swings under `REP_MIN_AMPLITUDE_DEG` (15°) score 0 (noise/tremor). | count | No — only shape matters |
+| **Repetitions** | `reps` = `{count,primary_dof}` | Hysteretic midline crossings on the joint's primary DOF (`count_reps`; see below): the signal must dip below `mid−h` then rise above `mid+h` to score one cycle, with band `h = 25% of swing` and midline `mid = (max+min)/2`. Swings under `REP_MIN_AMPLITUDE_DEG` (15°) score 0 (noise/tremor). | count | No — only shape matters |
 
 A `clinical:false` joint also carries a `warning` string spelling out that its
 angles are relative-only.
+
+**Primary DOF.** Reps, L/R symmetry and coordination use the joint's declared
+primary DOF (`Joint.primary`; shoulder = `elevation`), falling back to the DOF
+that swung the most when none is declared or it is singular all session.
+
+**Shoulder DOFs** follow the ISB `YXY` names rather than flexion/abduction:
+
+| Key | Name | Meaning |
+|---|---|---|
+| `plane_elev` | Plane of elevation | *Direction* the arm is raised in. With elevation kept ≥ 0: forward raise ≈ −90° (both sides); sideways raise ≈ ±180° (right) / 0° (left). Undefined with the arm at the side. |
+| `elevation` | Elevation | *How far* the arm is raised, in whatever plane — a forward and a sideways 60° raise both read 60°. Primary DOF. |
+| `axial_rot` | Axial rotation (int / ext) | Twist about the humerus. Like `plane_elev`, only meaningful once the arm is elevated; the two can trade ±180° between them. |
 
 ---
 
@@ -129,7 +141,7 @@ flag and/or a `note`.
 
 | Metric | `target` | `metrics{}` | Method |
 |---|---|---|---|
-| **L/R ROM symmetry** | `symmetry_<joint>` | `symmetry_index`, `rom_ratio`, `left_rom_deg`, `right_rom_deg`, `dof` | On each side's largest-swing DOF: `symmetry_index = 100·\|L−R\| / (½(\|L\|+\|R\|))` (0 = identical, → 200 opposite); `rom_ratio = min/max`. `clinical` = both sides calibrated. |
+| **L/R ROM symmetry** | `symmetry_<joint>` | `symmetry_index`, `rom_ratio`, `left_rom_deg`, `right_rom_deg`, `dof` | On each side's primary DOF: `symmetry_index = 100·\|L−R\| / (½(\|L\|+\|R\|))` (0 = identical, → 200 opposite); `rom_ratio = min/max`. `clinical` = both sides calibrated. |
 | **Bilateral activity asymmetry** | `activity_asymmetry_<segment>` | `asymmetry_index`, `use_ratio`, `active_time_ratio`, `left_travel_deg`, `right_travel_deg` | Signed laterality from segment **travel**: `asymmetry_index = 100·(R−L)/(R+L)` in [−100, +100] (+ = right used more). A session aggregate, so **valid even at low sync confidence** (stated in its `note`) — the sparse-montage workhorse. |
 | **Inter-joint coordination** | `coordination_<a>_<b>` | `pair`, `peak_r`, `lag_s` | Peak normalized cross-correlation of the two joints' primary-DOF series and its lag (`cross_correlation`): both series mean-removed and unit-normalized so `peak_r ∈ [−1,1]`; positive `lag_s` = the second joint follows the first. |
 | **Trunk compensation** | `compensation_<...>` | `trunk_travel_deg`, `trunk_elevation_range_deg` | Trunk excursion during the task, from the torso segment's travel + elevation range. `clinical` = torso calibrated; when false, `note` flags the excursion as relative. |

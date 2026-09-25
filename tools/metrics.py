@@ -532,9 +532,14 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
             series[d.key] = ang
         dofs.append(entry)
 
-    # Reps come off the DOF that swung the most among the ones with a valid ROM.
+    # Reps (and the derived tier) use the joint's declared primary DOF — for the
+    # shoulder that is elevation, since plane of elevation / axial rotation can
+    # swing widely without the arm doing much. Without one, or if it is
+    # singular all session, fall back to the DOF that swung the most.
     rom_dofs = [d for d in dofs if d["rom"] is not None]
-    primary = (max(rom_dofs, key=lambda d: d["rom"]["range_deg"])
+    declared = [d for d in rom_dofs if d["key"] == joint.primary]
+    primary = (declared[0] if declared
+               else max(rom_dofs, key=lambda d: d["rom"]["range_deg"])
                if rom_dofs else dofs[0])
     reps = {"count": 0, "primary_dof": primary["key"]}
     if primary["rom"] is not None:
@@ -553,18 +558,29 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
 # ---------------------------------------------------------------------------
 # Derived metrics (a set of joints/segments) — driven by the resolver
 # ---------------------------------------------------------------------------
+def _primary_dof(joint_report):
+    """The primary DOF entry (with a valid ROM) of a joint report, or None."""
+    dofs = [d for d in (joint_report or {}).get("dofs", []) if d["rom"]]
+    if not dofs:
+        return None
+    key = joint_report.get("reps", {}).get("primary_dof")
+    return next((d for d in dofs if d["key"] == key),
+                max(dofs, key=lambda d: d["rom"]["range_deg"]))
+
+
 def _finite_range(a):
     """Peak-to-peak of the finite samples of a series (0 if none)."""
     f = a[np.isfinite(a)]
     return float(np.max(f) - np.min(f)) if f.size else 0.0
 
 
-def _primary_series(joint_series, jkey):
-    """The largest-swing DOF's angle series for a computed joint (or None)."""
+def _primary_series(joint_series, jrep, jkey):
+    """The primary DOF's angle series for a computed joint (or None)."""
     s = joint_series.get(jkey)
     if not s:
         return None
-    return max(s.values(), key=_finite_range)
+    key = jrep.get(jkey, {}).get("reps", {}).get("primary_dof")
+    return s[key] if key in s else max(s.values(), key=_finite_range)
 
 
 def _symmetry_index(left, right):
@@ -588,11 +604,8 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
         if tgt.startswith("symmetry_"):
             base = tgt[len("symmetry_"):]
             lj, rj = jrep.get(f"{base}_l"), jrep.get(f"{base}_r")
-            ldofs = [d for d in (lj or {}).get("dofs", []) if d["rom"]]
-            rdofs = [d for d in (rj or {}).get("dofs", []) if d["rom"]]
-            if ldofs and rdofs:
-                lp = max(ldofs, key=lambda d: d["rom"]["range_deg"])
-                rp = max(rdofs, key=lambda d: d["rom"]["range_deg"])
+            lp, rp = _primary_dof(lj), _primary_dof(rj)
+            if lp and rp:
                 lrom, rrom = lp["rom"]["range_deg"], rp["rom"]["range_deg"]
                 entry["metrics"] = {
                     "symmetry_index": _symmetry_index(lrom, rrom),
@@ -622,8 +635,8 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
         elif tgt.startswith("coordination_"):
             js = [j for j in cap.requires if j in joint_series]
             if len(js) >= 2:
-                a, b = _primary_series(joint_series, js[0]), \
-                    _primary_series(joint_series, js[1])
+                a, b = _primary_series(joint_series, jrep, js[0]), \
+                    _primary_series(joint_series, jrep, js[1])
                 if a is not None and b is not None:
                     entry["metrics"] = {"pair": [js[0], js[1]],
                                         **cross_correlation(a, b, fs)}
@@ -1013,13 +1026,13 @@ def selftest():
         th = np.radians(amp_deg) * np.sin(2 * np.pi * (cycles / T) * tsec + phase)
         return np.stack([_q_axis(axis, x) for x in th])
 
-    # Shoulders held at a fixed elevation (Rx 50°) and oscillated in-plane, so the
-    # YXY split stays well away from its neutral/overhead singularity — realistic
-    # motion, and it keeps the derived tests off the pole.
+    # Shoulders raised in the frontal plane (about anatomical X) around 50° of
+    # elevation, oscillating in elevation — the shoulder's primary DOF — so the
+    # YXY split stays well away from its neutral/overhead singularity.
     elev = _q_axis([1, 0, 0], np.radians(50.0))
     torso = qnorm(np.tile(IDENTITY, (len(tb), 1)))          # trunk still
-    ua_r = qmul(elev, _cyc([0, 1, 0], 20.0, 5))             # R shoulder, 5 cycles
-    ua_l = qmul(elev, _cyc([0, 1, 0], 12.0, 3))             # L shoulder, 3 cycles
+    ua_r = qmul(elev, _cyc([1, 0, 0], 20.0, 5))             # R shoulder, 5 cycles
+    ua_l = qmul(elev, _cyc([1, 0, 0], 12.0, 3))             # L shoulder, 3 cycles
     # elbow flex phased to start at full extension (a trough) -> clean rep counts
     fa_r = qmul(ua_r, _cyc([0, 0, 1], 30.0, 5, -np.pi / 2))  # R elbow (range 60)
     fa_l = qmul(ua_l, _cyc([0, 0, 1], 20.0, 3, -np.pi / 2))  # L elbow (range 40)
@@ -1069,6 +1082,42 @@ def selftest():
     print(f"[selftest] posture_dwell present & normalized for calibrated segment: "
           f"{'OK' if dwell_ok else 'FAIL'}")
 
+    # (6b) Shoulder labels: a forward raise (flexion, about anatomical Z) and a
+    #      sideways raise (abduction, about anatomical X) from 30° to 60° must both
+    #      read as ELEVATION 30->60, told apart by plane of elevation (±90° vs
+    #      0/180°) — and elevation is the primary DOF that reps/symmetry use.
+    nl = 100
+    tl = np.arange(nl) * 20.0
+    raise_ = np.radians(np.linspace(30.0, 60.0, nl))
+    lmont = {"schema_version": "1.0", "subject": {"id": "S"},
+             "session": {"id": "labels"}, "calibration": {"captured": True},
+             "nodes": [{"node_id": s, "column": c, "segment": s, "calibrated": True}
+                       for s, c in (("torso", "n0"), ("upper_arm_r", "n1"))]}
+    lmeta = {s: {"column": c, "node_id": s}
+             for s, c in (("torso", "n0"), ("upper_arm_r", "n1"))}
+    label_ok, label_msg = True, []
+    for move, axis, plane_ok in (
+            ("flexion", [0, 0, 1], lambda p: abs(abs(p) - 90.0) < 0.5),
+            ("abduction", [-1, 0, 0],
+             lambda p: min(abs(p), abs(abs(p) - 180.0)) < 0.5)):
+        q_wa_l = anatomical_frame_quat(120.0)
+        lq = {"torso": _to_world(np.tile(IDENTITY, (nl, 1)), q_wa_l),
+              "upper_arm_r": _to_world(
+                  np.stack([_q_axis(axis, x) for x in raise_]), q_wa_l)}
+        lrep = compute_metrics(lmont, tl, lq, lmeta, _frame_cal(lq, 120.0))
+        lsh = next(j for j in lrep["joints"] if j["key"] == "shoulder_r")
+        lel = next(d for d in lsh["dofs"] if d["key"] == "elevation")["rom"]
+        lpl = next(d for d in lsh["dofs"] if d["key"] == "plane_elev")["rom"]
+        m_ok = (abs(lel["min_deg"] - 30.0) < 0.5 and abs(lel["max_deg"] - 60.0) < 0.5
+                and plane_ok(lpl["median_deg"])
+                and lsh["reps"]["primary_dof"] == "elevation")
+        label_ok = label_ok and m_ok
+        label_msg.append(f"{move}: elevation {lel['min_deg']:.0f}->"
+                         f"{lel['max_deg']:.0f}, plane {lpl['median_deg']:+.0f}°")
+    ok = ok and label_ok
+    print(f"[selftest] shoulder labels: {'; '.join(label_msg)}; primary=elevation "
+          f"{'OK' if label_ok else 'FAIL'}")
+
     # (7) Singularity guard: a shoulder oscillating in the frontal plane THROUGH
     #     the neutral pole would, unguarded, report a spurious ~180° plane-of-
     #     elevation swing and an absurd peak velocity. The guard must flag the
@@ -1093,15 +1142,15 @@ def selftest():
     scal = _frame_cal(ssegq, -60.0)
     srep = compute_metrics(smont, tns, ssegq, smeta, scal)
     sh = next(j for j in srep["joints"] if j["key"] == "shoulder_r")
-    flex_sh = next(d for d in sh["dofs"] if d["key"] == "flex_ext")   # outer slot
-    elev_sh = next(d for d in sh["dofs"] if d["key"] == "abd_add")    # middle slot
+    flex_sh = next(d for d in sh["dofs"] if d["key"] == "plane_elev")  # outer slot
+    elev_sh = next(d for d in sh["dofs"] if d["key"] == "elevation")   # middle slot
     guard_ok = (flex_sh.get("defined_frac", 1.0) < 1.0            # outer flagged
                 and "defined_frac" not in elev_sh                # middle untouched
                 and (flex_sh["rom"] is None
                      or flex_sh["velocity"]["peak_deg_s"] < 2000))  # no ∞ velocity
     ok = ok and guard_ok
-    print(f"[selftest] shoulder singularity guard: flex_ext defined "
-          f"{flex_sh.get('defined_frac')} (outer, flagged), abd_add full "
+    print(f"[selftest] shoulder singularity guard: plane_elev defined "
+          f"{flex_sh.get('defined_frac')} (outer, flagged), elevation full "
           f"(middle), peak vel physical {'OK' if guard_ok else 'FAIL'}")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — Euler round-trip, injected "

@@ -123,6 +123,12 @@ WORLD_UP = np.array([0.0, 0.0, 1.0])
 # +Z in the sensor frame — a sensor lying flat on the sternum has its normal
 # pointing forward. Change this one vector for a different torso mounting; the
 # horizontality self-test below flags a badly-wrong guess rather than trusting it.
+# Only the horizontal direction of this axis is used, so a board PITCHED up/down
+# (a sloped chest) or ROLLED in its own plane still gives the right facing (pitch
+# past HEADING_HORIZONTALITY_MAX_DEG is flagged low-confidence). A board YAWED
+# toward one side — e.g. sitting off the sternum on a curved chest — shifts the
+# facing by that same angle, undetected; keep the torso node on the sternum
+# midline, or on the upper back between the shoulder blades (forward = -Z).
 TORSO_FORWARD_IN_SENSOR = np.array([0.0, 0.0, 1.0])
 # If the assumed forward axis lands more than this far from horizontal at the
 # (upright) neutral pose, the mounting assumption is likely violated -> we mark
