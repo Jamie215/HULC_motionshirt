@@ -263,6 +263,27 @@ def run_case(model, montage_name, segs, cond, outdir, seed):
                             "p95": round(float(np.percentile(np.abs(e1), 95)), 2)},
                 "opensense": {"rms": round(float(np.sqrt(np.mean(e2 ** 2))), 2),
                               "p95": round(float(np.percentile(np.abs(e2), 95)), 2)}}
+    # Elbow also scored against the model's own joint COORDINATES — independent
+    # of any frame choice (the model's elbow axis is ~13° off the trunk's
+    # left-right axis, so a trunk-frame "truth" split leaks flexion into pro/sup).
+    if "elbow_r" in ours:
+        import opensim as osim
+        mot = osim.TimeSeriesTable(os.path.join(osd, "ik_orientations.mot"))
+        t_os = np.asarray(mot.getIndependentColumn()) + tt[0] / 1000.0
+        tc, tco = truth_coords(tt / 1000.0), truth_coords(t_os)
+        neutral_ps = opensense_ik.FOREARM_NEUTRAL_DEG["palms-in"]
+
+        def rms(e):
+            e = e[np.isfinite(e)]
+            return round(float(np.sqrt(np.mean(e ** 2))), 2)
+        res["elbow_vs_model_coords"] = {
+            "default": {"flex_ext": rms(ours["elbow_r"]["flex_ext"] - tc["elbow_flex_r"]),
+                        "pro_sup": rms(ours["elbow_r"]["pro_sup"]
+                                       - (tc["pro_sup_r"] - neutral_ps))},
+            "opensense": {"flex_ext": rms(mot.getDependentColumn("elbow_flex_r")
+                                          .to_numpy() - tco["elbow_flex_r"]),
+                          "pro_sup": rms(mot.getDependentColumn("pro_sup_r")
+                                         .to_numpy() - tco["pro_sup_r"])}}
     return res
 
 
@@ -288,6 +309,12 @@ def main():
             for k, v in r["dofs"].items():
                 print(f"  {k:<22} {v['default']['rms']:7.1f} /{v['default']['p95']:6.1f}"
                       f"   {v['opensense']['rms']:7.1f} /{v['opensense']['p95']:6.1f}")
+            ec = r.get("elbow_vs_model_coords")
+            if ec:
+                print(f"  elbow vs model coordinates (RMS): default flex "
+                      f"{ec['default']['flex_ext']:.1f} pro/sup {ec['default']['pro_sup']:.1f}"
+                      f" | opensense flex {ec['opensense']['flex_ext']:.1f} pro/sup "
+                      f"{ec['opensense']['pro_sup']:.1f}")
     with open(os.path.join(args.out, "compare_results.json"), "w") as f:
         json.dump(results, f, indent=1)
     print(f"\n[compare] wrote {os.path.join(args.out, 'compare_results.json')}")

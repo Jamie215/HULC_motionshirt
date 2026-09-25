@@ -1,5 +1,9 @@
 # OpenSense feasibility & partial-montage evaluation
 
+> Follow-up: the OpenSense path is now `tools/opensense_ik.py` (with the model
+> fixes below), and the head-to-head accuracy assessment against the default
+> chain is in [`SOLVER_COMPARISON.md`](SOLVER_COMPARISON.md).
+
 Question: can OpenSim/OpenSense (Stanford, Apache-2.0) replace our own
 calibration + joint-angle stage, and how does it behave when only some nodes
 are worn? Harness: `tools/opensense_feasibility.py` (synthetic ground truth, no

@@ -164,7 +164,8 @@ Nothing is connected. Run this **4-beat protocol**. It satisfies two separate
 needs in one take: a *still* hold for calibration, and *shared* motion (both
 segments moving together) so reconcile can lock the clock from the motion alone.
 
-1. [ ] **Neutral hold, ~5 s** — stand in the N-pose, still. This is the
+1. [ ] **Neutral hold, ~5 s** — stand in the N-pose (arms straight at the
+       sides, **palms facing the thighs**), still. This is the
        calibration window.
 2. [ ] **Sync gesture, ~5 s** — 3–5 big **whole-arm** swings (elbow locked, move
        from the shoulder) so **both** nodes move together. This is what gives
