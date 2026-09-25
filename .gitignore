@@ -21,3 +21,4 @@ calibration.json
 *.html
 !tools/pipeline_walkthrough.html
 metrics.json
+*.json
