@@ -514,7 +514,7 @@ def selftest():
     #      the panel markup, and (this fully-calibrated synth) reads CLINICAL.
     jkeys = [j["key"] for j in metrics_report["joints"]]
     panel = ('id="metrics"' in html and '"metrics":' in html
-             and "Session metrics" in html and 'class="flag clin"' in html
+             and "Session metrics" in html and 'class="tag rel"' in html
              and scene["metrics"] is not None
              and scene["joint_segments"].get("elbow_r") == ["upper_arm_r", "forearm_r"])
     check(panel, f"stage-7 metrics panel baked in ({len(jkeys)} joint(s): "
@@ -631,36 +631,36 @@ _HTML_TEMPLATE = r"""<!doctype html>
     font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
     display:flex;flex-direction:column;height:100vh;overflow:hidden}
   .mono{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
-  header{padding:14px 20px 12px;border-bottom:1px solid var(--line);
+  header{padding:14px 22px 12px;border-bottom:1px solid var(--line);
     background:var(--surface)}
-  .eyebrow{font:600 11px/1 ui-monospace,monospace;letter-spacing:.14em;
-    text-transform:uppercase;color:var(--accent-ink);margin-bottom:6px}
-  h1{margin:0;font-size:17px;font-weight:600}
-  .sub{color:var(--muted);font-size:12.5px;margin-top:3px}
-  .stage{max-width:820px;margin-top:8px;color:var(--muted);font-size:12.5px}
+  .titlebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  h1{margin:0;font-size:20px;font-weight:650;letter-spacing:-.01em}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;
+    cursor:default}
+  .chip.good{background:color-mix(in srgb,var(--built) 16%,transparent);color:var(--built)}
+  .chip.warn{background:color-mix(in srgb,var(--planned) 18%,transparent);color:var(--planned)}
+  .sub{color:var(--muted);font-size:13.5px;margin-top:4px}
   main{flex:1;position:relative;min-height:0}
   #view{position:absolute;inset:0;display:block;width:100%;height:100%;
     touch-action:none;cursor:grab}
   #view:active{cursor:grabbing}
-  .hint{max-width:820px;margin-top:4px;color:var(--faint);font-size:11.5px}
   .legend{position:absolute;right:12px;top:12px;background:var(--surface);
-    border:1px solid var(--line);border-radius:10px;padding:10px 12px;
-    box-shadow:var(--shadow);max-width:250px}
-  .legend h2{margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.08em;
+    border:1px solid var(--line);border-radius:10px;padding:11px 13px;
+    box-shadow:var(--shadow);width:250px;font-size:12.5px;
+    max-height:calc(100% - 24px);overflow-y:auto}
+  .legend h2{margin:0 0 7px;font-size:11.5px;font-weight:600;letter-spacing:.06em;
     text-transform:uppercase;color:var(--muted)}
-  .legrow{display:flex;align-items:center;gap:8px;padding:2px 0;font-size:12px}
+  .legend h2+div{margin-bottom:10px}
+  .legrow{display:flex;align-items:center;gap:8px;padding:2px 0}
   .sw{width:12px;height:12px;border-radius:3px;flex:none}
-  .badge{margin-left:auto;font:600 9.5px/1.4 ui-monospace,monospace;
-    padding:2px 6px;border-radius:5px;letter-spacing:.04em}
-  .badge.cal{background:color-mix(in srgb,var(--built) 20%,transparent);
-    color:var(--built)}
-  .badge.raw{background:color-mix(in srgb,var(--planned) 22%,transparent);
-    color:var(--planned)}
-  .live{position:absolute;right:12px;bottom:12px;background:var(--surface);
-    border:1px solid var(--line);border-radius:10px;padding:9px 12px;
-    box-shadow:var(--shadow);min-width:210px;font-size:12px}
-  .live h2{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.08em;
-    text-transform:uppercase;color:var(--muted)}
+  .legrow .st{margin-left:auto;font-size:11px;color:var(--built)}
+  .legrow .st.no{color:var(--planned)}
+  .key{color:var(--muted);line-height:1.45}
+  .key div{padding:1px 0}
+  .key .dim{color:var(--faint);margin-top:4px}
+  .live{margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid var(--line);
+    font-size:13px}
   .lv-row{display:flex;justify-content:space-between;gap:14px;padding:1px 0;
     font-variant-numeric:tabular-nums}
   .lv-row b{color:var(--accent-ink);font-weight:600}
@@ -682,80 +682,71 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .tlabel{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;
     min-width:150px;text-align:right}
 
-  /* ---- stage-7 metrics review panel (left drawer over the canvas) ---- */
-  #metrics{position:absolute;left:0;top:0;bottom:0;width:352px;max-width:86vw;
+  /* ---- session metrics panel (left drawer over the canvas) ---- */
+  #metrics{position:absolute;left:0;top:0;bottom:0;width:440px;max-width:92vw;
     background:var(--surface);border-right:1px solid var(--line);
-    box-shadow:var(--shadow);overflow-y:auto;padding:14px 16px 22px;z-index:5;
-    transition:transform .18s ease}
+    box-shadow:var(--shadow);overflow-y:auto;padding:18px 20px 26px;z-index:5;
+    transition:transform .18s ease;font-size:14px}
   #metrics.hidden{transform:translateX(-102%)}
-  #metrics h2{margin:0 0 2px;font-size:14px;font-weight:600}
-  #metrics .msub{color:var(--muted);font-size:11.5px;margin-bottom:10px}
-  #metrics .rawbanner{display:none;margin:0 0 12px;padding:7px 10px;
-    border-radius:8px;font-size:11.5px;
-    background:color-mix(in srgb,var(--planned) 16%,transparent);
-    color:var(--planned);border:1px solid color-mix(in srgb,var(--planned) 34%,transparent)}
+  #metrics h2{margin:0 0 3px;font-size:18px;font-weight:650}
+  #metrics .msub{color:var(--muted);font-size:13px;margin-bottom:14px}
+  #metrics .rawbanner{display:none;margin:0 0 14px;padding:9px 12px;
+    border-radius:8px;font-size:13px;
+    background:color-mix(in srgb,var(--planned) 14%,transparent);
+    color:var(--planned);border:1px solid color-mix(in srgb,var(--planned) 30%,transparent)}
   body[data-mode="raw"] #metrics .rawbanner{display:block}
-  #metrics section{margin:0 0 14px}
-  #metrics section>h3{margin:0 0 7px;font:600 10.5px/1.3 ui-monospace,monospace;
-    letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
-    border-bottom:1px solid var(--line);padding-bottom:4px}
-  .mcard{border:1px solid var(--line);border-radius:9px;padding:8px 10px;
-    margin-bottom:7px;cursor:default}
-  .mcard.hl{border-color:var(--accent);
-    box-shadow:0 0 0 1px var(--accent) inset}
-  .mcard .mhead{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
-  .mcard .mname{font-weight:600;font-size:12.5px}
-  .mcard .mmeta{color:var(--faint);font-size:11px;margin-left:auto;
-    font-family:ui-monospace,monospace}
-  .flag{font:600 9px/1.4 ui-monospace,monospace;padding:2px 6px;border-radius:5px;
-    letter-spacing:.03em;text-transform:uppercase}
-  .flag.rel{background:color-mix(in srgb,var(--planned) 20%,transparent);
-    color:var(--planned)}
-  .flag.clin{background:color-mix(in srgb,var(--built) 18%,transparent);
-    color:var(--built)}
-  .flag.blk{background:color-mix(in srgb,#c0392b 20%,transparent);color:#c0392b}
-  .dof{display:grid;grid-template-columns:1fr auto;gap:2px 10px;
-    font-size:11.5px;padding:4px 0 2px;border-top:1px dashed var(--line);
-    margin-top:5px}
-  .dof:first-of-type{border-top:none;margin-top:3px}
-  .dof .dname{color:var(--muted)}
-  .dof .drom{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;
-    text-align:right;white-space:nowrap}
-  .dof .dvel{grid-column:1/-1;color:var(--faint);font-size:10.5px;
-    font-family:ui-monospace,monospace}
-  .dof .dnote{grid-column:1/-1;color:var(--planned);font-size:10.5px}
-  /* clinical-gated numbers read dim while the view is showing RAW, mirroring
-     the scene's amber "· raw" overlay: the anatomical zero isn't applied. */
+  #metrics section{margin:0 0 18px}
+  #metrics section>h3{margin:0 0 9px;font-size:12px;font-weight:650;
+    letter-spacing:.07em;text-transform:uppercase;color:var(--muted);
+    border-bottom:1px solid var(--line);padding-bottom:5px}
+  .mcard{border:1px solid var(--line);border-radius:10px;padding:11px 14px;
+    margin-bottom:9px;cursor:default}
+  .mcard.hl{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .mhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  .mname{font-weight:650;font-size:15.5px}
+  .tag{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px}
+  .tag.rel{background:color-mix(in srgb,var(--planned) 18%,transparent);color:var(--planned)}
+  .tag.info{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent-ink);
+    margin-left:auto}
+  .row{display:grid;grid-template-columns:1fr auto;gap:0 12px;align-items:baseline;
+    padding:7px 0 6px;border-top:1px solid var(--line)}
+  .mhead+.row{border-top:none}
+  .row .k{color:var(--ink);font-size:14px}
+  .row .v{font-size:16px;font-weight:650;font-variant-numeric:tabular-nums;
+    white-space:nowrap}
+  .row .d{grid-column:1/-1;color:var(--muted);font-size:12.5px;margin-top:1px}
+  .row .d.warn{color:var(--planned)}
+  .mnote{font-size:12.5px;color:var(--planned);margin-top:6px}
+  /* relative-only numbers dim while the view shows RAW (anatomical zero off) */
   body[data-mode="raw"] .clin-gated{opacity:.5}
-  .mkv{font-size:11.5px;color:var(--muted);margin-top:2px;
-    font-family:ui-monospace,monospace;word-break:break-word}
-  .mnote{font-size:10.5px;color:var(--planned);margin-top:3px}
-  #metrics .empty{color:var(--faint);font-size:11.5px;font-style:italic}
   @media (max-width:640px){.legend{display:none}
-    #metrics{width:100%;max-width:100%;top:auto;height:58%}
+    #metrics{width:100%;max-width:100%;top:auto;height:60%}
     #metrics.hidden{transform:translateY(102%)}}
 </style>
 </head>
 <body>
 <header>
-  <div class="eyebrow" id="eyebrow">Stage 7 &middot; skeleton</div>
-  <h1>Skeleton review</h1>
+  <div class="titlebar">
+    <h1>Session review</h1>
+    <div class="chips" id="chips"></div>
+  </div>
   <div class="sub" id="sub">&mdash;</div>
-  <div class="stage" id="stage">Each bone is oriented by its measured
-    quaternion and hung from its parent's joint. Orientation is measured; the
-    bone lengths and joint spots are <b>assumed anatomy</b>. The ground arrow
-    marks the subject's <b>front</b>; the chest face is lighter and the head has
-    a nose. Each limb's lighter face is its front (the palm side of the forearm
-    and hand), and the dark nub is the thumb: palm forward / thumb out =
-    supinated, palm back / thumb in = pronated. Drag to orbit &middot; scroll to
-    zoom.</div>
-  <div class="hint" id="hint"></div>
 </header>
 <main>
   <canvas id="view"></canvas>
   <aside id="metrics" class="hidden" aria-label="Session metrics"></aside>
-  <div class="legend"><h2>Segments</h2><div id="legend"></div></div>
-  <div class="live" id="live" hidden></div>
+  <div class="legend">
+    <div class="live" id="live" hidden></div>
+    <h2>Sensors</h2><div id="legend"></div>
+    <h2>How to read</h2>
+    <div class="key">
+      <div>Lighter face = front of that body part (palm side on the forearm and hand)</div>
+      <div>Dark dot on the hand = thumb</div>
+      <div>Dashed limb = no sensor there</div>
+      <div>Orange dashed = sensor not calibrated</div>
+      <div class="dim">Drag to rotate &middot; scroll to zoom</div>
+    </div>
+  </div>
 </main>
 <footer>
   <button id="play" class="primary">&#9654; Play</button>
@@ -774,7 +765,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <button data-mode="raw">Raw</button>
     <button data-mode="cal">Calibrated</button>
   </div>
-  <button id="neutral">Jump to neutral</button>
+  <button id="neutral">Go to neutral pose</button>
   <input type="range" id="scrub" min="0" max="0" value="0" step="1">
   <div class="tlabel mono" id="tlabel">0 ms</div>
 </footer>
@@ -815,6 +806,14 @@ const SEG = {
   hand_r:      {color:[111,75,216]},
   hand_l:      {color:[214,84,155]},
 };
+// Plain-language names for sensors / joints / movements (display only).
+const NAMES={torso:'Trunk', upper_arm_r:'Right upper arm', upper_arm_l:'Left upper arm',
+  forearm_r:'Right forearm', forearm_l:'Left forearm', hand_r:'Right hand', hand_l:'Left hand',
+  shoulder_r:'Right shoulder', shoulder_l:'Left shoulder', elbow_r:'Right elbow',
+  elbow_l:'Left elbow', wrist_r:'Right wrist', wrist_l:'Left wrist'};
+const nameOf=k=>NAMES[k]||String(k).replace(/_/g,' ');
+const shortOf=k=>nameOf(k).replace(/^Right /,'R ').replace(/^Left /,'L ').toLowerCase()
+  .replace(/^(r|l) /,m=>m.toUpperCase());
 const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
 // segments the metrics panel is hovering — brightened in the scene so a
@@ -897,7 +896,7 @@ function socket(P,C){
 
 const cvs=document.getElementById('view'), ctx=cvs.getContext('2d');
 const UP=[0,0,1], FOV=45*Math.PI/180, LIGHT=norm([0.45,0.55,1.0]);
-const TARGET=[0,0,0.06], GROUND=-0.62;
+const TARGET=[0,0,-0.1], GROUND=-0.62;
 let DPR=1, W=0, H=0;
 
 // A box's 6 faces as corner-index quads (corners from boxBetween / the torso).
@@ -923,7 +922,10 @@ function updateCamera(){
   cam=[T[0]+rad*Math.sin(el)*Math.cos(az), T[1]+rad*Math.sin(el)*Math.sin(az),
        T[2]+rad*Math.cos(el)];
   fwd=norm(sub(T,cam)); right=norm(cross(fwd,UP)); tup=cross(right,fwd);
-  focal=(H/2)/Math.tan(FOV/2); ccx=W/2; ccy=H/2;
+  // centre the figure in the part of the canvas the metrics drawer leaves free
+  const mEl=document.getElementById('metrics');
+  const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
+  focal=(H/2)/Math.tan(FOV/2); ccx=(W+cover)/2; ccy=H/2;
 }
 function project(P){
   const v=sub(P,cam), z=dot(v,fwd);
@@ -1017,7 +1019,7 @@ function updateLive(){
       : `<b>${ps>0?'pronation':'supination'}</b> ${Math.abs(ps).toFixed(0)}°`;
     rows.push(`<div class="lv-row"><span>${name} forearm</span><span>${txt}</span></div>`);
   }
-  const why=mode!=='cal'?'switch to Calibrated to read it':!QWA?'front unknown — not anatomical':'';
+  const why=mode!=='cal'?'switch to Calibrated to read it':!QWA?'needs the front direction':'';
   liveEl.hidden=!rows.length;
   liveEl.innerHTML=`<h2>Forearm rotation</h2>${rows.join('')}`+
     (why?`<div class="lv-why">${why}</div>`:'');
@@ -1115,7 +1117,7 @@ function renderSkeleton(){
       ctx.strokeStyle=cssVar('--faint'); ctx.globalAlpha=.85; seg2d(a,c);
       ctx.restore();
       const mid=scl(add(Lp,Rp),0.5);
-      label([mid[0],mid[1],mid[2]+0.09],'torso — not measured',cssVar('--faint'));
+      label([mid[0],mid[1],mid[2]+0.09],'no trunk sensor',cssVar('--faint'));
     }
   }
   // ---- solid 3-D figure: torso block + limb boxes in one depth-sorted pass ----
@@ -1230,11 +1232,12 @@ function renderSkeleton(){
     if(b.seg==='torso') continue;
     const raw=!b.calibrated;
     label(add(pos[b.seg].dist, scl((ANAT[b.seg]||{dir:[0,0,-1]}).dir,-0.02)),
-          raw?b.seg+' · raw':b.seg, raw?rgb([204,120,20]):undefined);
+          raw?shortOf(b.seg)+' · not calibrated':shortOf(b.seg),
+          raw?rgb([204,120,20]):undefined);
   }
   for(const g of ghosts){
     const mid=scl(add(g.prox,g.dist),0.5);
-    label([mid[0],mid[1],mid[2]+0.05], g.seg+' · no node', cssVar('--faint'));
+    label([mid[0],mid[1],mid[2]+0.05], shortOf(g.seg)+' · no sensor', cssVar('--faint'));
   }
 }
 
@@ -1289,7 +1292,7 @@ if(window.matchMedia)
 const scrub=document.getElementById('scrub'), tlabel=document.getElementById('tlabel'),
   playBtn=document.getElementById('play'), neutralBtn=document.getElementById('neutral'),
   modeBox=document.getElementById('mode'), viewBox=document.getElementById('view3d'),
-  hintEl=document.getElementById('hint'), subEl=document.getElementById('sub');
+  subEl=document.getElementById('sub');
 scrub.max=Math.max(0,N-1);
 const fmtS=ms=>(ms/1000).toFixed(2)+' s';
 function setFrame(i){
@@ -1319,16 +1322,14 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
-// facing status line for the hint
+// front-direction status (header chip tooltip)
 const FACING=FRONT_KNOWN
   ? (HEADING.source==='manual'
-      ? `front: stated by hand (faced ${FACE_DEG.toFixed(0)}°)`
-      : `front: auto from torso (faced ${FACE_DEG.toFixed(0)}°)`)
+      ? `Front direction entered by hand (${FACE_DEG.toFixed(0)}° from north).`
+      : `Front direction found from the chest sensor (${FACE_DEG.toFixed(0)}° from north).`)
   : HEADING.source==='torso_auto'
-    ? 'front: unknown (low-confidence torso facing) — FRONT marker is nominal'
-    : 'front: unknown (no torso node) — FRONT marker is nominal; calibrate with --facing-deg';
-hintEl.innerHTML=FACING+' · a dashed bone has no node; an amber-dashed bone is '+
-  'uncalibrated (a kink there may be strap tilt, not motion)';
+    ? 'The chest sensor could not tell which way the person faced, so the FRONT arrow is a guess.'
+    : 'No chest sensor, so the FRONT arrow is a guess. Enter the facing at calibration to fix this.';
 const speedBox=document.getElementById('speed');
 speedBox.addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
@@ -1353,127 +1354,176 @@ neutralBtn.addEventListener('click',()=>{
   pause(); setMode('cal'); setFrame(best);
 });
 
-// legend
+// legend: one row per sensor, with its calibration state
 const leg=document.getElementById('legend');
 for(const s of DATA.segments){
   const g=SEG[s.segment]||{color:[136,136,136]};
   const row=document.createElement('div'); row.className='legrow';
   row.innerHTML=`<span class="sw" style="background:${rgb(g.color)}"></span>`+
-    `<span>${s.segment}</span>`+
-    `<span class="badge ${s.calibrated?'cal':'raw'}">`+
-    `${s.calibrated?'CAL':'RAW'}</span>`;
+    `<span>${nameOf(s.segment)}</span>`+
+    `<span class="st${s.calibrated?'':' no'}">${s.calibrated?'calibrated':'not calibrated'}</span>`;
   leg.appendChild(row);
 }
+// header: who / what / how long, plus two status chips
 const m=DATA.meta;
-subEl.innerHTML=`subject <b>${m.subject}</b> · session <b>${m.session}</b> · `+
-  `${DATA.segments.length} segment(s) · ${N} frames `+
-  `(${(m.t1_ms-m.t0_ms)/1000|0}s${m.stride>1?`, 1/${m.stride} sampled`:''}) · `+
-  `<span class="mono">${m.source_csv}</span>`+
-  (m.calibration_source?` + <span class="mono">${m.calibration_source}</span>`:
-   ` · <b style="color:var(--planned)">no calibration — raw only</b>`);
+const secs=(m.t1_ms-m.t0_ms)/1000;
+const dur=secs>=90?`${Math.floor(secs/60)} min ${Math.round(secs%60)} s`:`${secs.toFixed(0)} s`;
+subEl.innerHTML=`Subject <b>${esc(m.subject)}</b> · Session <b>${esc(m.session)}</b> · `+
+  `${dur} recording · ${DATA.segments.length} sensor${DATA.segments.length===1?'':'s'}`;
+subEl.title=`Data: ${m.source_csv}`+(m.calibration_source?` + ${m.calibration_source}`:'');
+const ncal=DATA.segments.filter(s=>s.calibrated).length;
+const chip=(cls,txt,tip)=>`<span class="chip ${cls}" title="${esc(tip)}">${txt}</span>`;
+document.getElementById('chips').innerHTML=
+  (ncal===DATA.segments.length
+    ? chip('good','Calibrated','Every sensor was calibrated from a neutral pose.')
+    : ncal
+      ? chip('warn',`${ncal} of ${DATA.segments.length} calibrated`,'Some sensors were not calibrated; their angles are relative only.')
+      : chip('warn','Not calibrated','No calibration: angles are relative only.'))+
+  chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING);
 
-// ---- stage-7 metrics review panel (built from the baked metrics.json) ----
-// The panel reads out the session SUMMARY (ROM / velocity / reps / derived)
-// beside the 3-D body, sharing this page's raw↔calibrated toggle. Honesty flags
-// carry straight through: a joint whose two nodes aren't both calibrated is
-// RELATIVE (dimmed while the view shows raw); a blocked joint names its missing
-// node; a derived metric shows its own note. Hovering a row highlights the
-// bone(s) it measures in the scene.
-const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const n1=(x,u='')=>x==null?'—':(Math.round(x*10)/10)+u;
+// ---- session metrics panel (built from the baked metrics.json) ----
+// Plain-language session summary beside the 3-D body. Only what was actually
+// computed is shown: blocked joints, movements undefined for the whole session,
+// and empty values are left out. Relative-only joints keep a visible tag.
+// Hovering a card highlights the bone(s) it measures.
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+const r0=x=>Math.round(x), r1=x=>Math.round(x*10)/10;
 function segsFor(row){
-  // segments a metrics row points at, for the hover highlight.
   if(row.kind==='segment') return [row.data.segment];
-  if(row.kind==='joint'||row.kind==='blocked'){
-    const js=DATA.joint_segments||{}; return js[row.data.key]||[];
-  }
+  if(row.kind==='joint') return (DATA.joint_segments||{})[row.data.key]||[];
   if(row.kind==='derived'){
     const out=new Set();
-    for(const jk of (row.data.requires||[])){
-      for(const s of (DATA.joint_segments||{})[jk]||[]) out.add(s);
-    }
+    for(const jk of (row.data.requires||[]))
+      for(const s of (DATA.joint_segments||{})[jk]||[jk]) out.add(s);
     return [...out];
   }
   return [];
 }
-function romLine(d){
-  if(!d.rom) return `<span class="dname">${esc(d.name)}</span>`+
-    `<span class="drom">— <span style="color:var(--faint)">singular</span></span>`+
-    (d.singularity_note?`<span class="dnote">${esc(d.singularity_note)}</span>`:'');
-  const v=d.velocity, frac=('defined_frac' in d)
-    ? `  ·  ${Math.round(d.defined_frac*100)}% defined` : '';
-  return `<span class="dname">${esc(d.name)}</span>`+
-    `<span class="drom">${n1(d.rom.range_deg,'°')} `+
-    `<span style="color:var(--faint)">[${n1(d.rom.min_deg)}…${n1(d.rom.max_deg)}]</span></span>`+
-    (v?`<span class="dvel">peak ${n1(v.peak_deg_s,'°/s')} · mean ${n1(v.mean_abs_deg_s,'°/s')}${frac}</span>`:'');
+// movement names + what a positive / negative angle means (clinical sign convention)
+const DOF_INFO={
+  flex_ext:{name:'Flexion / extension', pos:'flexion', neg:'extension'},
+  pro_sup:{name:'Pronation / supination', pos:'pronation', neg:'supination'},
+  rad_uln:{name:'Radial / ulnar deviation', pos:'ulnar', neg:'radial'},
+  axial_rot:{name:'Internal / external rotation', pos:'internal', neg:'external'},
+  elevation:{name:'Arm raise (elevation)'},
+  plane_elev:{name:'Raise direction', note:'0° = out to the side, 90° = straight forward'},
+};
+function signed(v,info){
+  if(!info||!info.pos) return `${r0(v)}°`;
+  if(Math.abs(v)<0.5) return '0°';
+  return `${r0(Math.abs(v))}° ${v>0?info.pos:info.neg}`;
+}
+const row=(k,v,d,dcls)=>`<div class="row"><span class="k">${k}</span><span class="v">${v}</span>`+
+  (d?`<span class="d${dcls?' '+dcls:''}">${d}</span>`:'')+`</div>`;
+function relReason(){
+  if(!MET.calibration_used) return 'no calibration';
+  if(!MET.anatomical_axes) return 'front direction unknown';
+  return 'a sensor on this joint is not calibrated';
 }
 function jointCard(j){
+  const dofs=j.dofs.filter(d=>d.rom);                 // skip undefined-all-session
+  if(!dofs.length) return '';
   const rel=!j.clinical;
-  const flag=rel?`<span class="flag rel" title="one or both nodes uncalibrated">relative</span>`
-                :`<span class="flag clin">clinical</span>`;
-  const reps=(j.reps&&j.reps.count)?`<span class="mmeta">${j.reps.count} reps · ${esc(j.reps.primary_dof)}</span>`:
-    `<span class="mmeta">${esc(j.decomposition)}</span>`;
-  const dofs=j.dofs.map(d=>`<div class="dof${rel?' clin-gated':''}">${romLine(d)}</div>`).join('');
-  const warn=rel&&j.warning?`<div class="mnote">${esc(j.warning)}</div>`:'';
+  const rows=dofs.map(d=>{
+    const info=DOF_INFO[d.key]||{name:d.name};
+    const range=`${r0(d.rom.range_deg)}°`;
+    const span=rel ? `from ${r0(d.rom.min_deg)}° to ${r0(d.rom.max_deg)}°`
+                   : `from ${signed(d.rom.min_deg,info)} to ${signed(d.rom.max_deg,info)}`;
+    const bits=[span];
+    if(d.velocity&&d.velocity.peak_deg_s) bits.push(`fastest ${r0(d.velocity.peak_deg_s)}°/s`);
+    if(info.note) bits.push(info.note);
+    const part=('defined_frac' in d)&&d.defined_frac<0.995
+      ? `measurable for ${r0(d.defined_frac*100)}% of the session (undefined with the arm at the side or overhead)` : '';
+    return `<div class="row${rel?' clin-gated':''}"><span class="k">${esc(info.name)}</span>`+
+      `<span class="v">${range}</span><span class="d">${bits.join(' · ')}</span>`+
+      (part?`<span class="d warn">${part}</span>`:'')+`</div>`;
+  }).join('');
+  const reps=(j.reps&&j.reps.count)?`<span class="tag info">${j.reps.count} rep${j.reps.count===1?'':'s'}</span>`:'';
+  const tag=rel?`<span class="tag rel" title="Angles are relative to the start pose, not the body: ${relReason()}.">relative only</span>`:'';
   return `<div class="mcard" data-i="${ROWS.push({kind:'joint',data:j})-1}">`+
-    `<div class="mhead"><span class="mname">${esc(j.name)}</span>${flag}${reps}</div>`+
-    dofs+warn+`</div>`;
+    `<div class="mhead"><span class="mname">${esc(nameOf(j.key))}</span>${tag}${reps}</div>`+
+    rows+(rel?`<div class="mnote">Relative only (${relReason()}): ranges are right, but zero is the start pose rather than the anatomical position.</div>`:'')+
+    `</div>`;
 }
-function segCard(s){
-  const cal=s.calibrated?`<span class="flag clin">cal</span>`
-                        :`<span class="flag rel">raw</span>`;
-  const t=s.travel, sp=s.angular_speed, el=s.elevation;
-  const sm=(s.smoothness_sparc==null)?'still':`SPARC ${s.smoothness_sparc>0?'+':''}${n1(s.smoothness_sparc)}`;
-  const elev=`<span class="${s.calibrated?'':'clin-gated'}">elev ${n1(el.range_deg,'°')}</span>`;
-  return `<div class="mcard" data-i="${ROWS.push({kind:'segment',data:s})-1}">`+
-    `<div class="mhead"><span class="mname">${esc(s.segment)}</span>${cal}`+
-    `<span class="mmeta">${esc(s.node_id||'')}</span></div>`+
-    `<div class="mkv">travel ${n1(t.travel_deg,'°')} · active ${Math.round(t.active_time_frac*100)}%`+
-    ` · ${elev} · peak ${n1(sp.peak_deg_s,'°/s')} · ${sm}</div></div>`;
+function segCard(sg){
+  const rows=[];
+  if(sg.travel){
+    rows.push(row('Total rotation',`${r0(sg.travel.travel_deg)}°`,'all the turning this body part did'));
+    rows.push(row('Time moving',`${r0(sg.travel.active_time_frac*100)}%`,'share of the session faster than 20°/s'));
+  }
+  if(sg.angular_speed&&sg.angular_speed.peak_deg_s)
+    rows.push(row('Fastest turn',`${r0(sg.angular_speed.peak_deg_s)}°/s`,`average ${r0(sg.angular_speed.mean_deg_s)}°/s`));
+  if(sg.calibrated&&sg.elevation)
+    rows.push(row('Tilt from vertical',`${r0(sg.elevation.range_deg)}°`,`from ${r0(sg.elevation.min_deg)}° to ${r0(sg.elevation.max_deg)}°`));
+  if(sg.smoothness_sparc!=null)
+    rows.push(row('Smoothness',`${r1(sg.smoothness_sparc)}`,'closer to 0 is smoother (typically −1.5 smooth to −5 jerky)'));
+  if(!rows.length) return '';
+  return `<div class="mcard" data-i="${ROWS.push({kind:'segment',data:sg})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(nameOf(sg.segment))}</span></div>${rows.join('')}</div>`;
 }
-function derivedCard(d){
-  const gated=(d.clinical===false);
-  const kv=Object.entries(d.metrics||{}).filter(([,v])=>!Array.isArray(v)&&v!=null)
-    .map(([k,v])=>`${esc(k)}=${esc(v)}`).join(' · ');
-  const flag=('clinical' in d)?(d.clinical?`<span class="flag clin">clinical</span>`
-             :`<span class="flag rel">relative</span>`):'';
-  const note=d.note?`<div class="mnote">${esc(d.note)}</div>`:'';
-  return `<div class="mcard${gated?' clin-gated':''}" data-i="${ROWS.push({kind:'derived',data:d})-1}">`+
-    `<div class="mhead"><span class="mname">${esc(d.name)}</span>${flag}`+
-    `<span class="mmeta">${esc(d.target)}</span></div>`+
-    `<div class="mkv">${kv||'—'}</div>${note}</div>`;
-}
-function blockedCard(b){
-  return `<div class="mcard" data-i="${ROWS.push({kind:'blocked',data:b})-1}">`+
-    `<div class="mhead"><span class="mname">${esc(b.name)}</span>`+
-    `<span class="flag blk">blocked</span>`+
-    `<span class="mmeta">needs ${esc((b.missing||[]).join(', '))}</span></div></div>`;
+function derivedCard(dv){
+  const M=dv.metrics||{}, t=dv.target||'', rel=dv.clinical===false;
+  let title=dv.name, rows=[];
+  const has=k=>M[k]!=null;
+  if(t.startsWith('symmetry_')){
+    title=`Left vs right range — ${nameOf(t.slice(9)+'_r').replace(/^Right /,'')}`;
+    if(has('left_rom_deg')) rows.push(row('Left',`${r0(M.left_rom_deg)}°`));
+    if(has('right_rom_deg')) rows.push(row('Right',`${r0(M.right_rom_deg)}°`));
+    if(has('symmetry_index')) rows.push(row('Difference',`${r0(M.symmetry_index)}%`,'0% = both sides moved the same amount'));
+  } else if(t.startsWith('activity_asymmetry_')){
+    title=`Which side moved more — ${nameOf(t.slice(19)+'_r').replace(/^Right /,'')}`;
+    if(has('left_travel_deg')) rows.push(row('Left total rotation',`${r0(M.left_travel_deg)}°`));
+    if(has('right_travel_deg')) rows.push(row('Right total rotation',`${r0(M.right_travel_deg)}°`));
+    if(has('asymmetry_index')){
+      const a=M.asymmetry_index;
+      rows.push(row('Balance',Math.abs(a)<5?'even':`${a>0?'right':'left'} +${r0(Math.abs(a))}`,
+        '−100 = only the left moved · 0 = even · +100 = only the right'));
+    }
+  } else if(t.startsWith('coordination_')){
+    const pr=M.pair||dv.requires||[];
+    title=`Timing — ${pr.map(nameOf).join(' & ')}`;
+    if(has('peak_r')) rows.push(row('Move together',`${r1(M.peak_r)}`,'correlation: 1 = in step, 0 = unrelated, −1 = opposite'));
+    if(has('lag_s')&&pr.length===2) rows.push(row('Delay',`${Math.abs(M.lag_s).toFixed(2)} s`,
+      Math.abs(M.lag_s)<0.01?'no delay':`${nameOf(M.lag_s>0?pr[1]:pr[0])} follows ${nameOf(M.lag_s>0?pr[0]:pr[1])}`));
+  } else if(t.startsWith('compensation_')){
+    title='Trunk movement during the task';
+    if(has('trunk_travel_deg')) rows.push(row('Trunk total rotation',`${r0(M.trunk_travel_deg)}°`));
+    if(has('trunk_elevation_range_deg')) rows.push(row('Trunk lean range',`${r0(M.trunk_elevation_range_deg)}°`));
+  } else {
+    for(const [k,v] of Object.entries(M)) if(v!=null&&!Array.isArray(v))
+      rows.push(row(esc(k.replace(/_/g,' ')),esc(typeof v==='number'?r1(v):v)));
+  }
+  if(!rows.length) return '';
+  const tag=rel?`<span class="tag rel">relative only</span>`:'';
+  return `<div class="mcard${rel?' clin-gated':''}" data-i="${ROWS.push({kind:'derived',data:dv})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(title)}</span>${tag}</div>${rows.join('')}</div>`;
 }
 const ROWS=[];         // index -> {kind,data}, so a hovered card knows its segments
 const MET=DATA.metrics, metricsEl=document.getElementById('metrics'),
   msToggle=document.getElementById('mstoggle');
 if(MET){
-  document.getElementById('eyebrow').innerHTML='Stage 7 &middot; review';
-  const calLbl=MET.calibration_used?'calibration applied'
-    :'<b style="color:var(--planned)">no calibration — relative only</b>';
-  const sec=(title,inner,empty)=>`<section><h3>${title}</h3>`+
-    (inner||`<div class="empty">${empty}</div>`)+`</section>`;
-  const joints=(MET.joints||[]).map(jointCard).join('')+
-    (MET.blocked_joints||[]).map(blockedCard).join('');
+  const sec=(title,inner)=>inner?`<section><h3>${title}</h3>${inner}</section>`:'';
+  const joints=(MET.joints||[]).map(jointCard).join('');
   const segs=(MET.segments||[]).map(segCard).join('');
-  const der=(MET.derived||[]).map(derivedCard).join('');
+  // the trunk-compensation entry repeats per arm task with identical numbers;
+  // show each distinct result once
+  const seenDer=new Set();
+  const der=(MET.derived||[]).filter(dv=>{
+    if(!(dv.target||'').startsWith('compensation_')) return true;
+    const k=JSON.stringify(dv.metrics); if(seenDer.has(k)) return false;
+    seenDer.add(k); return true;
+  }).map(derivedCard).join('');
   metricsEl.innerHTML=
     `<h2>Session metrics</h2>`+
-    `<div class="msub">${MET.n_samples} samples · ${MET.duration_s}s · `+
-      `${MET.sample_rate_hz} Hz · ${calLbl}</div>`+
-    `<div class="rawbanner">Showing <b>raw</b> — angles below assume the mounting `+
-      `offset; the dimmed <b>relative</b> rows aren't anatomically anchored until `+
-      `you flip to <b>Calibrated</b>.</div>`+
-    sec('Joints &amp; range of motion',joints,'no computable joints for this montage')+
-    sec('Segments',segs,'no segments')+
-    sec('Derived',der,'none unlocked by this montage');
+    `<div class="msub">${dur} · ${r0(MET.sample_rate_hz)} samples per second</div>`+
+    `<div class="rawbanner">You're viewing <b>raw</b> sensor orientation. The joint `+
+      `angles below assume calibration — switch to <b>Calibrated</b> to see them `+
+      `on the figure.</div>`+
+    sec('Joints',joints)+
+    sec('Comparisons',der)+
+    sec('Body parts',segs)+
+    ((joints||segs||der)?'':`<div class="msub">Nothing could be computed for this sensor setup.</div>`);
 
-  // hover a card -> highlight its bone(s) in the 3-D scene
   metricsEl.addEventListener('mouseover',e=>{
     const card=e.target.closest('.mcard'); if(!card) return;
     HILITE=new Set(segsFor(ROWS[+card.dataset.i]||{}));
