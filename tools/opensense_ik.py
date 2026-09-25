@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
-HULC Motion Shirt — the OpenSense path: solve the pose with OpenSim's
-validated musculoskeletal model instead of our own per-joint chain.
+HULC Motion Shirt — the OpenSense path: solve the pose with a published
+OpenSim musculoskeletal model instead of our own per-joint chain.
+
+Models (profiles, detected from the model file)
+-----------------------------------------------
+* thoracoscapular — Thoracoscapular Shoulder Model, Seth, Dong, Matias & Delp
+  2019 (Front Neurorobot 13:90); scapulothoracic joint from Seth et al. 2016
+  (PLoS ONE 11(1)). An upper-limb model: RIGHT arm, thorax + clavicle +
+  scapula + humerus + ulna/radius + hand (wrist welded), ISB-style
+  glenohumeral coordinates. Recommended for arm/shoulder work.
+* rajagopal — Rajagopal et al. 2016 (IEEE TBME 63(10)), OpenSense variant.
+  Full body, BOTH arms and wrists, but built for gait: its arm is a simplified
+  chain (ball-joint shoulder, no scapula). Use it for the left arm or wrists.
 
 Where it sits
 -------------
 The default pipeline turns each node's calibrated orientation straight into
 joint angles (calibrate_segments.py -> metrics.py). This tool is the
 alternative middle: it hands the same aligned stream to OpenSim OpenSense
-(IMUPlacer + IMU inverse kinematics on the Rajagopal 2015 full-body model,
-Stanford, Apache-2.0), which fits a jointed skeleton — real joint axes, joint
+(IMUPlacer + IMU inverse kinematics; Al Borno et al. 2022, J NeuroEng Rehabil
+19:22), which fits the model's jointed skeleton — real joint axes, joint
 limits, one kinematic chain — to all nodes at once. The solved pose is then
 turned back into per-segment orientations and fed through the SAME
 metrics.py and skeleton_viewer.py code, so the two paths differ only in how
@@ -34,13 +45,23 @@ What it relies on from the default pipeline
   the sensor placement, not the IK input, so the data are rotated into the
   model's frame here. No facing -> this path refuses to run.
 
-Model preparation (why the shipped model can't be used as is)
-------------------------------------------------------------
-* Forearm neutral: the model's pro/sup zero is palms-FORWARD and its range stops
-  at thumb-forward, so it cannot pronate. Our N-pose is palms facing the
-  thighs, so the default is set to 90° and the range widened to −10…190°.
-* Shoulder flexion is capped at 90°; with it, an overhead reach silently bends
-  the trunk and elbow to compensate. Ranges are widened for rehab motion.
+Model preparation (what is changed from the published model, and why)
+----------------------------------------------------------------------
+* Default pose = our N-pose (arms at the sides, palms facing the thighs),
+  because IMUPlacer assumes the neutral hold IS the default pose.
+  thoracoscapular: thorax upright; humerus vertical and facing forward (the
+  resting scapula tilts the glenoid, so this is 6° of glenohumeral elevation,
+  solved numerically); forearm zero is already thumb-forward.
+  rajagopal: forearm pro/sup set to 90° (its zero is palms-forward).
+* Ranges for rehab motion: rajagopal caps shoulder flexion at 90° and stops
+  pro/sup at thumb-forward (so it cannot pronate); both widened.
+  thoracoscapular: elevation 0–180°, elbow −15–160°, pro/sup ±100°.
+* Ranges are enforced during IK (clamping on), except angles that must wrap:
+  the thoracoscapular plane of elevation and axial rotation (only their sum
+  is defined with the arm at the side; clamped, the solve sticks at ±180°).
+* thoracoscapular: clavicle and scapula are held at the model's resting
+  posture — no node measures them — so the glenohumeral joint carries all
+  humerothoracic motion.
 * Only what the montage measures is free: trunk rotation only with a torso
   node; each arm's chain down to its deepest node (so a forearm node with no
   upper-arm node still has a chain above it to absorb its orientation);
@@ -51,15 +72,20 @@ Model preparation (why the shipped model can't be used as is)
 Setup (one time)
 ----------------
     pip install opensim                 # official Stanford wheels, Python 3.11–3.13
+    # thoracoscapular (ships in the OpenSim source repo, Apache-2.0):
+    git clone --depth 1 --filter=blob:none --sparse \\
+        https://github.com/opensim-org/opensim-core
+    (cd opensim-core && git sparse-checkout set --no-cone \\
+        OpenSim/Tests/shared/ThoracoscapularShoulderModel.osim)
+    # rajagopal:
     git clone --depth 1 --filter=blob:none --sparse \\
         https://github.com/opensim-org/opensim-models
     (cd opensim-models && git sparse-checkout set Models/Rajagopal_OpenSense)
-    # model: opensim-models/Models/Rajagopal_OpenSense/Rajagopal2015_opensense.osim
 
 Usage
 -----
     python tools/opensense_ik.py run aligned.csv montage.json \\
-        --calibration calibration.json --model Rajagopal2015_opensense.osim \\
+        --calibration calibration.json --model ThoracoscapularShoulderModel.osim \\
         --outdir out/opensense
     # or as the last stage of analyze_session.py run ... --opensense-model PATH
 
@@ -149,12 +175,16 @@ PROFILES = {
         "chains": {"r": [("upper_arm_r", ("plane_elv", "shoulder_elv", "axial_rot")),
                          ("forearm_r", ("elbow_flexion", "pro_sup")),
                          ("hand_r", ())]},           # wrist welded: not solvable
-        # plane and axial rotation widened: near the arm-at-side pose they
-        # trade off (only their sum is defined), and the neutral pose uses
-        # axial 54°, which the shipped ±90° would leave 36° of room above
-        "ranges": {"plane_elv": (-180, 180), "shoulder_elv": (-45, 180),
-                   "axial_rot": (-180, 180), "elbow_flexion": (-15, 160),
+        # Plane of elevation and axial rotation are angles about axes that
+        # turn with the arm: near the arm-at-side pole only their sum is
+        # defined, and a real movement can carry either past ±180°. Clamped,
+        # the solve cannot wrap and sticks at the bound — so they are left
+        # UNCLAMPED (the orientation is what downstream uses). Elevation starts
+        # at 0°: a negative elevation is the same pose as its mirror branch
+        # (plane+180°, -elevation, axial+180°) and lets the solve flip branches.
+        "ranges": {"shoulder_elv": (0, 180), "elbow_flexion": (-15, 160),
                    "pro_sup": (-100, 100)},
+        "unclamped": ("plane_elv", "axial_rot"),
         # upright thorax; humerus hanging vertical and facing forward (the
         # resting scapula tilts the glenoid, so that takes 6° of glenohumeral
         # elevation — solved numerically, 0.3° residual); elbow straight. The
@@ -234,7 +264,8 @@ def prepare_model(model_in, model_out, present_segments, forearm_neutral,
         c.set_locked(c.getName() not in free)
         # enforce the ranges during IK (some models ship with clamping off,
         # letting a solve wander past 360° or into a hyperextended branch)
-        c.set_clamped(c.getName() in free)
+        c.set_clamped(c.getName() in free and
+                      c.getName() not in profile.get("unclamped", ()))
         if c.getName() in profile["ranges"]:
             lo, hi = profile["ranges"][c.getName()]
             c.setRangeMin(math.radians(lo))

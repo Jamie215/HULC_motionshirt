@@ -311,7 +311,8 @@ def main():
                          "has no torso node")
     pr.add_argument("--opensense-model", metavar="OSIM",
                     help="also solve the session with OpenSim OpenSense on this "
-                         "model (Rajagopal2015_opensense.osim; needs "
+                         "model (ThoracoscapularShoulderModel.osim for the right "
+                         "arm, or Rajagopal2015_opensense.osim; needs "
                          "`pip install opensim`) -> <outdir>/opensense/")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
