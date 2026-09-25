@@ -516,7 +516,9 @@ def resolve(montage: dict) -> list:
 
     #     Inter-joint coordination: any 2+ computable joints on a side.
     for side in ("l", "r"):
-        js = [j for j in computable_joints if j.endswith(f"_{side}")]
+        # body-model order (proximal -> distal), not set order: a set of strings
+        # iterates differently per process, which made the compared pair random
+        js = [j for j in JOINTS if j in computable_joints and j.endswith(f"_{side}")]
         if len(js) >= 2:
             caps.append(Capability(
                 kind="derived", target=f"coordination_{side}",
