@@ -179,7 +179,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     holds only session SUMMARY stats (no per-frame arrays), so it stays compact.
 
     `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
-    confidence and data loss, shown as header chips and per-card warnings.
+    confidence, shown as a header chip and per-card warnings.
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
     n = len(t_ms)
@@ -1524,11 +1524,10 @@ const qualOf=seg=>{
   return (QUAL.nodes||[]).find(n=>n.column===s.column)||null;
 };
 const lowSync=seg=>{const q=qualOf(seg); return !!(q&&!q.reference&&q.sync_reliable===false);};
-const hasGaps=seg=>{const q=qualOf(seg); return !!(q&&(q.gap_frac>0.01||q.longest_gap_ms>=500));};
 for(const s of DATA.segments){
   const g=SEG[s.segment]||{color:[136,136,136]};
   const row=document.createElement('div'); row.className='legrow';
-  const issues=[lowSync(s.segment)?'low sync':'', hasGaps(s.segment)?'data gaps':''].filter(Boolean);
+  const issues=lowSync(s.segment)?['low sync']:[];
   const bad=!s.calibrated||issues.length;
   const st=[s.calibrated?'calibrated':'not calibrated',...issues].join(' · ');
   row.innerHTML=`<span class="sw" style="background:${rgb(g.color)}"></span>`+
@@ -1555,7 +1554,7 @@ document.getElementById('chips').innerHTML=
   chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING)+
   syncChips();
 // Sync: did every sensor's clock line up with the first one (enough shared
-// motion)? Data gaps: stretches where a sensor recorded nothing.
+// motion)?
 function syncChips(){
   if(DATA.segments.length<2) return '';
   if(!QUAL) return chip('muted','Sync not recorded',
@@ -1564,18 +1563,10 @@ function syncChips(){
   const conf=per.filter(x=>!x.q.reference).map(x=>
     `${nameOf(x.s.segment)}: ${x.q.sync_confidence==null?'—':x.q.sync_confidence.toFixed(2)}`).join('\n');
   const low=per.filter(x=>lowSync(x.s.segment)).map(x=>nameOf(x.s.segment));
-  const gaps=per.filter(x=>hasGaps(x.s.segment));
-  let out=low.length
+  return low.length
     ? chip('warn',`Sync low: ${low.join(', ')}`,
         `These sensors shared too little motion with the first sensor to line up their clocks reliably, so timing-based results (joint timing, fast-movement angles) may be off. Add a shared movement at the start of the session.\n\nSync confidence (need ${QUAL.confidence_min}):\n${conf}`)
     : chip('good','Sensors in sync',`Every sensor's clock lined up with the first one.\n\nSync confidence:\n${conf}`);
-  if(gaps.length){
-    const worst=gaps.reduce((a,b)=>b.q.gap_frac>a.q.gap_frac?b:a);
-    out+=chip('warn',`Data gaps: ${gaps.map(x=>nameOf(x.s.segment)).join(', ')}`,
-      gaps.map(x=>`${nameOf(x.s.segment)}: ${(x.q.gap_frac*100).toFixed(1)}% missing, longest ${(x.q.longest_gap_ms/1000).toFixed(1)} s`).join('\n')+
-      `\n\nMissing stretches are filled by interpolation, so movement inside them is not measured.`);
-  }
-  return out;
 }
 
 // ---- session metrics panel (built from the baked metrics.json) ----
@@ -1645,12 +1636,10 @@ function jointCard(j){
   const segs=(DATA.joint_segments||{})[j.key]||[];
   const syncNote=segs.some(lowSync)
     ?`<div class="mnote">Sensor timing uncertain (low sync) — angles during fast movement may be off.</div>`:'';
-  const gapNote=segs.some(hasGaps)
-    ?`<div class="mnote">A sensor here has data gaps — movement inside them is not measured.</div>`:'';
   return `<div class="mcard" data-i="${ROWS.push({kind:'joint',data:j})-1}">`+
     `<div class="mhead"><span class="mname">${esc(nameOf(j.key))}</span>${tag}${reps}</div>`+
     rows+(rel?`<div class="mnote">Relative only (${relReason()}): ranges are right, but zero is the start pose rather than the anatomical position.</div>`:'')+
-    syncNote+gapNote+`</div>`;
+    syncNote+`</div>`;
 }
 function segCard(sg){
   const rows=[];

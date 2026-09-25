@@ -223,9 +223,8 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   reads the live angles of every joint (same math as `metrics.py`, checked to
 >   within 0.005° per sample). Playback runs at 1× / 2× / 5×.
 > - **Trust at a glance** — header chips for calibration, front direction,
->   sensor sync and data gaps (from reconcile's `aligned.quality.json`), with
->   per-card warnings on joints / timing comparisons that depend on a low-sync or
->   gappy sensor. Right side drawn warm, left cool; labels appear on hover or
+>   and sensor sync (from reconcile's `aligned.quality.json`), with per-card
+>   warnings on joints / timing comparisons that depend on a low-sync sensor. Right side drawn warm, left cool; labels appear on hover or
 >   with the Labels toggle.
 > - **Angle over time** — click a movement in the metrics panel to graph it
 >   across the session (other side dashed for comparison), playhead synced,
