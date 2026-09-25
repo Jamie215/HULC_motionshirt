@@ -227,6 +227,9 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   per-card warnings on joints / timing comparisons that depend on a low-sync or
 >   gappy sensor. Right side drawn warm, left cool; labels appear on hover or
 >   with the Labels toggle.
+> - **Angle over time** — click a movement in the metrics panel to graph it
+>   across the session (other side dashed for comparison), playhead synced,
+>   click/drag to seek; matches `metrics.py` per sample.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 

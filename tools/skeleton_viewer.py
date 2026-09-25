@@ -40,6 +40,15 @@ per forearm, computed exactly as metrics.py does (q_rel in the baked anatomical
 frame, left mirrored, ZXY slot 2) — calibrated view with a known front only.
 Playback runs at 1× / 2× / 5×.
 
+Angle over time
+---------------
+Clicking a movement in the metrics panel opens a graph strip under the 3-D view:
+that angle across the session (the same movement on the other side dashed), the
+playhead synced to playback, click / drag to seek, the neutral window and the
+undefined stretches shaded, min / max marked. The series is computed in the page
+from the baked quaternions with metrics.py's chain (unwrapped, then shifted by a
+multiple of 360° so its middle reads within ±180°, as the panel does).
+
 Facing (heading) auto-correction
 --------------------------------
 The mag-referenced world gives orientation but not how the subject's forward
@@ -544,6 +553,9 @@ def selftest():
           and scene_q["quality"]["nodes"][1]["sync_reliable"] is False
           and 'id="labels"' in html and "function syncChips" in html,
           "joint defs + sync/data-loss summary baked; labels toggle present")
+    check('id="graph"' in html and "function angleSeries" in html
+          and "function drawGraph" in html and 'class="row plot' in html,
+          "angle-over-time graph wired to the metrics rows")
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
@@ -761,6 +773,25 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .row .d{grid-column:1/-1;color:var(--muted);font-size:12.5px;margin-top:1px}
   .row .d.warn{color:var(--planned)}
   .mnote{font-size:12.5px;color:var(--planned);margin-top:6px}
+  .row.plot{cursor:pointer;margin:0 -8px;padding-left:8px;padding-right:8px;border-radius:6px}
+  .row.plot:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+  .row.plot.sel{background:color-mix(in srgb,var(--accent) 13%,transparent)}
+  .row.plot .k::after{content:"  graph";font-size:11px;color:var(--faint);opacity:0}
+  .row.plot:hover .k::after{opacity:1}
+  #graph{position:absolute;left:0;right:0;bottom:0;height:210px;z-index:4;
+    background:var(--surface);border-top:1px solid var(--line);
+    box-shadow:0 -6px 18px rgba(22,32,43,.06);display:flex;flex-direction:column}
+  #graph[hidden]{display:none}
+  .ghead{display:flex;align-items:center;gap:14px;padding:7px 14px 0;font-size:13px;
+    flex-wrap:wrap}
+  #gtitle{font-weight:650;font-size:14px}
+  .gleg{display:flex;gap:12px;color:var(--muted);font-size:12px}
+  .gleg i{display:inline-block;width:16px;height:0;border-top:2.5px solid;vertical-align:middle;
+    margin-right:5px}
+  .gleg i.dash{border-top-style:dashed}
+  .gopt{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px}
+  #gclose{margin-left:auto;padding:3px 11px;font-size:12.5px}
+  #gcv{flex:1;width:100%;min-height:0;display:block;cursor:crosshair;touch-action:none}
   /* relative-only numbers dim while the view shows RAW (anatomical zero off) */
   body[data-mode="raw"] .clin-gated{opacity:.5}
   @media (max-width:640px){.legend{display:none}
@@ -779,6 +810,16 @@ _HTML_TEMPLATE = r"""<!doctype html>
 <main>
   <canvas id="view"></canvas>
   <aside id="metrics" class="hidden" aria-label="Session metrics"></aside>
+  <div id="graph" hidden aria-label="Angle over time">
+    <div class="ghead">
+      <span id="gtitle"></span>
+      <span class="gleg" id="gleg"></span>
+      <label class="gopt" id="gotherwrap"><input type="checkbox" id="gother" checked>
+        compare other side</label>
+      <button id="gclose" title="Close the graph">Close</button>
+    </div>
+    <canvas id="gcv"></canvas>
+  </div>
   <div class="legend">
     <div class="live" id="live" hidden></div>
     <h2>Sensors</h2><div id="legend"></div>
@@ -867,7 +908,8 @@ const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
 // segments the metrics panel is hovering — brightened in the scene so a
 // joint/segment row visibly points at the bone(s) it measures.
-let HILITE = new Set(), SHOW_LABELS = false;
+let HILITE = new Set(), SHOW_LABELS = false, GRAPH = null;
+const graphEl = document.getElementById('graph');
 const hlBoost = (seg,c) => HILITE.has(seg)
   ? [Math.min(255,c[0]*1.28+34),Math.min(255,c[1]*1.28+34),Math.min(255,c[2]*1.28+34)]
   : c;
@@ -974,7 +1016,8 @@ function updateCamera(){
   // centre the figure in the part of the canvas the metrics drawer leaves free
   const mEl=document.getElementById('metrics');
   const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
-  focal=(H/2)/Math.tan(FOV/2); ccx=(W+cover)/2; ccy=H/2;
+  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  focal=((H-gh)/2)/Math.tan(FOV/2); ccx=(W+cover)/2; ccy=(H-gh)/2;
 }
 function project(P){
   const v=sub(P,cam), z=dot(v,fwd);
@@ -1056,8 +1099,18 @@ function liveAngles(jk){
   const J=JDEF[jk]; if(!J||mode!=='cal'||!QWA) return null;
   const bp=bodyOf(J.proximal), bd=bodyOf(J.distal);
   if(!bp||!bd||!bp.calibrated||!bd.calibrated) return null;
-  let q=qmul(qmul(qconj(QWA), qmul(qconj(segQuat(bp,frame)),segQuat(bd,frame))), QWA);
-  if(J.distal.endsWith('_l')) q=[q[0],-q[1],-q[2],q[3]];
+  return jointAngles(J, segQuat(bp,frame), segQuat(bd,frame), QWA);
+}
+// One joint's angles from its two calibrated segment quaternions. With `qwa`
+// the rotation is re-expressed in the anatomical frame (and the left side
+// mirrored); without it, it is split in world axes — exactly what metrics.py
+// does for a relative-only joint.
+function jointAngles(J, qp, qd, qwa){
+  let q=qmul(qconj(qp),qd);
+  if(qwa){
+    q=qmul(qmul(qconj(qwa),q),qwa);
+    if(J.distal.endsWith('_l')) q=[q[0],-q[1],-q[2],q[3]];
+  }
   const R=rotm(q), cl=v=>Math.max(-1,Math.min(1,v));
   let a, ok;
   if(J.seq==='ZXY'){
@@ -1074,6 +1127,30 @@ function liveAngles(jk){
   const out={};
   for(const d of J.dofs) out[d.key]=ok[d.seq_index]?a[d.seq_index]/D2R:null;
   return out;
+}
+// A whole-session angle series for one movement, matching metrics.py: the
+// calibrated stream (whatever the view toggle shows), unwrapped so a sweep past
+// ±180° stays continuous, then shifted by a multiple of 360° so its middle
+// reads within -180…180° (the same shift the panel applies). Undefined samples
+// (near the decomposition's singularity) are null. Cached per movement.
+const _series={};
+function angleSeries(jk, dk){
+  const key=jk+'.'+dk; if(key in _series) return _series[key];
+  const J=JDEF[jk], bp=J&&bodyOf(J.proximal), bd=J&&bodyOf(J.distal);
+  if(!bp||!bd) return (_series[key]=null);
+  const out=new Array(N); let prev=null;
+  for(let i=0;i<N;i++){
+    const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), QWA);
+    let v=a?a[dk]:null;
+    if(v!=null&&prev!=null) v+=360*Math.round((prev-v)/360);   // unwrap
+    out[i]=v; if(v!=null) prev=v;
+  }
+  const def=out.filter(v=>v!=null).sort((x,y)=>x-y);
+  if(def.length){
+    const k=360*Math.round(def[def.length>>1]/360);
+    if(k) for(let i=0;i<N;i++) if(out[i]!=null) out[i]-=k;
+  }
+  return (_series[key]=out);
 }
 // kept for existing callers: the forearm's pronation (+) / supination (-)
 function proSup(side){ const a=liveAngles('elbow_'+side); return a?a.pro_sup:null; }
@@ -1558,7 +1635,8 @@ function jointCard(j){
     if(info.note) bits.push(info.note);
     const part=('defined_frac' in d)&&d.defined_frac<0.995
       ? `measurable for ${r0(d.defined_frac*100)}% of the session (undefined with the arm at the side or overhead)` : '';
-    return `<div class="row${rel?' clin-gated':''}"><span class="k">${esc(info.name)}</span>`+
+    return `<div class="row plot${rel?' clin-gated':''}" data-j="${j.key}" data-dof="${d.key}" `+
+      `title="Show this movement over time"><span class="k">${esc(info.name)}</span>`+
       `<span class="v">${range}</span><span class="d">${bits.join(' · ')}</span>`+
       (part?`<span class="d warn">${part}</span>`:'')+`</div>`;
   }).join('');
@@ -1652,7 +1730,8 @@ if(MET){
   }).map(derivedCard).join('');
   metricsEl.innerHTML=
     `<h2>Session metrics</h2>`+
-    `<div class="msub">${dur} · ${r0(MET.sample_rate_hz)} samples per second</div>`+
+    `<div class="msub">${dur} · ${r0(MET.sample_rate_hz)} samples per second · `+
+      `click a movement to graph it</div>`+
     `<div class="rawbanner">You're viewing <b>raw</b> sensor orientation. The joint `+
       `angles below assume calibration — switch to <b>Calibrated</b> to see them `+
       `on the figure.</div>`+
@@ -1676,10 +1755,171 @@ if(MET){
   // wide screen so the review reads as one page, closed on a phone.
   msToggle.hidden=false;
   const openMetrics=o=>{metricsEl.classList.toggle('hidden',!o);
-    msToggle.classList.toggle('primary',o);};
+    msToggle.classList.toggle('primary',o); layoutOverlays();};
   msToggle.addEventListener('click',()=>openMetrics(metricsEl.classList.contains('hidden')));
   openMetrics(window.innerWidth>820);
 }
+
+// ---- angle-over-time graph ----
+// Opened by clicking a movement in the metrics panel. Plots that movement for
+// the whole session (plus the same movement on the other side, dashed), with
+// the playhead synced to playback; click or drag on it to seek. Shaded: the
+// neutral-pose window (green) and stretches where the angle is undefined.
+const gcv=document.getElementById('gcv'), gctx=gcv.getContext('2d');
+const gOther=document.getElementById('gother');
+const otherSide=jk=>jk.endsWith('_r')?jk.slice(0,-2)+'_l':jk.slice(0,-2)+'_r';
+function layoutOverlays(){
+  const mEl=document.getElementById('metrics');
+  const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
+  graphEl.style.left=cover+'px';
+  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  const lg=document.querySelector('.legend');
+  if(lg) lg.style.maxHeight=`calc(100% - ${24+gh}px)`;
+}
+function openGraph(jk,dk){
+  GRAPH={jk,dk}; graphEl.hidden=false;
+  const J=(MET&&MET.joints||[]).find(j=>j.key===jk);
+  const info=DOF_INFO[dk]||{name:dk};
+  const ok=JDEF[otherSide(jk)]&&present.has(JDEF[otherSide(jk)].proximal)
+           &&present.has(JDEF[otherSide(jk)].distal);
+  document.getElementById('gotherwrap').style.display=ok?'':'none';
+  document.getElementById('gtitle').innerHTML=`${esc(nameOf(jk))} — ${esc(info.name)}`+
+    (J&&!J.clinical?' <span class="tag rel">relative only</span>':'');
+  for(const r of document.querySelectorAll('#metrics .row.plot'))
+    r.classList.toggle('sel',r.dataset.j===jk&&r.dataset.dof===dk);
+  layoutOverlays(); resizeGraph();
+}
+function closeGraph(){
+  GRAPH=null; graphEl.hidden=true;
+  for(const r of document.querySelectorAll('#metrics .row.plot.sel')) r.classList.remove('sel');
+  layoutOverlays();
+}
+document.getElementById('gclose').addEventListener('click',closeGraph);
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&GRAPH) closeGraph(); });
+metricsEl.addEventListener('click',e=>{
+  const r=e.target.closest('.row.plot'); if(!r) return;
+  if(GRAPH&&GRAPH.jk===r.dataset.j&&GRAPH.dk===r.dataset.dof) closeGraph();
+  else openGraph(r.dataset.j,r.dataset.dof);
+});
+let GW=0, GH=0;
+function resizeGraph(){
+  GW=gcv.clientWidth; GH=gcv.clientHeight;
+  gcv.width=GW*DPR; gcv.height=GH*DPR;
+}
+window.addEventListener('resize',()=>{layoutOverlays(); if(GRAPH) resizeGraph();});
+const G_PAD={l:58,r:18,t:12,b:26};
+function niceStep(span,target){
+  const raw=span/Math.max(1,target), p=Math.pow(10,Math.floor(Math.log10(raw)));
+  for(const m of [1,2,2.5,5,10]) if(m*p>=raw) return m*p;
+  return 10*p;
+}
+function drawGraph(){
+  if(!GRAPH||graphEl.hidden||!GW) return;
+  const g=gctx, {jk,dk}=GRAPH, info=DOF_INFO[dk]||{};
+  g.setTransform(DPR,0,0,DPR,0,0); g.clearRect(0,0,GW,GH);
+  const main=angleSeries(jk,dk), osk=otherSide(jk);
+  const showOther=gOther.checked&&document.getElementById('gotherwrap').style.display!=='none';
+  const other=showOther?angleSeries(osk,dk):null;
+  const t0=DATA.t_ms[0], tEnd=DATA.t_ms[N-1], tspan=Math.max(1,tEnd-t0);
+  const X=t=>G_PAD.l+(t-t0)/tspan*(GW-G_PAD.l-G_PAD.r);
+  const vals=[...(main||[]),...(other||[])].filter(v=>v!=null);
+  const leg=document.getElementById('gleg');
+  const colOf=k=>rgb((SEG[(JDEF[k]||{}).distal]||{color:[120,120,120]}).color);
+  leg.innerHTML=`<span><i style="border-color:${colOf(jk)}"></i>${esc(nameOf(jk))}</span>`+
+    (other?`<span><i class="dash" style="border-color:${colOf(osk)}"></i>${esc(nameOf(osk))}</span>`:'');
+  if(!vals.length){
+    g.fillStyle=cssVar('--faint'); g.font='13px system-ui,sans-serif'; g.textAlign='center';
+    g.fillText('This angle is undefined for the whole session.',GW/2,GH/2); return;
+  }
+  let lo=Math.min(...vals), hi=Math.max(...vals);
+  if(hi-lo<20){const m=(hi+lo)/2; lo=m-10; hi=m+10;}
+  const padv=(hi-lo)*0.08; lo-=padv; hi+=padv;
+  const Y=v=>G_PAD.t+(hi-v)/(hi-lo)*(GH-G_PAD.t-G_PAD.b);
+  const plotL=G_PAD.l, plotR=GW-G_PAD.r, plotT=G_PAD.t, plotB=GH-G_PAD.b;
+  const ink=cssVar('--ink'), faint=cssVar('--faint'), grid=cssVar('--line');
+  g.font='11px system-ui,sans-serif';
+  // neutral-pose window
+  const nw=DATA.meta.neutral_window_ms;
+  if(nw){
+    g.fillStyle=cssVar('--built'); g.globalAlpha=.10;
+    g.fillRect(X(Math.max(t0,nw[0])),plotT,X(Math.min(tEnd,nw[1]))-X(Math.max(t0,nw[0])),plotB-plotT);
+    g.globalAlpha=.8; g.textAlign='left'; g.fillText('neutral pose',X(Math.max(t0,nw[0]))+4,plotT+11);
+    g.globalAlpha=1;
+  }
+  // undefined stretches of the main series
+  if(main){
+    g.fillStyle=faint; g.globalAlpha=.14;
+    for(let i=0;i<N;){ if(main[i]!=null){i++;continue;}
+      let j=i; while(j<N&&main[j]==null) j++;
+      const a=X(DATA.t_ms[Math.max(0,i-1)]), b=X(DATA.t_ms[Math.min(N-1,j)]);
+      g.fillRect(a,plotT,b-a,plotB-plotT); i=j; }
+    g.globalAlpha=1;
+  }
+  // gridlines + y labels
+  const ys=niceStep(hi-lo,4);
+  g.strokeStyle=grid; g.lineWidth=1; g.fillStyle=faint; g.textAlign='right'; g.textBaseline='middle';
+  for(let v=Math.ceil(lo/ys)*ys; v<=hi; v+=ys){
+    const y=Y(v); g.globalAlpha=Math.abs(v)<1e-9?1:.7;
+    g.beginPath(); g.moveTo(plotL,y); g.lineTo(plotR,y); g.stroke();
+    g.globalAlpha=1; g.fillText(`${Math.round(v)}°`,plotL-8,y);
+  }
+  // time axis
+  const xs=niceStep(tspan/1000,8)*1000;
+  g.textAlign='center'; g.textBaseline='top';
+  for(let t=0; t<=tspan+1; t+=xs) g.fillText(`${(t/1000).toFixed(xs<1000?1:0)} s`,X(t0+t),plotB+6);
+  // what up / down mean
+  if(info.pos){
+    g.textAlign='left'; g.textBaseline='top'; g.fillStyle=faint;
+    g.fillText(`↑ ${info.pos}`,4,plotT); g.textBaseline='bottom'; g.fillText(`↓ ${info.neg}`,4,plotB);
+  }
+  // series
+  const line=(ser,color,dash,w)=>{
+    if(!ser) return; g.strokeStyle=color; g.lineWidth=w; g.setLineDash(dash); g.beginPath();
+    let pen=false;
+    for(let i=0;i<N;i++){ const v=ser[i];
+      if(v==null){pen=false;continue;}
+      const x=X(DATA.t_ms[i]), y=Y(v);
+      if(pen) g.lineTo(x,y); else {g.moveTo(x,y); pen=true;} }
+    g.stroke(); g.setLineDash([]);
+  };
+  line(other,colOf(osk),[6,4],1.6);
+  line(main,colOf(jk),[],2.4);
+  // min / max of the main series
+  if(main){
+    const d=main.filter(v=>v!=null), mn=Math.min(...d), mx=Math.max(...d);
+    g.strokeStyle=colOf(jk); g.globalAlpha=.45; g.setLineDash([3,4]); g.lineWidth=1;
+    for(const v of [mn,mx]){ g.beginPath(); g.moveTo(plotL,Y(v)); g.lineTo(plotR,Y(v)); g.stroke(); }
+    g.setLineDash([]); g.globalAlpha=1; g.fillStyle=colOf(jk); g.textAlign='right';
+    g.textBaseline='bottom'; g.fillText(`max ${Math.round(mx)}°`,plotR-2,Y(mx)-2);
+    g.textBaseline='top'; g.fillText(`min ${Math.round(mn)}°`,plotR-2,Y(mn)+2);
+  }
+  // playhead
+  const px=X(DATA.t_ms[frame]);
+  g.strokeStyle=cssVar('--accent'); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(px,plotT); g.lineTo(px,plotB); g.stroke();
+  for(const [ser,k] of [[other,osk],[main,jk]]){
+    const v=ser&&ser[frame]; if(v==null) continue;
+    g.fillStyle=colOf(k); g.beginPath(); g.arc(px,Y(v),4.2,0,7); g.fill();
+    g.strokeStyle=cssVar('--surface'); g.lineWidth=1.5; g.stroke();
+  }
+  const cur=main&&main[frame];
+  const txt=cur==null?'undefined here':fmtLive(dk,cur);
+  g.font='600 12px system-ui,sans-serif'; g.fillStyle=ink; g.textBaseline='top';
+  g.textAlign=px>GW-150?'right':'left';
+  g.fillText(`${(( DATA.t_ms[frame]-t0)/1000).toFixed(2)} s · ${txt}`,px+(px>GW-150?-7:7),plotT+2);
+}
+// click / drag on the graph to seek
+let gdrag=false;
+function gseek(e){
+  const r=gcv.getBoundingClientRect(), x=e.clientX-r.left;
+  const f=(x-G_PAD.l)/(GW-G_PAD.l-G_PAD.r); if(!isFinite(f)) return;
+  const tt=DATA.t_ms[0]+Math.max(0,Math.min(1,f))*(DATA.t_ms[N-1]-DATA.t_ms[0]);
+  let lo=0,hi=N-1; while(hi-lo>1){const m=(lo+hi)>>1; if(DATA.t_ms[m]<tt) lo=m; else hi=m;}
+  pause(); setFrame(Math.abs(DATA.t_ms[lo]-tt)<Math.abs(DATA.t_ms[hi]-tt)?lo:hi);
+}
+gcv.addEventListener('pointerdown',e=>{gdrag=true; gcv.setPointerCapture(e.pointerId); gseek(e);});
+gcv.addEventListener('pointermove',e=>{if(gdrag) gseek(e);});
+gcv.addEventListener('pointerup',()=>{gdrag=false;});
 
 // ---- animation loop (real-time playback keyed on baked t_ms) ----
 let last=performance.now(), acc=0;
@@ -1692,7 +1932,7 @@ function tick(now){
     }
     if(frame>=N-1) pause();
   }
-  render();
+  render(); drawGraph();
   requestAnimationFrame(tick);
 }
 
