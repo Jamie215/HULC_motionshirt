@@ -189,7 +189,7 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 
 ## 5. Free-body diagram (part of stage 7) — feasibility
 
-> **Built (`floating_fbd.py`, `render` / `selftest`).** Bakes the reconcile
+> **Built (`skeleton_viewer.py`, `render` / `selftest`).** Bakes the reconcile
 > stream + an optional `calibration.json` into a single self-contained HTML
 > viewer (no external scripts/CDN — a hand-rolled Canvas-2D 3-D renderer, works
 > offline and straight from `file://`), with a **raw↔calibrated toggle**
@@ -251,11 +251,11 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
 1. ~~**Stage 5 calibration** with the cache-and-verify contract (§4)~~ — **done**
    (`calibrate_segments.py`). The gate for every clinical angle.
 2. ~~**Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.~~
-   — **done** (`floating_fbd.py`). Self-contained HTML viewer with the
+   — **done** (`skeleton_viewer.py`). Self-contained HTML viewer with the
    raw↔calibrated toggle; the neutral pose is where you *see* the mounting
    scatter collapse.
 2b. ~~**Connected skeleton** (§5, chain tier) — forward kinematics over the same
-   stream.~~ — **done** (`floating_fbd.py` **Skeleton** layout). Real kinematic
+   stream.~~ — **done** (`skeleton_viewer.py` **Skeleton** layout). Real kinematic
    chain + assumed lengths; pulled forward from step 5 because it's the same
    viewer and the intuitive read of the calibrated stream.
 3. ~~**Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
@@ -297,7 +297,7 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    clinical/relative-only honesty flag. Every metric's formula, units, and
    calibration gate are catalogued in `METRICS.md`.
 5. ~~**Full interface** (stage 7) — the metrics + the 3-D view in one review
-   UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
+   UI.~~ — **done**. `skeleton_viewer.py render` now takes `--metrics metrics.json`
    and bakes a review panel beside the 3-D body: per-joint **ROM** bars
    (range + min…max), peak/mean **velocity**, **rep** counts, the **segment**
    tier (travel/active%/elevation/SPARC), and the **derived** tier — all from the

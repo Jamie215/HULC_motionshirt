@@ -61,19 +61,19 @@ existing tools — this file never redefines them.
 Usage
 -----
     # bake a viewer from an aligned stream + montage (raw only):
-    python tools/floating_fbd.py render aligned.csv montage.json --out fbd.html
+    python tools/skeleton_viewer.py render aligned.csv montage.json --out skeleton.html
 
     # with calibration -> raw<->calibrated toggle + neutral-window jump:
-    python tools/floating_fbd.py render aligned.csv montage.json \
-        --calibration calibration.json --out fbd.html
+    python tools/skeleton_viewer.py render aligned.csv montage.json \
+        --calibration calibration.json --out skeleton.html
 
     # + metrics.json -> the stage-7 review panel (ROM/velocity/reps/derived)
     # reads out beside the body, sharing the raw<->calibrated toggle:
-    python tools/floating_fbd.py render aligned.csv montage.json \
+    python tools/skeleton_viewer.py render aligned.csv montage.json \
         --calibration calibration.json --metrics metrics.json --out review.html
 
     # validate end-to-end with no hardware (synth a session, bake, check):
-    python tools/floating_fbd.py selftest
+    python tools/skeleton_viewer.py selftest
 """
 
 import argparse
@@ -285,36 +285,36 @@ def cmd_render(args):
         f.write(html)
 
     m = scene["meta"]
-    print(f"[fbd] wrote {args.out}")
-    print(f"[fbd] {len(scene['segments'])} segment(s), {m['n_frames']} frames "
+    print(f"[viewer] wrote {args.out}")
+    print(f"[viewer] {len(scene['segments'])} segment(s), {m['n_frames']} frames "
           f"(stride {m['stride']} of {m['n_samples_total']}), "
           f"{m['t0_ms']:.0f}-{m['t1_ms']:.0f} ms")
     ncal = sum(1 for s in scene["segments"] if s["calibrated"])
     if calibration:
-        print(f"[fbd] calibration applied to {ncal}/{len(scene['segments'])} "
+        print(f"[viewer] calibration applied to {ncal}/{len(scene['segments'])} "
               f"segment(s); raw<->calibrated toggle enabled.")
         if m["neutral_window_ms"]:
-            print(f"[fbd] neutral window {m['neutral_window_ms'][0]:.0f}-"
+            print(f"[viewer] neutral window {m['neutral_window_ms'][0]:.0f}-"
                   f"{m['neutral_window_ms'][1]:.0f} ms — jump there and flip the "
                   f"toggle to see the mounting tilt straighten out.")
         h = m["heading"]
-        print("[fbd] front: " + (f"known (subject faced {h['facing_deg']:.0f}°, "
+        print("[viewer] front: " + (f"known (subject faced {h['facing_deg']:.0f}°, "
               f"{h['source']})" if h["confident"] else
               "UNKNOWN — the FRONT marker is nominal (add a torso node or "
               "calibrate with --facing-deg)"))
     else:
-        print("[fbd] no calibration given — RAW orientation only (each limb keeps "
+        print("[viewer] no calibration given — RAW orientation only (each limb keeps "
               "its mounting tilt). Pass --calibration to enable the toggle.")
     if metrics:
         nj = len(metrics.get("joints", []))
         nd = len(metrics.get("derived", []))
-        print(f"[fbd] metrics panel attached: {nj} joint(s), "
+        print(f"[viewer] metrics panel attached: {nj} joint(s), "
               f"{len(metrics.get('segments', []))} segment(s), {nd} derived — "
               f"the stage-7 review reads out beside the body.")
     else:
-        print("[fbd] no metrics given — 3-D view only. Pass --metrics metrics.json "
+        print("[viewer] no metrics given — 3-D view only. Pass --metrics metrics.json "
               "for the stage-7 review panel.")
-    print(f"[fbd] open it in a browser: file://{os.path.abspath(args.out)}")
+    print(f"[viewer] open it in a browser: file://{os.path.abspath(args.out)}")
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +387,7 @@ def selftest():
         scene = build_scene(csv, montage, cal, max_frames=200,
                             metrics=metrics_report)
         html = render_html(scene)
-        out = os.path.join(d, "fbd.html")
+        out = os.path.join(d, "skeleton.html")
         with open(out, "w", encoding="utf-8") as f:
             f.write(html)
         html_size = os.path.getsize(out)
@@ -548,8 +548,8 @@ def main():
                     "calibrate_segments.py (enables raw<->calibrated toggle)")
     pr.add_argument("--metrics", help="metrics.json from metrics.py (adds the "
                     "stage-7 review panel: ROM / velocity / reps / derived)")
-    pr.add_argument("--out", default="fbd.html",
-                    help="output HTML file (default: fbd.html)")
+    pr.add_argument("--out", default="skeleton.html",
+                    help="output HTML file (default: skeleton.html)")
     pr.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
                     help=f"cap baked frames by striding (default "
                          f"{DEFAULT_MAX_FRAMES})")

@@ -163,7 +163,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
          "4/5 metrics (per-DOF joint angles + range of motion)")
 
     # 5. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
-    _run([py, os.path.join(TOOLS, "floating_fbd.py"), "render", aligned,
+    _run([py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
           montage_path, "--calibration", calib, "--metrics", metrics,
           "--out", out_html],
          "5/5 render (stage-7 review: viewer + metrics panel)")
