@@ -437,6 +437,13 @@ def selftest():
         }
         scene_gap = build_scene(csv, gap_montage, None, max_frames=50)
 
+        # Same session calibrated with a stated facing: the anatomical frame is
+        # known, so it is baked for the live forearm-rotation readout.
+        cal_face = build_calibration(montage, t_ms, seg_quats, seg_meta,
+                                     float(t_ms[0]), float(t_ms[-1]),
+                                     "synth.csv", facing_deg=30.0)
+        scene_face = build_scene(csv, montage, cal_face, max_frames=50)
+
     ok = True
 
     def check(cond, msg):
@@ -495,8 +502,10 @@ def selftest():
           "facing-placed shoulders")
     check('data-speed="2"' in html and 'data-speed="5"' in html
           and "acc+=dt*SPEED" in html and "function proSup" in html
-          and scene["meta"]["anatomical_frame_quat"] is not None
-          and len(scene["meta"]["anatomical_frame_quat"]) == 4,
+          and len(scene_face["meta"]["anatomical_frame_quat"] or []) == 4
+          # no confident facing -> no frame baked (readout stays blank)
+          and (scene["meta"]["anatomical_frame_quat"] is None)
+          == (not scene["meta"]["heading"]["confident"]),
           "1×/2×/5× playback + live forearm rotation (anatomical frame baked)")
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
