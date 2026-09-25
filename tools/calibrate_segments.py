@@ -53,8 +53,8 @@ reach sideways. `compute_heading` recovers the facing from the torso node under
 ONE coarse assumption (`TORSO_FORWARD_IN_SENSOR`: which torso-sensor axis points
 out of the chest), and self-checks it — the axis must land ~horizontal at the
 upright neutral pose, and the pose must be still — marking the result
-low-confidence rather than confidently wrong. No torso -> not recovered. The FBD
-viewer applies a confident heading as a fixed yaw; nothing here asks the subject
+low-confidence rather than confidently wrong. No torso -> not recovered. The
+skeleton viewer applies a confident heading as a fixed yaw; nothing here asks the subject
 to do or remember anything extra. A montage without a torso node can supply the
 facing by hand (`--facing-deg`).
 

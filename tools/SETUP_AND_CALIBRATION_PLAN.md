@@ -193,10 +193,10 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 > stream + an optional `calibration.json` into a single self-contained HTML
 > viewer (no external scripts/CDN — a hand-rolled Canvas-2D 3-D renderer, works
 > offline and straight from `file://`), with a **raw↔calibrated toggle**
-> (applies `q_seg = q_WS ⊗ q_SB` in the viewer) and **jump-to-neutral**. Two
-> layouts share the stream:
-> - **Floating** — each segment an oriented bar at a fixed slot (segment tier).
-> - **Skeleton** — the same orientations connected into a stickman by forward
+> (applies `q_seg = q_WS ⊗ q_SB` in the viewer) and **jump-to-neutral**. (An
+> earlier *Floating* layout — each segment an oriented bar at a fixed slot — was
+> removed as confusing; the skeleton covers every montage.)
+> - **Skeleton** — the orientations connected into a stickman by forward
 >   kinematics (chain tier). The connectivity is the montage's kinematic chain
 >   (imported from `motion_capabilities.JOINTS`); only the bone **lengths and
 >   joint offsets** are assumed anatomy (the viewer's `ANAT` table). Missing
@@ -212,7 +212,12 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   sideways. Calibration recovers the facing from the torso
 >   (`compute_heading`, one coarse chest-mounting assumption, self-checked) and
 >   the viewer applies it as a fixed yaw — **zero extra burden at capture**. No
->   torso, or a low-confidence check → facing left nominal, honestly labeled.
+>   torso, or a low-confidence check → facing left nominal, honestly labeled
+>   (`--facing-deg` states it by hand).
+> - **Front** — the shoulders sit on the subject's left/right from that facing, a
+>   ground arrow marks FRONT (BACK / L / R around it), the chest face is lighter
+>   and the head has a nose; Front / Side / Top buttons snap the camera. Unknown
+>   facing → a dashed "front?" arrow.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 
@@ -220,10 +225,10 @@ The most feasible visual, because **orientation is exactly what is measured** �
 quaternion per segment per frame directly drives an oriented 3-D body. It maps
 one-to-one onto the resolver's tiers:
 
-- **Segment tier (1 node)** → each segment drawn as its own oriented body,
-  floating (the **Floating** layout). Needs only the orientation. Validates
-  stages 5–6: jump to the neutral window and flip the raw↔calibrated toggle; if
-  calibration worked the scattered bars snap upright.
+- **Segment tier (1 node)** → each segment drawn as its own oriented bone,
+  hung at its nominal place in the skeleton. Needs only the orientation.
+  Validates stages 5–6: jump to the neutral window and flip the raw↔calibrated
+  toggle; if calibration worked the crooked limbs hang straight.
 - **Joint tier (2 adjacent nodes)** → connect them at the joint. The **Skeleton**
   layout draws the linkage; the per-DOF angle read-out (from the resolver's
   decomposition) is the remaining piece, and belongs with the ROM metric plugin.
@@ -291,7 +296,7 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    `resolve()` says the montage supports it, and carries the same
    clinical/relative-only honesty flag. Every metric's formula, units, and
    calibration gate are catalogued in `METRICS.md`.
-5. ~~**Full interface** (stage 7) — the metrics + both FBD layouts in one review
+5. ~~**Full interface** (stage 7) — the metrics + the 3-D view in one review
    UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
    and bakes a review panel beside the 3-D body: per-joint **ROM** bars
    (range + min…max), peak/mean **velocity**, **rep** counts, the **segment**

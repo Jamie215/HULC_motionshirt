@@ -1,61 +1,56 @@
 #!/usr/bin/env python3
 """
-HULC Motion Shirt — stage-7 visual (segment tier): the floating-segment
-free-body diagram.
+HULC Motion Shirt — stage-7 visual: the skeleton review viewer.
 
-The cheapest, most honest visual in the pipeline, because **orientation is
-exactly what the shirt measures**: one magnetometer-referenced quaternion per
-segment per frame drives one oriented body directly. This tool bakes the
-reconcile → (optional) calibrate stream into a single self-contained HTML
-viewer that draws each placed segment as its own oriented bar, floating at a
-fixed slot, tilting/rolling as the subject moves.
+Orientation is exactly what the shirt measures — one magnetometer-referenced
+quaternion per segment per frame. This tool bakes the reconcile → (optional)
+calibrate stream into a single self-contained HTML viewer that connects the
+segments into a 3-D stickman by forward kinematics (SETUP_AND_CALIBRATION_PLAN.md
+§5, joint/chain tier): root the torso, place each segment's proximal end at its
+parent's joint, orient the bone by its quaternion, step down the chain. The
+CONNECTIVITY is real (the montage's kinematic chain, from
+motion_capabilities.JOINTS); the bone LENGTHS and joint offsets are ASSUMED
+anatomy (the `ANAT` table in the viewer). Missing nodes never break the figure
+and never masquerade as measured:
+  - a MISSING MIDDLE segment (e.g. torso + forearm, no upper arm) is drawn as a
+    dashed "ghost" bone at rest, hung from the nearest measured ancestor's joint,
+    and the measured descendant attaches to its end;
+  - with NO torso but both arms placed (the bilateral asymmetry montage) each arm
+    roots at a nominal shoulder and a fixed dashed girdle labeled "torso — not
+    measured" bridges them;
+  - an UNCALIBRATED bone (present but no cached offset) draws with an amber dashed
+    overlay + "· raw" label, so a kink there reads as strap tilt, not motion.
 
-Two layouts (toggle in the viewer)
-----------------------------------
-* FLOATING — each segment floats at a fixed slot, only its ORIENTATION real.
-  The honest first-tier view: orientation is MEASURED, position is not, so the
-  bodies are drawn apart on purpose.
-* SKELETON — the same measured orientations, now connected into a stickman by
-  forward kinematics (SETUP_AND_CALIBRATION_PLAN.md §5, joint/chain tier): root
-  the torso, place each segment's proximal end at its parent's joint, orient the
-  bone by its quaternion, step down the chain. The CONNECTIVITY is real (the
-  montage's kinematic chain, from motion_capabilities.JOINTS); the bone LENGTHS
-  and joint offsets are ASSUMED anatomy (the `ANAT` table in the viewer).
-  Missing nodes never break the figure and never masquerade as measured:
-    - a MISSING MIDDLE segment (e.g. torso + forearm, no upper arm) is drawn as
-      a dashed "ghost" bone at rest, hung from the nearest measured ancestor's
-      joint, and the measured descendant attaches to its end — orientation is
-      real where a node exists, assumed (at rest) where one is missing;
-    - with NO torso but both arms placed (the bilateral asymmetry montage) each
-      arm roots at a nominal shoulder and a fixed dashed girdle labeled "torso —
-      not measured" bridges them, so the arms read as one body without a trunk;
-    - an UNCALIBRATED bone (present but no cached offset) draws with an amber
-      dashed overlay + "· raw" label, so a kink there reads as strap tilt, not
-      real motion.
+Where the front is
+------------------
+The figure faces the subject's forward: the shoulders are placed on the
+subject's left/right (from the calibration facing), a ground arrow marks FRONT
+(with BACK / L / R around it), the chest face is lighter and the head carries a
+nose. Front / Side / Top buttons snap the camera to those views. When the facing
+is unknown the arrow reads "front?" and the forward direction is nominal.
 
 Facing (heading) auto-correction
 --------------------------------
 The mag-referenced world gives orientation but not how the subject's forward
 lines up with world "north", so a forward reach could otherwise draw sideways.
-When calibration recovered a confident heading from the torso
-(calibrate_segments.compute_heading), the skeleton is rotated by that fixed yaw
-about vertical so a forward reach draws forward. It is captured once at neutral
-(so it never eats trunk motion), applied only when confident, and always
-labeled ("facing: auto from torso" / "undetermined"). No torso -> facing stays
-nominal, honestly labeled.
+When calibration has a confident facing (recovered from the torso by
+calibrate_segments.compute_heading, or stated with --facing-deg), the skeleton is
+rotated by that fixed yaw about vertical so a forward reach draws forward. It is
+captured once at neutral (so it never eats trunk motion), applied only when
+confident, and always labeled. Otherwise facing stays nominal, honestly labeled.
 
 What it shows — and why it validates stages 5-6
 -----------------------------------------------
 Feeding it a calibration.json makes the raw↔calibrated toggle the whole point:
 
   * RAW        each segment carries its unknown mounting tilt, so at the
-               neutral pose the bars sit scattered / crooked.
+               neutral pose the limbs sit crooked.
   * CALIBRATED the cached per-segment mounting offset q_SB is applied
                (q_seg = q_WS ⊗ q_SB), so at the neutral pose every calibrated
-               bar snaps upright and aligned.
+               limb hangs straight.
 
 Jump to the neutral window and flip the toggle: if calibration worked, the
-scatter collapses to a clean N-pose. That is stage 5 (the solve) and stage 6
+crooked figure straightens into a clean N-pose. That is stage 5 (the solve) and stage 6
 (the calibrated stream) verified with your eyes, before any angle is computed.
 
 The offsets are applied IN THE VIEWER (baked raw quats + one offset per
@@ -193,16 +188,15 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     has_cal = any(s["calibrated"] for s in segments)
     parents = _parent_map(set(seg_quats))
     present = set(seg_quats)
-    # The skeleton reads as a "body" when it can be rooted: a torso, or (torso
-    # absent) both upper arms, which we bridge with a fixed assumed shoulder
-    # girdle. Otherwise it defaults to the floating view.
+    # With no torso but both upper arms, the viewer bridges them with a fixed
+    # assumed shoulder girdle so the arms read as one body.
     both_arms = {"upper_arm_l", "upper_arm_r"} <= present
-    skeleton_default = ("torso" in present) or both_arms
 
     # Facing: the calibration step recovers the subject's heading from the torso
-    # (calibrate_segments.compute_heading). The viewer rotates the skeleton by
-    # `correction_yaw_deg` about vertical so a forward reach draws forward — but
-    # only when the recovery was confident; otherwise it stays nominal.
+    # (calibrate_segments.compute_heading) or takes it from --facing-deg. The
+    # viewer places the shoulders on the subject's left/right from it and rotates
+    # the skeleton by `correction_yaw_deg` about vertical so the front faces the
+    # FRONT marker — only when confident; otherwise it stays nominal.
     h = (calibration or {}).get("heading", {})
     heading = {
         "source": h.get("source", "none"),
@@ -230,7 +224,6 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "neutral_window_ms": neutral_window,
             "has_root": "torso" in seg_quats,
             "both_arms": both_arms,
-            "skeleton_default": skeleton_default,
             "heading": heading,
         },
         "parents": parents,
@@ -252,7 +245,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
 # ---------------------------------------------------------------------------
 def render_html(scene):
     data_json = json.dumps(scene, separators=(",", ":"))
-    title = (f"Floating-segment FBD — {scene['meta']['subject']} / "
+    title = (f"Skeleton review — {scene['meta']['subject']} / "
              f"{scene['meta']['session']}")
     return (_HTML_TEMPLATE
             .replace("__TITLE__", _html_escape(title))
@@ -303,9 +296,14 @@ def cmd_render(args):
         if m["neutral_window_ms"]:
             print(f"[fbd] neutral window {m['neutral_window_ms'][0]:.0f}-"
                   f"{m['neutral_window_ms'][1]:.0f} ms — jump there and flip the "
-                  f"toggle to see the mounting scatter collapse.")
+                  f"toggle to see the mounting tilt straighten out.")
+        h = m["heading"]
+        print("[fbd] front: " + (f"known (subject faced {h['facing_deg']:.0f}°, "
+              f"{h['source']})" if h["confident"] else
+              "UNKNOWN — the FRONT marker is nominal (add a torso node or "
+              "calibrate with --facing-deg)"))
     else:
-        print("[fbd] no calibration given — RAW orientation only (each bar keeps "
+        print("[fbd] no calibration given — RAW orientation only (each limb keeps "
               "its mounting tilt). Pass --calibration to enable the toggle.")
     if metrics:
         nj = len(metrics.get("joints", []))
@@ -471,6 +469,11 @@ def selftest():
           and '"frames"' in html and "getContext('2d')" in html
           and "<script src=" not in html,
           f"HTML has data injected + self-contained viewer ({html_size} bytes)")
+    check('data-view="front"' in html and 'data-view="side"' in html
+          and "data-layout" not in html and "renderFloating" not in html
+          and "compass()" in html and "RIGHT_W" in html,
+          "skeleton-only viewer with FRONT compass, Front/Side/Top views and "
+          "facing-placed shoulders")
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
@@ -494,15 +497,14 @@ def selftest():
           and scene["meta"]["has_root"] is True,
           f"skeleton chain: {par}")
 
-    # (7) No-torso bilateral: no root, both arms present -> skeleton still the
-    #     default (arms root at nominal shoulders, bridged by the assumed
-    #     girdle), and neither arm has a placed parent.
+    # (7) No-torso bilateral: no root, both arms present -> the arms root at
+    #     nominal shoulders, bridged by the assumed girdle, and neither arm has a
+    #     placed parent.
     mbl = scene_bl["meta"]
     check(mbl["has_root"] is False and mbl["both_arms"] is True
-          and mbl["skeleton_default"] is True
           and scene_bl["parents"].get("upper_arm_l") is None
           and scene_bl["parents"].get("upper_arm_r") is None,
-          f"no-torso bilateral defaults to skeleton w/ girdle: {mbl}")
+          f"no-torso bilateral roots both arms at the girdle: {mbl}")
 
     # (7b) Facing: a torso session bakes a torso_auto heading block; a no-torso
     #      session bakes source 'none' (viewer leaves facing nominal).
@@ -539,7 +541,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd")
 
     pr = sub.add_parser("render", help="bake an aligned stream (+ calibration) "
-                        "into a standalone HTML free-body viewer")
+                        "into a standalone HTML skeleton viewer")
     pr.add_argument("aligned_csv", help="reconcile_nodes.py output CSV")
     pr.add_argument("montage", help="montage JSON (column<->segment mapping)")
     pr.add_argument("--calibration", help="calibration.json from "
@@ -607,8 +609,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #view{position:absolute;inset:0;display:block;width:100%;height:100%;
     touch-action:none;cursor:grab}
   #view:active{cursor:grabbing}
-  .hint{position:absolute;left:12px;bottom:10px;color:var(--faint);
-    font-size:11px;pointer-events:none}
+  .hint{max-width:820px;margin-top:4px;color:var(--faint);font-size:11.5px}
   .legend{position:absolute;right:12px;top:12px;background:var(--surface);
     border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     box-shadow:var(--shadow);max-width:250px}
@@ -694,30 +695,28 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <div class="eyebrow" id="eyebrow">Stage 7 &middot; segment tier</div>
-  <h1>Floating-segment free-body diagram</h1>
+  <div class="eyebrow" id="eyebrow">Stage 7 &middot; skeleton</div>
+  <h1>Skeleton review</h1>
   <div class="sub" id="sub">&mdash;</div>
-  <div class="stage" id="stage"><b>Skeleton</b> connects the segments into a
-    stickman by forward kinematics: root the torso, hang each bone from its
-    parent's joint, orient it by the measured quaternion. The connectivity is
-    real (the montage's kinematic chain); the bone lengths and joint spots are
-    <b>assumed anatomy</b>. <b>Floating</b> drops the connection entirely &mdash;
-    each bar orients in place, the honest "orientation measured, position not"
-    view. Drag to orbit &middot; scroll to zoom.</div>
+  <div class="stage" id="stage">Each bone is oriented by its measured
+    quaternion and hung from its parent's joint. Orientation is measured; the
+    bone lengths and joint spots are <b>assumed anatomy</b>. The ground arrow
+    marks the subject's <b>front</b>; the chest face is lighter and the head has
+    a nose. Drag to orbit &middot; scroll to zoom.</div>
+  <div class="hint" id="hint"></div>
 </header>
 <main>
   <canvas id="view"></canvas>
   <aside id="metrics" class="hidden" aria-label="Session metrics"></aside>
   <div class="legend"><h2>Segments</h2><div id="legend"></div></div>
-  <div class="hint" id="hint">world up = gravity (Z, blue axis) &middot; north =
-    Y (green)</div>
 </main>
 <footer>
   <button id="play" class="primary">&#9654; Play</button>
   <button id="mstoggle" hidden>&#9776; Metrics</button>
-  <div class="toggle" id="layout">
-    <button data-layout="skeleton">Skeleton</button>
-    <button data-layout="floating">Floating</button>
+  <div class="toggle" id="view3d" title="Snap the camera">
+    <button data-view="front">Front</button>
+    <button data-view="side">Side</button>
+    <button data-view="top">Top</button>
   </div>
   <div class="toggle" id="mode">
     <button data-mode="raw">Raw</button>
@@ -754,22 +753,19 @@ const TRUNK_W    = 0.150*STAT;             // trunk depth (front-back), for the 
 const HEAD_R     = 0.130*STAT/2;           // head height 0.130 of stature
 const NECK       = 0.052*STAT;
 
-// Fixed per-segment geometry + floating anchor slot. Data frame: X = subject
-// L/R, Y = front/back, Z = up (gravity). Length runs along local +Z, so a
-// calibrated neutral pose (offset applied, orientation ~identity) points every
-// bar straight up. Lengths/breadths come from the anthropometry above.
+// Per-segment colour. The skeleton's lengths / thicknesses live in ANAT below.
 const SEG = {
-  torso:       {len:TORSO_LEN,          cross:SHOULDER_W,      color:[59,130,196], anchor:[0,0,.0]},
-  upper_arm_r: {len:segLen('upper_arm'),cross:segW('upper_arm'),color:[228,87,46], anchor:[-.58,0,-.02]},
-  upper_arm_l: {len:segLen('upper_arm'),cross:segW('upper_arm'),color:[242,165,65],anchor:[ .58,0,-.02]},
-  forearm_r:   {len:segLen('forearm'),  cross:segW('forearm'), color:[23,163,152], anchor:[-.58,0,-.74]},
-  forearm_l:   {len:segLen('forearm'),  cross:segW('forearm'), color:[124,181,24], anchor:[ .58,0,-.74]},
-  hand_r:      {len:segLen('hand'),     cross:segW('hand'),    color:[111,75,216], anchor:[-.58,0,-1.36]},
-  hand_l:      {len:segLen('hand'),     cross:segW('hand'),    color:[214,84,155], anchor:[ .58,0,-1.36]},
+  torso:       {color:[59,130,196]},
+  upper_arm_r: {color:[228,87,46]},
+  upper_arm_l: {color:[242,165,65]},
+  forearm_r:   {color:[23,163,152]},
+  forearm_l:   {color:[124,181,24]},
+  hand_r:      {color:[111,75,216]},
+  hand_l:      {color:[214,84,155]},
 };
 const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
-// segments the metrics panel is hovering — brightened in both layouts so a
+// segments the metrics panel is hovering — brightened in the scene so a
 // joint/segment row visibly points at the bone(s) it measures.
 let HILITE = new Set();
 const hlBoost = (seg,c) => HILITE.has(seg)
@@ -795,12 +791,24 @@ function qrot(q,v){
   return add(add(v,scl(t,w)), cross(u,t));
 }
 
-// ---- ASSUMED anatomy for the connected (skeleton) layout ----
+// ---- facing: where the subject's front is ----
+// The calibrated torso frame is world-aligned at neutral (Z up), so the subject's
+// left/right comes from the calibration facing (azimuth of forward, clockwise from
+// world +Y). The shoulders go on the subject's actual right/left, and after the
+// yaw correction below the figure's forward lands on +Y (the FRONT marker) and
+// its right on +X. Unknown facing -> nominal 0°, labeled "front?".
+const HEADING=DATA.meta.heading||{source:'none',confident:false,correction_yaw_deg:0};
+const FRONT_KNOWN=!!HEADING.confident;
+const FACE_DEG=FRONT_KNOWN?(HEADING.facing_deg??HEADING.correction_yaw_deg??0):0;
+const _fr=FACE_DEG*Math.PI/180;
+const RIGHT_W=[Math.cos(_fr),-Math.sin(_fr),0];      // subject's right, world, at neutral
+
+// ---- ASSUMED anatomy for the skeleton ----
 // The connectivity (the anatomical chain from the body model) is real; the
 // numbers here are MODELED: nominal bone length, the bone's direction in the
 // calibrated frame at neutral (torso runs up +Z; a hanging arm runs down -Z),
 // and where a parent hands off to its child (`sockets` — only the torso has a
-// lateral one: the shoulders sit near its top corners). Change these to fit a
+// lateral one: the shoulders sit near its top corners, on the subject's side). Change these to fit a
 // subject; they never touch the measured orientation, only where a bar is drawn.
 //
 // Lengths, breadths, the shoulder sockets and the head all come from the one
@@ -810,8 +818,8 @@ function qrot(q,v){
 // and a separate shoulder bar (in renderSkeleton) spans the full shoulder width.
 const ANAT = {
   torso:       {len:TORSO_LEN, dir:[0,0,1], thick:TRUNK_W, sockets:{
-                  upper_arm_r:[-SHOULDER_W/2,0,TORSO_LEN*0.88],
-                  upper_arm_l:[ SHOULDER_W/2,0,TORSO_LEN*0.88]}},
+                  upper_arm_r:add(scl(RIGHT_W, SHOULDER_W/2),[0,0,TORSO_LEN*0.88]),
+                  upper_arm_l:add(scl(RIGHT_W,-SHOULDER_W/2),[0,0,TORSO_LEN*0.88])}},
   upper_arm_r: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
   upper_arm_l: {len:segLen('upper_arm'), dir:[0,0,-1], thick:segW('upper_arm')},
   forearm_r:   {len:segLen('forearm'),   dir:[0,0,-1], thick:segW('forearm')},
@@ -834,32 +842,29 @@ function socket(P,C){
 
 const cvs=document.getElementById('view'), ctx=cvs.getContext('2d');
 const UP=[0,0,1], FOV=45*Math.PI/180, LIGHT=norm([0.45,0.55,1.0]);
-const TARGET={floating:[0,0,-0.62], skeleton:[0,0,0.06]};
-const GROUNDS={floating:-1.72, skeleton:-0.62};
+const TARGET=[0,0,0.06], GROUND=-0.62;
 let DPR=1, W=0, H=0;
 
-// A unit box's 6 faces as vertex-index quads (verts built per body below).
+// A box's 6 faces as corner-index quads (corners from boxBetween / the torso).
 const BOX_FACES=[[0,1,3,2],[4,6,7,5],[0,4,5,1],[2,3,7,6],[0,2,6,4],[1,5,7,3]];
 
-// ---- build per-body static geometry (local frame) ----
+// ---- per-body state ----
 const bodies=[];
 for(const s of DATA.segments){
-  const g=SEG[s.segment]||{len:.25,cross:.08,color:[136,136,136],anchor:[0,0,0]};
-  const cx=g.cross/2, cy=g.cross*0.62/2, L=g.len;
-  // 8 corners: cross-section in X/Y, length 0..L along +Z (base at anchor).
-  const verts=[
-    [-cx,-cy,0],[cx,-cy,0],[-cx,cy,0],[cx,cy,0],
-    [-cx,-cy,L],[cx,-cy,L],[-cx,cy,L],[cx,cy,L]];
+  const g=SEG[s.segment]||{color:[136,136,136]};
   bodies.push({seg:s.segment, calibrated:s.calibrated, offset:s.offset,
-    anchor:g.anchor, color:g.color, len:L, cross:g.cross, verts,
-    frames:DATA.frames[s.segment]});
+    color:g.color, frames:DATA.frames[s.segment]});
 }
 
 // ---- camera (Z-up spherical orbit) ----
-let az=Math.PI*0.14, el=Math.PI*0.36, rad=3.15;
+// The figure's front faces +Y, so az=π/2 looks at it from the front and az=0
+// from its right side. Default: front, a little to the subject's right, above.
+const VIEWS={front:[Math.PI/2,Math.PI*0.46], side:[0,Math.PI*0.46],
+             top:[Math.PI/2,0.12]};
+let az=Math.PI/2-0.7, el=Math.PI*0.36, rad=3.15;
 let cam, fwd, right, tup, focal, ccx, ccy;
 function updateCamera(){
-  const T=TARGET[layout];
+  const T=TARGET;
   cam=[T[0]+rad*Math.sin(el)*Math.cos(az), T[1]+rad*Math.sin(el)*Math.sin(az),
        T[2]+rad*Math.cos(el)];
   fwd=norm(sub(T,cam)); right=norm(cross(fwd,UP)); tup=cross(right,fwd);
@@ -874,16 +879,12 @@ function project(P){
 // ---- playback / view state ----
 const N=DATA.meta.n_frames;
 let frame=0, mode=DATA.meta.has_calibration?'cal':'raw', playing=false;
-// default to the connected stickman when we can root it into a body (torso, or
-// both arms bridged by the assumed girdle) and it's calibrated; else floating.
-let layout=(DATA.meta.has_calibration && DATA.meta.skeleton_default)
-  ?'skeleton':'floating';
 function segQuat(b,i){
   const q=b.frames[i];
   return mode==='cal' ? qmul(q,b.offset) : q;
 }
 
-// ---- forward kinematics for the connected layout ----
+// ---- forward kinematics ----
 // Walk the full anatomical chain from the (nominal) torso root down. Each link
 // is placed at its parent's hand-off socket and oriented by the parent's
 // MEASURED quaternion if that node is placed, or by identity (a "ghost" at rest)
@@ -892,10 +893,9 @@ function segQuat(b,i){
 // off of. Position is modeled; orientation is real wherever a node exists.
 const present=new Set(DATA.segments.map(s=>s.segment));
 // facing correction: a fixed yaw about world up (Z) so the subject's forward
-// draws forward. Captured once at neutral (from the torso), applied only when
-// the recovery was confident — so it never eats trunk motion during the clip.
-const HEADING=DATA.meta.heading||{source:'none',confident:false,correction_yaw_deg:0};
-const YAW_DEG=HEADING.confident?(HEADING.correction_yaw_deg||0):0;
+// draws toward the FRONT marker (+Y). Captured once at neutral, applied only
+// when the facing is confident — so it never eats trunk motion during the clip.
+const YAW_DEG=FRONT_KNOWN?(HEADING.correction_yaw_deg||0):0;
 const _yr=YAW_DEG*Math.PI/180/2, FACE_Q=[Math.cos(_yr),0,0,Math.sin(_yr)]; // about +Z
 const faced=p=>YAW_DEG?qrot(FACE_Q,p):p;            // rotate a world point into facing
 function fkPose(){
@@ -938,57 +938,32 @@ function render(){
 
   // ground grid (drawn first, underneath)
   ctx.lineWidth=1; ctx.strokeStyle=cssVar('--grid'); ctx.globalAlpha=0.6;
-  const gz=GROUNDS[layout], R=2.0, step=0.4;
+  const R=2.0, step=0.4;
   for(let a=-R;a<=R+1e-6;a+=step){
-    line([a,-R,gz],[a,R,gz]); line([-R,a,gz],[R,a,gz]);
+    line([a,-R,GROUND],[a,R,GROUND]); line([-R,a,GROUND],[R,a,GROUND]);
   }
   ctx.globalAlpha=1;
-
-  if(layout==='skeleton') renderSkeleton(); else renderFloating();
-
-  // world axis gnomon: at the origin in floating (unambiguous "up"), off in a
-  // ground corner in skeleton so it doesn't poke through the figure.
-  ctx.lineWidth=2;
-  triad(layout==='skeleton'?[-1.4,-1.4,GROUNDS.skeleton]:[0,0,0],
-        [1,0,0,0],0.34,true);
+  compass();
+  renderSkeleton();
 }
 
-// each segment as its own oriented box, floating at a fixed slot (the honest
-// "orientation measured, position NOT" view).
-function renderFloating(){
-  const polys=[];
-  for(const b of bodies){
-    const q=segQuat(b,frame);
-    const world=b.verts.map(v=>add(b.anchor,qrot(q,v)));
-    for(const face of BOX_FACES){
-      const wp=face.map(i=>world[i]);
-      const pp=wp.map(project);
-      if(pp.some(p=>p===null)) continue;
-      const nrm=norm(cross(sub(wp[1],wp[0]),sub(wp[2],wp[0])));
-      const lit=0.55+0.45*Math.max(0,Math.abs(dot(nrm,LIGHT)));
-      const depth=(pp[0].z+pp[1].z+pp[2].z+pp[3].z)/4;
-      polys.push({pp, color:shade(hlBoost(b.seg,b.color),lit), depth});
-    }
-  }
-  polys.sort((a,b)=>b.depth-a.depth);            // painter's: far first
-  for(const p of polys){
-    ctx.beginPath(); ctx.moveTo(p.pp[0].x,p.pp[0].y);
-    for(let i=1;i<4;i++) ctx.lineTo(p.pp[i].x,p.pp[i].y);
-    ctx.closePath();
-    ctx.fillStyle=rgb(p.color); ctx.fill();
-    ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.18)'; ctx.stroke();
-  }
-  ctx.lineWidth=2.5; ctx.lineCap='round';
-  for(const b of bodies){
-    const q=segQuat(b,frame), O=b.anchor;
-    triad(O,q,b.cross*1.7);                       // roll cue
-    const tip=project(add(O,qrot(q,[0,0,b.len])));
-    if(tip){
-      ctx.beginPath(); ctx.arc(tip.x,tip.y,4.5,0,7); ctx.fillStyle='#fff';
-      ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle=rgb(b.color); ctx.stroke();
-    }
-    label(add(O,qrot(q,[0,0,b.len+0.14])), b.seg);
-  }
+// ground compass: an arrow toward the subject's FRONT (+Y after the facing
+// correction) with BACK and the subject's L / R around it. Faint and "front?"
+// when the facing is unknown, so a nominal direction never reads as measured.
+function compass(){
+  const col=FRONT_KNOWN?cssVar('--accent'):cssVar('--faint');
+  const z=GROUND, tip=[0,0.95,z], base=[0,0.28,z], C=1.12;
+  ctx.save(); ctx.lineCap='round'; ctx.strokeStyle=col; ctx.fillStyle=col;
+  ctx.lineWidth=3; if(!FRONT_KNOWN) ctx.setLineDash([8,6]);
+  line(base,tip); ctx.setLineDash([]);
+  const a=project(tip), l=project([-0.11,0.76,z]), r=project([0.11,0.76,z]);
+  if(a&&l&&r){ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(l.x,l.y);
+    ctx.lineTo(r.x,r.y); ctx.closePath(); ctx.fill();}
+  ctx.restore();
+  label([0,C,z], FRONT_KNOWN?'FRONT':'front? (facing unknown)', col);
+  label([0,-C,z],'BACK',cssVar('--faint'));
+  label([C,0,z],'R',cssVar('--faint'));
+  label([-C,0,z],'L',cssVar('--faint'));
 }
 
 // ---- helpers for the SOLID 3-D skeleton (shaded boxes + balls) ----
@@ -1052,7 +1027,12 @@ function renderSkeleton(){
     for(const hh of [[hip,HIP_W*0.5],[sMid,SHOULDER_W*0.5]])
       for(const sv of [-1,1]) for(const su of [-1,1])
         tc.push(add(hh[0], add(scl(xax,su*hh[1]), scl(dax,sv*TRUNK_W*0.5))));
-    for(const f of BOX_FACES){ const p=faceOf(tc,f,hlBoost('torso',SEG.torso.color)); if(p) polys.push(p); }
+    // BOX_FACES[3] is the +dax (front) face: tinted lighter so the chest reads.
+    const tcol=hlBoost('torso',SEG.torso.color);
+    BOX_FACES.forEach((f,k)=>{
+      const p=faceOf(tc,f,k===3?[tcol[0]*0.55+115,tcol[1]*0.55+115,tcol[2]*0.55+115]:tcol);
+      if(p) polys.push(p);
+    });
   }
   // each limb as a solid shaded box between its two joints
   const raws=[];
@@ -1113,7 +1093,14 @@ function renderSkeleton(){
   if(present.has('torso')){
     const sMid=scl(add(shoulder('upper_arm_l'),shoulder('upper_arm_r')),0.5);
     const up=norm(sub(pos['torso'].dist, pos['torso'].prox));
-    ball(add(sMid, scl(up, NECK+HEAD_R)), HEAD_R, SEG.torso.color);
+    const hc=add(sMid, scl(up, NECK+HEAD_R));
+    ball(hc, HEAD_R, SEG.torso.color);
+    // nose on the front of the head (forward = up × subject's right), drawn only
+    // when it faces the camera so it never shows through the back of the head.
+    const rt=norm(sub(shoulder('upper_arm_r'),shoulder('upper_arm_l')));
+    const nose=add(hc, scl(norm(cross(up,rt)), HEAD_R*0.95));
+    const pn=project(nose), ph=project(hc);
+    if(pn&&ph&&pn.z<ph.z) ball(nose, HEAD_R*0.28, shade(SEG.torso.color,0.6));
   }
   // labels: present bones at their distal end (uncalibrated flagged amber
   // "· raw"); ghosts at their midpoint, faint and flagged "no node". The torso
@@ -1142,16 +1129,6 @@ function label(P,text,color){
 function line(A,B){
   const a=project(A), b=project(B); if(!a||!b) return;
   ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-}
-const AXC=['rgba(224,64,64,.95)','rgba(40,170,90,.95)','rgba(60,120,230,.95)'];
-function triad(O,q,L,world){
-  const axes=[[L,0,0],[0,L,0],[0,0,L]];
-  for(let k=0;k<3;k++){
-    const a=project(O), c=project(add(O,world?axes[k]:qrot(q,axes[k])));
-    if(!a||!c) continue;
-    ctx.strokeStyle=AXC[k]; ctx.beginPath();
-    ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke();
-  }
 }
 const _vc={};
 function cssVar(name){
@@ -1190,7 +1167,7 @@ if(window.matchMedia)
 // ---- UI wiring ----
 const scrub=document.getElementById('scrub'), tlabel=document.getElementById('tlabel'),
   playBtn=document.getElementById('play'), neutralBtn=document.getElementById('neutral'),
-  modeBox=document.getElementById('mode'), layoutBox=document.getElementById('layout'),
+  modeBox=document.getElementById('mode'), viewBox=document.getElementById('view3d'),
   hintEl=document.getElementById('hint'), subEl=document.getElementById('sub');
 scrub.max=Math.max(0,N-1);
 const fmtS=ms=>(ms/1000).toFixed(2)+' s';
@@ -1221,28 +1198,27 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
-// facing status line for the skeleton hint
-const _h=DATA.meta.heading||{source:'none'};
-const FACING=_h.source==='torso_auto'&&_h.confident
-    ? `facing: auto from torso (${(_h.correction_yaw_deg||0).toFixed(0)}°)`
-  : _h.source==='torso_auto'
-    ? 'facing: undetermined (low confidence) — forward/side is nominal'
-    : 'facing: undetermined (no torso) — forward/side is nominal';
-const HAS_RAW=DATA.segments.some(s=>!s.calibrated);
-const HINTS={
-  skeleton:'connected by forward kinematics · bone lengths & joint spots are '+
-    'assumed anatomy · a dashed bone has no node; an amber-dashed bone is '+
-    'uncalibrated (a kink there may be strap tilt, not motion) · '+FACING,
-  floating:'orientation measured, position NOT · each bar carries a small local '+
-    'triad so roll is visible · world up = gravity (Z, blue)'};
-function setLayout(l){
-  layout=l; hintEl.innerHTML=HINTS[l];
-  for(const b of layoutBox.querySelectorAll('button'))
-    b.classList.toggle('on',b.dataset.layout===l);
+// facing status line for the hint
+const FACING=FRONT_KNOWN
+  ? (HEADING.source==='manual'
+      ? `front: stated by hand (faced ${FACE_DEG.toFixed(0)}°)`
+      : `front: auto from torso (faced ${FACE_DEG.toFixed(0)}°)`)
+  : HEADING.source==='torso_auto'
+    ? 'front: unknown (low-confidence torso facing) — FRONT marker is nominal'
+    : 'front: unknown (no torso node) — FRONT marker is nominal; calibrate with --facing-deg';
+hintEl.innerHTML=FACING+' · a dashed bone has no node; an amber-dashed bone is '+
+  'uncalibrated (a kink there may be strap tilt, not motion)';
+function setView(v){
+  [az,el]=VIEWS[v];
+  for(const b of viewBox.querySelectorAll('button'))
+    b.classList.toggle('on',b.dataset.view===v);
 }
-layoutBox.addEventListener('click',e=>{
-  const b=e.target.closest('button'); if(b) setLayout(b.dataset.layout);
+viewBox.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(b) setView(b.dataset.view);
 });
+// orbiting by hand leaves the preset, so clear its highlight
+cvs.addEventListener('pointermove',()=>{ if(drag)
+  for(const b of viewBox.querySelectorAll('button')) b.classList.remove('on'); });
 neutralBtn.addEventListener('click',()=>{
   const nw=DATA.meta.neutral_window_ms; if(!nw) return;
   const mid=(nw[0]+nw[1])/2; let best=0,bd=Infinity;
@@ -1406,7 +1382,7 @@ function tick(now){
   requestAnimationFrame(tick);
 }
 
-resize(); setMode(mode); setLayout(layout); setFrame(0);
+resize(); setMode(mode); setFrame(0);
 requestAnimationFrame(tick);
 </script>
 </body>

@@ -118,7 +118,7 @@ number a placement can't support.
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
 | 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from a short neutral pose, with a cache-and-verify contract so re-donning is cheap → `calibration.json` |
 | 6 Metrics | `metrics.py` | Per-DOF joint angles → range of motion, angular velocity, reps, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
-| 7 Visualize | `floating_fbd.py` | A self-contained HTML viewer: each segment as an oriented body (FLOATING), or connected into a stickman by forward kinematics (SKELETON) |
+| 7 Visualize | `floating_fbd.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views |
 
 `analyze_session.py` orchestrates stages 3–7 in one command, binding each log
 to its segment automatically from the montage.
@@ -180,7 +180,7 @@ tools/
   motion_capabilities.py     stage 4 — montage schema + capability resolver
   calibrate_segments.py      stage 5 — sensor→segment mounting solve
   metrics.py                 stage 6 — joint angles, ROM, and metric tiers
-  floating_fbd.py            stage 7 — floating/skeleton HTML viewer
+  floating_fbd.py            stage 7 — skeleton HTML viewer
   analyze_session.py         stages 3–7 orchestrated in one command
   *.md, *.html, *.json       pipeline docs + example montage
 ```
