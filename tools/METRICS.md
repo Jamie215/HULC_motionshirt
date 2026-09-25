@@ -26,8 +26,11 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
   nodes is reported in `blocked_joints` with the missing node named — never a
   guessed angle.
 - **`clinical: false` ⇒ relative-only.** A joint (or segment) whose node(s) are
-  not anatomically calibrated still produces numbers, but its zero is "the pose at
-  the neutral window," not the anatomical landmark. It is flagged, and in the
+  not anatomically calibrated — or, for a joint, whose anatomical axes are unknown
+  because no confident facing was recovered (top-level `anatomical_axes: false`) —
+  still produces numbers, but its zero is "the pose at the neutral window," not
+  the anatomical landmark, and without anatomical axes the DOF labels need not
+  match the movement. It is flagged, and in the
   stage-7 viewer its rows dim in raw view. Calibration is what turns an orientation
   into an *anatomical* angle (`MONTAGE_SCHEMA.md` §4).
 - **Unwrap before range.** Angle series are unwrapped (`np.unwrap`) before ROM, so
@@ -47,12 +50,35 @@ Every joint metric starts from the same four steps (`metrics.py` module docstrin
 ```
 q_seg(t) = q_WS(t) ⊗ q_SB                     apply the cached mounting offset (stage 5)
 q_rel(t) = conj(q_seg_prox) ⊗ q_seg_dist      distal relative to proximal
-(α,β,γ)  = euler(q_rel, sequence)             decompose in the joint's ISB/Wu sequence
+q_anat   = conj(q_WA) ⊗ q_rel ⊗ q_WA          re-express in anatomical axes
+(α,β,γ)  = euler(q_anat, sequence)            decompose in the joint's ISB/Wu sequence
 angle_dof = (α|β|γ)[seq_index]                pick the slot that IS this clinical DOF
 ```
 
 - `q_SB` is the sensor→bone mounting offset from `calibration.json`; **identity when
   uncalibrated** (⇒ `clinical: false`).
+- `q_WA` is the **anatomical frame at neutral** from `calibration.json`'s
+  `anatomical_frame` block: X = anterior, Y = superior (along a hanging limb),
+  Z = X × Y = the subject's right. It is built from gravity plus the subject's
+  facing (torso heading, or `--facing-deg` when there is no torso node). The
+  mounting offset alone zeroes each segment but leaves its axes on the world
+  compass (Z = up), while the ISB sequences assume anatomical axes — without
+  `q_WA` a pure elbow flexion lands in whichever slot the facing puts it. No
+  confident facing ⇒ no `q_WA` ⇒ the joint is `clinical: false`.
+- One frame serves both sides, so for a **left** joint `q_anat` is mirrored
+  through the sagittal plane (`mirror_left`: `[w,x,y,z] → [w,−x,−y,z]`) before
+  the split. A left joint then decomposes exactly like a right one and every DOF
+  has the same clinical sign on both sides:
+
+  | Joint | DOF | Positive = |
+  |---|---|---|
+  | elbow | `flex_ext` | flexion |
+  | elbow | `pro_sup` | pronation |
+  | wrist | `flex_ext` | flexion |
+  | wrist | `rad_uln` | ulnar deviation |
+  | shoulder | `plane_elev` | 0° abduction plane, +90° forward flexion, −90° extension |
+  | shoulder | `elevation` | raised (always ≥ 0) |
+  | shoulder | `axial_rot` | internal rotation |
 - The Euler `sequence` and the `seq_index` each clinical DOF occupies both come from
   `motion_capabilities.JOINTS` — the one body model. This tool never re-declares
   anatomy or invents a convention.
@@ -64,7 +90,11 @@ and their angles become ill-defined (a *proper* sequence like `YXY` at the middl
 angle ≈ 0/π — the shoulder's "arm at the side" pole; a *Tait-Bryan* sequence like
 `ZXY` at middle ≈ ±90°). Within `SINGULARITY_GUARD_DEG` (10°) of that value the
 outer-slot DOFs are marked undefined for those samples, so a joint resting at the
-pole never emits a spurious 180° swing or an infinite velocity. Affected DOFs carry
+pole never emits a spurious 180° swing or an infinite velocity. The shoulder is
+the exception for axial rotation: it is reported as the *sum* of the outer
+angles, which is exactly what stays defined at the side, so only
+`plane_elev` is masked there (both are masked overhead, where the sum is the
+ill-defined part). Affected DOFs carry
 `defined_frac` (share of samples that were well-conditioned) and a
 `singularity_note`, and their series carry `NaN` at the masked samples so every
 downstream consumer skips them the same way.
@@ -81,10 +111,22 @@ Emitted per computable joint, into `joints[]`. Each joint object has `key`, `nam
 | **Per-DOF angle** | `dofs[].` (series, feeds the rest) | Euler decomposition of `q_rel` in the joint's sequence, unwrapped in radians before converting (§2). | ° | For *anatomical* zero, yes; relative shape works without |
 | **Range of motion** | `dofs[].rom` = `{min_deg,max_deg,range_deg,median_deg}` | `range = max − min` over the unwrapped angle (`_rom`/`_stats`). `null` if the DOF is singular for the whole session. | ° | Gates *clinical* ROM; relative-only when `clinical:false` |
 | **Angular velocity** | `dofs[].velocity` = `{peak_deg_s,mean_abs_deg_s,rms_deg_s}` | `v = d(angle)/dt` via `np.gradient` (`velocity_stats`); peak = max\|v\|, mean = mean\|v\|, RMS = √mean(v²). Differentiated **only within** contiguous valid runs, so a masked singular gap never fakes a huge peak. | °/s | No (shape metric) |
-| **Repetitions** | `reps` = `{count,primary_dof}` | Hysteretic midline crossings on the largest-swinging DOF (`count_reps`): the signal must dip below `mid−h` then rise above `mid+h` to score one cycle, with band `h = 25% of swing` and midline `mid = (max+min)/2`. Swings under `REP_MIN_AMPLITUDE_DEG` (15°) score 0 (noise/tremor). | count | No — only shape matters |
+| **Repetitions** | `reps` = `{count,primary_dof}` | Hysteretic midline crossings on the joint's primary DOF (`count_reps`; see below): the signal must dip below `mid−h` then rise above `mid+h` to score one cycle, with band `h = 25% of swing` and midline `mid = (max+min)/2`. Swings under `REP_MIN_AMPLITUDE_DEG` (15°) score 0 (noise/tremor). | count | No — only shape matters |
 
 A `clinical:false` joint also carries a `warning` string spelling out that its
 angles are relative-only.
+
+**Primary DOF.** Reps, L/R symmetry and coordination use the joint's declared
+primary DOF (`Joint.primary`; shoulder = `elevation`), falling back to the DOF
+that swung the most when none is declared or it is singular all session.
+
+**Shoulder DOFs** follow the ISB `YXY` names rather than flexion/abduction:
+
+| Key | Name | Meaning |
+|---|---|---|
+| `plane_elev` | Plane of elevation | *Direction* the arm is raised in: 0° = abduction (frontal plane), +90° = forward flexion, −90° = extension. Raw YXY slot 0 + 180° — ISB's negative-elevation branch of the same rotation, so elevation can be reported positive. Undefined with the arm at the side or overhead. |
+| `elevation` | Elevation | *How far* the arm is raised, in whatever plane — a forward and a sideways 60° raise both read 60°. Primary DOF. |
+| `axial_rot` | Axial rotation (int / ext) | Twist about the humerus, internal positive: raw slot 0 + slot 2. ISB's own third angle trades with the plane (20° of internal rotation reads +20° in abduction but −70° in forward flexion); the sum reads +20° in both, and it stays defined with the arm at the side. Undefined only overhead. |
 
 ---
 
@@ -114,7 +156,7 @@ flag and/or a `note`.
 
 | Metric | `target` | `metrics{}` | Method |
 |---|---|---|---|
-| **L/R ROM symmetry** | `symmetry_<joint>` | `symmetry_index`, `rom_ratio`, `left_rom_deg`, `right_rom_deg`, `dof` | On each side's largest-swing DOF: `symmetry_index = 100·\|L−R\| / (½(\|L\|+\|R\|))` (0 = identical, → 200 opposite); `rom_ratio = min/max`. `clinical` = both sides calibrated. |
+| **L/R ROM symmetry** | `symmetry_<joint>` | `symmetry_index`, `rom_ratio`, `left_rom_deg`, `right_rom_deg`, `dof` | On each side's primary DOF: `symmetry_index = 100·\|L−R\| / (½(\|L\|+\|R\|))` (0 = identical, → 200 opposite); `rom_ratio = min/max`. `clinical` = both sides calibrated. |
 | **Bilateral activity asymmetry** | `activity_asymmetry_<segment>` | `asymmetry_index`, `use_ratio`, `active_time_ratio`, `left_travel_deg`, `right_travel_deg` | Signed laterality from segment **travel**: `asymmetry_index = 100·(R−L)/(R+L)` in [−100, +100] (+ = right used more). A session aggregate, so **valid even at low sync confidence** (stated in its `note`) — the sparse-montage workhorse. |
 | **Inter-joint coordination** | `coordination_<a>_<b>` | `pair`, `peak_r`, `lag_s` | Peak normalized cross-correlation of the two joints' primary-DOF series and its lag (`cross_correlation`): both series mean-removed and unit-normalized so `peak_r ∈ [−1,1]`; positive `lag_s` = the second joint follows the first. |
 | **Trunk compensation** | `compensation_<...>` | `trunk_travel_deg`, `trunk_elevation_range_deg` | Trunk excursion during the task, from the torso segment's travel + elevation range. `clinical` = torso calibrated; when false, `note` flags the excursion as relative. |
@@ -143,7 +185,7 @@ All defined at the top of `metrics.py`:
 {
   "schema_version": "1.0",
   "subject": { ... }, "session": { ... },
-  "calibration_used": true,
+  "calibration_used": true, "anatomical_axes": true,
   "sample_rate_hz": 50.0, "n_samples": 4000, "duration_s": 79.98,
   "joints": [ { "key","name","clinical","decomposition",
                 "dofs": [ { "key","name","plane",
@@ -178,6 +220,7 @@ All defined at the top of `metrics.py`:
   python tools/metrics.py selftest
   ```
 
-  round-trips every Euler sequence, recovers a known injected ROM sweep, checks the
-  calibration gate and wrap handling, and exercises the rep/SPARC/cross-correlation
+  round-trips every Euler sequence, recovers a known injected flexion sweep (and
+  a forearm twist) at several facings, checks the calibration and anatomical-axis
+  gates and wrap handling, and exercises the rep/SPARC/cross-correlation
   primitives and the full derived tier.

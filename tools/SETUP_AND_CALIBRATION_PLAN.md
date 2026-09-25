@@ -189,14 +189,14 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 
 ## 5. Free-body diagram (part of stage 7) — feasibility
 
-> **Built (`floating_fbd.py`, `render` / `selftest`).** Bakes the reconcile
+> **Built (`skeleton_viewer.py`, `render` / `selftest`).** Bakes the reconcile
 > stream + an optional `calibration.json` into a single self-contained HTML
 > viewer (no external scripts/CDN — a hand-rolled Canvas-2D 3-D renderer, works
 > offline and straight from `file://`), with a **raw↔calibrated toggle**
-> (applies `q_seg = q_WS ⊗ q_SB` in the viewer) and **jump-to-neutral**. Two
-> layouts share the stream:
-> - **Floating** — each segment an oriented bar at a fixed slot (segment tier).
-> - **Skeleton** — the same orientations connected into a stickman by forward
+> (applies `q_seg = q_WS ⊗ q_SB` in the viewer) and **jump-to-neutral**. (An
+> earlier *Floating* layout — each segment an oriented bar at a fixed slot — was
+> removed as confusing; the skeleton covers every montage.)
+> - **Skeleton** — the orientations connected into a stickman by forward
 >   kinematics (chain tier). The connectivity is the montage's kinematic chain
 >   (imported from `motion_capabilities.JOINTS`); only the bone **lengths and
 >   joint offsets** are assumed anatomy (the viewer's `ANAT` table). Missing
@@ -212,7 +212,23 @@ consistency baseline. Gates every angle/ROM metric; flips the resolver's
 >   sideways. Calibration recovers the facing from the torso
 >   (`compute_heading`, one coarse chest-mounting assumption, self-checked) and
 >   the viewer applies it as a fixed yaw — **zero extra burden at capture**. No
->   torso, or a low-confidence check → facing left nominal, honestly labeled.
+>   torso, or a low-confidence check → facing left nominal, honestly labeled
+>   (`--facing-deg` states it by hand).
+> - **Front** — the shoulders sit on the subject's left/right from that facing, a
+>   ground arrow marks FRONT (BACK / L / R around it), the chest face is lighter
+>   and the head has a nose; Front / Side / Top buttons snap the camera. Unknown
+>   facing → a dashed "front?" arrow.
+> - **Forearm rotation** — limb boxes roll with the measured twist; forearm and
+>   hand are flat with a lighter palm face and a thumb nub, and a corner panel
+>   reads the live angles of every joint (same math as `metrics.py`, checked to
+>   within 0.005° per sample). Playback runs at 1× / 2× / 5×.
+> - **Trust at a glance** — header chips for calibration, front direction,
+>   and sensor sync (from reconcile's `aligned.quality.json`), with per-card
+>   warnings on joints / timing comparisons that depend on a low-sync sensor. Right side drawn warm, left cool; labels appear on hover or
+>   with the Labels toggle.
+> - **Angle over time** — click a movement in the metrics panel to graph it
+>   across the session (other side dashed for comparison), playhead synced,
+>   click/drag to seek; matches `metrics.py` per sample.
 >
 > The quaternion math, CSV binding, and body model come from the existing tools.
 
@@ -220,10 +236,10 @@ The most feasible visual, because **orientation is exactly what is measured** �
 quaternion per segment per frame directly drives an oriented 3-D body. It maps
 one-to-one onto the resolver's tiers:
 
-- **Segment tier (1 node)** → each segment drawn as its own oriented body,
-  floating (the **Floating** layout). Needs only the orientation. Validates
-  stages 5–6: jump to the neutral window and flip the raw↔calibrated toggle; if
-  calibration worked the scattered bars snap upright.
+- **Segment tier (1 node)** → each segment drawn as its own oriented bone,
+  hung at its nominal place in the skeleton. Needs only the orientation.
+  Validates stages 5–6: jump to the neutral window and flip the raw↔calibrated
+  toggle; if calibration worked the crooked limbs hang straight.
 - **Joint tier (2 adjacent nodes)** → connect them at the joint. The **Skeleton**
   layout draws the linkage; the per-DOF angle read-out (from the resolver's
   decomposition) is the remaining piece, and belongs with the ROM metric plugin.
@@ -246,11 +262,11 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
 1. ~~**Stage 5 calibration** with the cache-and-verify contract (§4)~~ — **done**
    (`calibrate_segments.py`). The gate for every clinical angle.
 2. ~~**Floating-segment FBD** (§5, segment tier) — validates §1 visually, cheap.~~
-   — **done** (`floating_fbd.py`). Self-contained HTML viewer with the
+   — **done** (`skeleton_viewer.py`). Self-contained HTML viewer with the
    raw↔calibrated toggle; the neutral pose is where you *see* the mounting
    scatter collapse.
 2b. ~~**Connected skeleton** (§5, chain tier) — forward kinematics over the same
-   stream.~~ — **done** (`floating_fbd.py` **Skeleton** layout). Real kinematic
+   stream.~~ — **done** (`skeleton_viewer.py` **Skeleton** layout). Real kinematic
    chain + assumed lengths; pulled forward from step 5 because it's the same
    viewer and the intuitive read of the calibrated stream.
 3. ~~**Firmware node header** (§2.1) + config-stage UX (§2.2) — self-describing
@@ -267,13 +283,15 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    per-DOF joint-angle read-out rides along with ROM (same decomposition).~~ —
    **done** (`metrics.py` `compute` / `selftest`). For every *computable* joint
    (via `motion_capabilities.resolve`) it applies the cached mounting offsets
-   (`q_seg = q_WS ⊗ q_SB`), forms the distal-relative-to-proximal quaternion, and
-   decomposes it in the joint's declared ISB/Wu sequence — reading the exact slot
+   (`q_seg = q_WS ⊗ q_SB`), forms the distal-relative-to-proximal quaternion,
+   re-expresses it in the anatomical frame from calibration (X anterior, Y
+   superior, Z right — built from the facing), and decomposes it in the joint's
+   declared ISB/Wu sequence — reading the exact slot
    each clinical DOF occupies from the new `DOF.seq_index` on the body model (one
    source of truth; a 2-DOF joint drops the unused slot). Emits per-DOF **ROM**
    (min/max/range/median), the peak angular velocity, and calibration-free
-   segment angular speed. A joint whose two nodes aren't both calibrated is
-   flagged `clinical: false` (relative-only, same wording as the resolver); a
+   segment angular speed. A joint whose two nodes aren't both calibrated, or
+   with no anatomical frame (no confident facing), is flagged `clinical: false` (relative-only, same wording as the resolver); a
    blocked joint is reported blocked with the missing node named, never
    fabricated. Angles are unwrapped before ROM so a sweep past ±180° reports its
    true excursion. Wired into `analyze_session` as stage 4/5 (`metrics.json`),
@@ -289,8 +307,8 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    `resolve()` says the montage supports it, and carries the same
    clinical/relative-only honesty flag. Every metric's formula, units, and
    calibration gate are catalogued in `METRICS.md`.
-5. ~~**Full interface** (stage 7) — the metrics + both FBD layouts in one review
-   UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
+5. ~~**Full interface** (stage 7) — the metrics + the 3-D view in one review
+   UI.~~ — **done**. `skeleton_viewer.py render` now takes `--metrics metrics.json`
    and bakes a review panel beside the 3-D body: per-joint **ROM** bars
    (range + min…max), peak/mean **velocity**, **rep** counts, the **segment**
    tier (travel/active%/elevation/SPARC), and the **derived** tier — all from the

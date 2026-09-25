@@ -337,7 +337,9 @@
           <span class="tool">calibrate_segments.py</span> uses the mag-referenced
           Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
-          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero.
+          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero;
+          the subject's facing (from the torso node) turns the world axes into
+          anatomical ones (forward / up / right) for the joint decomposition.
           Validity is <b>per-don</b> — re-wearing shifts the straps — so the
           result is <b>cached and verified</b>: reuse it if a quick still-pose
           check passes, re-pose only when it drifts. Without it, every angle
@@ -386,10 +388,11 @@ upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency
       <div class="card">
         <h3>Interface &amp; visualization <span class="badge built">Built</span></h3>
         <p><b>The thing all of this feeds.</b>
-          <span class="tool">floating_fbd.py</span> bakes the whole review into one
+          <span class="tool">skeleton_viewer.py</span> bakes the whole review into one
           self-contained HTML page (no external scripts) — a hand-rolled 3-D body
-          you orbit, in two layouts: <b>floating</b> segments (orientation only) and
-          a connected <b>skeleton</b> by forward kinematics. A <b>raw↔calibrated</b>
+          you orbit: a connected <b>skeleton</b> by forward kinematics, with a
+          ground arrow marking the subject's <b>front</b> and Front / Side / Top
+          camera views. A <b>raw↔calibrated</b>
           toggle and jump-to-neutral let you <i>see</i> whether calibration worked
           before trusting an angle. Beside it, a <b>metrics panel</b> reads out ROM,
           velocity, reps and the derived tier. Every value keeps its honesty flag —
@@ -398,7 +401,7 @@ upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency
           live stream.)</p>
         <div class="shape">
           <div class="lbl">emits · one review page (open from file://)</div>
-          <pre>session.html — 3-D floating/skeleton viewer + metrics panel, self-contained</pre>
+          <pre>session.html — 3-D skeleton viewer + metrics panel, self-contained</pre>
         </div>
       </div>
     </div>

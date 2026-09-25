@@ -149,7 +149,7 @@ consistent. Conventions follow the ISB recommendations (Wu et al., 2005).
 
 | Joint | DOFs | Decomposition | Note |
 |---|---|---|---|
-| shoulder | flex/ext, abd/add, int/ext rotation | `YXY` (plane of elevation, elevation, axial) | Ball joint, large ROM — Euler order matters; gimbal lock near poles. Trunk contaminates without a calibrated torso node. |
+| shoulder | plane of elevation, elevation, axial rotation | `YXY` (plane of elevation, elevation, axial) | Ball joint, large ROM — Euler order matters; gimbal lock near poles. Trunk contaminates without a calibrated torso node. |
 | elbow | flex/ext, pronation/supination | `ZXY` | Pro/sup is a radioulnar rotation seen as forearm axial rotation vs the humerus; sensitive to forearm-node roll — calibrate axial zero explicitly. |
 | wrist | flex/ext, radial/ulnar deviation | `ZXY` | |
 
@@ -183,6 +183,12 @@ resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
    headings together for free, but degrades near metal; the pose is a robust
    on-body backup. (Optionally add a **functional** move — a known single-DOF
    motion — to fix axis directions, recorded in `calibration.functional`.)
+
+The pose zeroes each segment, but its axes stay on the world compass. To tie
+joint axes to the body (X anterior, Y superior, Z right), calibration also needs
+the subject's **facing** — recovered from the torso node, or stated with
+`--facing-deg` — and records the result as `anatomical_frame` in
+`calibration.json`. Joint angles are clinical only when it is present.
 
 Every calibration-dependent metric (all joint angles/ROM, posture dwell) is
 gated on `calibration.captured` **and** the relevant nodes' `calibrated` flag.

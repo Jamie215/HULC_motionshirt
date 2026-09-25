@@ -233,7 +233,7 @@ span, pin it: read the opening still hold off `t_common_ms` in the emitted
 python tools/reconcile_nodes.py ./capture/<n0-id>.bin ./capture/<n1-id>.bin --out aligned.csv
 python tools/motion_capabilities.py montage.json
 python tools/calibrate_segments.py calibrate aligned.csv montage.json --window <t0>,<t1> --out calibration.json --update-montage
-python tools/floating_fbd.py render aligned.csv montage.json --calibration calibration.json --out elbow.html
+python tools/skeleton_viewer.py render aligned.csv montage.json --calibration calibration.json --out elbow.html
 ```
 Pass the logs to reconcile in montage-column order (`n0` first).
 </details>

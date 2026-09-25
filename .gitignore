@@ -16,7 +16,7 @@ montage.json
 nodes_registry.json
 calibration.json
 
-# Generated HTML viewers (analyze_session / floating_fbd --out). Broad because
+# Generated HTML viewers (analyze_session / skeleton_viewer --out). Broad because
 # the output name varies; the tracked doc pages are un-ignored just below.
 *.html
 !tools/pipeline_walkthrough.html

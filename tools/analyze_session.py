@@ -23,6 +23,10 @@ Usage
     # run the whole chain from a capture dir + montage:
     python tools/analyze_session.py run --montage montage.json --capture-dir ./capture
 
+    # no torso node? state the subject's facing so joint axes are anatomical:
+    python tools/analyze_session.py run --montage montage.json --capture-dir ./capture \
+        --facing-deg 90
+
     # override the neutral window / output name:
     python tools/analyze_session.py run --montage montage.json --capture-dir ./capture \
         --window 1200,4000 --out elbow.html
@@ -116,7 +120,8 @@ def _run(cmd, step):
                          f"Fix the above and re-run.")
 
 
-def run(montage_path, capture_dir, out_html, outdir, window, fs):
+def run(montage_path, capture_dir, out_html, outdir, window, fs,
+        facing_deg=None):
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -147,6 +152,8 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
            aligned, montage_path, "--out", calib]
     if window:
         cmd += ["--window", window]
+    if facing_deg is not None:
+        cmd += ["--facing-deg", str(facing_deg)]
     _run(cmd, "3/5 calibrate (sensor->segment offsets)")
 
     # 4. metrics — per-DOF joint angles + ROM over the calibrated stream. Runs
@@ -156,7 +163,8 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs):
          "4/5 metrics (per-DOF joint angles + range of motion)")
 
     # 5. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
-    _run([py, os.path.join(TOOLS, "floating_fbd.py"), "render", aligned,
+    #    (it also picks up reconcile's aligned.quality.json for the sync chips)
+    _run([py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
           montage_path, "--calibration", calib, "--metrics", metrics,
           "--out", out_html],
          "5/5 render (stage-7 review: viewer + metrics panel)")
@@ -256,6 +264,11 @@ def selftest():
         ok = ok and fused
         check(fused, "stage-7 page fuses the 3-D scene + a metrics panel, "
               "self-contained")
+        # reconcile's sync / data-loss sidecar reaches the page (sync chips)
+        qual = (os.path.exists(os.path.join(tmp, "aligned.quality.json"))
+                and '"quality":{"schema_version"' in html)
+        ok = ok and qual
+        check(qual, "reconcile's sync / data-loss summary is baked into the page")
     except SystemExit as e:
         ok = False; check(False, f"end-to-end run failed: {e}")
 
@@ -280,6 +293,10 @@ def main():
     pr.add_argument("--window", metavar="t0,t1",
                     help="neutral window in ms (default: auto-detect)")
     pr.add_argument("--fs", type=float, help="resample rate Hz (default: native)")
+    pr.add_argument("--facing-deg", type=float, metavar="DEG",
+                    help="subject's facing at neutral, degrees clockwise from "
+                         "world +Y; gives anatomical joint axes when the montage "
+                         "has no torso node")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
 
@@ -288,7 +305,7 @@ def main():
         sys.exit(selftest())
     if args.cmd == "run":
         run(args.montage, args.capture_dir, args.out, args.outdir,
-            args.window, args.fs)
+            args.window, args.fs, args.facing_deg)
         return
     ap.error("choose a command: run | selftest")
 

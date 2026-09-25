@@ -53,9 +53,28 @@ reach sideways. `compute_heading` recovers the facing from the torso node under
 ONE coarse assumption (`TORSO_FORWARD_IN_SENSOR`: which torso-sensor axis points
 out of the chest), and self-checks it — the axis must land ~horizontal at the
 upright neutral pose, and the pose must be still — marking the result
-low-confidence rather than confidently wrong. No torso -> not recovered. The FBD
-viewer applies a confident heading as a fixed yaw; nothing here asks the subject
-to do or remember anything extra.
+low-confidence rather than confidently wrong. No torso -> not recovered. The
+skeleton viewer applies a confident heading as a fixed yaw; nothing here asks the subject
+to do or remember anything extra. A montage without a torso node can supply the
+facing by hand (`--facing-deg`).
+
+Anatomical axes — the `anatomical_frame` block
+----------------------------------------------
+The mounting offset zeroes each segment at neutral, but it leaves the segment's
+AXES aligned with the world (X/Y = compass directions, Z = up), not with the body.
+Joint angles are decomposed in ISB/Wu (2005) sequences that assume anatomical
+axes, so once the facing is known we also emit the anatomical frame at neutral:
+
+    X = anterior (the subject's forward), Y = superior (up, along a hanging
+    limb), Z = X × Y = the subject's right  (right-handed; one frame for both
+    sides — metrics.py mirrors left joints so their signs match the right)
+
+as `q_WA` (world-from-anatomical). Because every calibrated segment is identity
+at neutral, each segment's anatomical frame is q_seg ⊗ q_WA, and a joint's
+anatomical relative rotation is conj(q_WA) ⊗ q_rel ⊗ q_WA — what metrics.py
+decomposes. The offsets themselves are unchanged (the viewer and `verify` still
+use the world-aligned zero). No confident facing -> no anatomical frame, and
+metrics reports the joints RELATIVE-only.
 
 Usage
 -----
@@ -104,6 +123,12 @@ WORLD_UP = np.array([0.0, 0.0, 1.0])
 # +Z in the sensor frame — a sensor lying flat on the sternum has its normal
 # pointing forward. Change this one vector for a different torso mounting; the
 # horizontality self-test below flags a badly-wrong guess rather than trusting it.
+# Only the horizontal direction of this axis is used, so a board PITCHED up/down
+# (a sloped chest) or ROLLED in its own plane still gives the right facing (pitch
+# past HEADING_HORIZONTALITY_MAX_DEG is flagged low-confidence). A board YAWED
+# toward one side — e.g. sitting off the sternum on a curved chest — shifts the
+# facing by that same angle, undetected; keep the torso node on the sternum
+# midline, or on the upper back between the shoulder blades (forward = -Z).
 TORSO_FORWARD_IN_SENSOR = np.array([0.0, 0.0, 1.0])
 # If the assumed forward axis lands more than this far from horizontal at the
 # (upright) neutral pose, the mounting assumption is likely violated -> we mark
@@ -337,7 +362,7 @@ def _q_list(q):
     return [round(float(v), 8) for v in qnorm(np.asarray(q, dtype=float))]
 
 
-def compute_heading(segments, still_ok):
+def compute_heading(segments, still_ok, facing_deg=None):
     """Recover the subject's FACING (heading yaw) from the torso node.
 
     The skeleton view otherwise assumes the subject faced world +Y; if they
@@ -356,7 +381,16 @@ def compute_heading(segments, still_ok):
         assumption is suspect;
       * the neutral pose must have been still.
     Any failure -> confident=False and the viewer leaves facing uncorrected.
+
+    `facing_deg` (from --facing-deg) states the facing by hand — the only way to
+    get anatomical axes on a montage without a torso node. It overrides the torso
+    estimate and is trusted as given.
     """
+    if facing_deg is not None:
+        f = round(float(facing_deg), 2)
+        return {"source": "manual", "confident": True,
+                "facing_deg": f, "correction_yaw_deg": f,
+                "note": "facing stated by hand (--facing-deg)"}
     torso = segments.get("torso")
     if torso is None:
         return {"source": "none", "confident": False,
@@ -392,11 +426,64 @@ def compute_heading(segments, still_ok):
     }
 
 
+def _quat_from_rotmat(R):
+    """Unit quaternion [w,x,y,z] of a proper rotation matrix (Shepperd's method)."""
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = 2.0 * np.sqrt(tr + 1.0)
+        q = [0.25 * s, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s,
+             (R[1, 0] - R[0, 1]) / s]
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+        q = [(R[2, 1] - R[1, 2]) / s, 0.25 * s, (R[0, 1] + R[1, 0]) / s,
+             (R[0, 2] + R[2, 0]) / s]
+    elif R[1, 1] > R[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+        q = [(R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, 0.25 * s,
+             (R[1, 2] + R[2, 1]) / s]
+    else:
+        s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+        q = [(R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s,
+             (R[1, 2] + R[2, 1]) / s, 0.25 * s]
+    q = qnorm(np.asarray(q, dtype=float))
+    return q if q[0] >= 0 else -q
+
+
+def anatomical_frame_quat(facing_deg):
+    """q_WA: world-from-anatomical frame for a subject facing `facing_deg`.
+
+    Anatomical axes (ISB/Wu 2005): X = anterior, Y = superior, Z = right. The
+    facing is the azimuth of the subject's forward, clockwise from world +Y (the
+    same convention compute_heading reports), so forward = (sin f, cos f, 0).
+    """
+    f = np.radians(float(facing_deg))
+    up = WORLD_UP / np.linalg.norm(WORLD_UP)
+    fwd = np.array([np.sin(f), np.cos(f), 0.0])
+    fwd = fwd - np.dot(fwd, up) * up
+    fwd = fwd / np.linalg.norm(fwd)
+    right = np.cross(fwd, up)
+    return _quat_from_rotmat(np.column_stack([fwd, up, right]))
+
+
+def build_anatomical_frame(heading):
+    """The `anatomical_frame` block: q_WA when the facing is known, else why not."""
+    if heading.get("confident") and "facing_deg" in heading:
+        return {"axes": "X anterior, Y superior, Z right (ISB/Wu 2005)",
+                "source": heading["source"],
+                "facing_deg": heading["facing_deg"],
+                "quat": _q_list(anatomical_frame_quat(heading["facing_deg"]))}
+    return {"axes": "X anterior, Y superior, Z right (ISB/Wu 2005)",
+            "source": heading.get("source", "none"), "quat": None,
+            "note": "no confident facing — joint axes cannot be tied to anatomy; "
+                    "add a torso node or pass --facing-deg"}
+
+
 def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
-                      csv_path, targets=None):
+                      csv_path, targets=None, facing_deg=None):
     stillness = window_stillness(t_ms, seg_quats, t0, t1)
     segments, pairs = solve_calibration(t_ms, seg_quats, seg_meta, t0, t1, targets)
     still_ok = bool(stillness <= STILL_MAX_RAD_S)
+    heading = compute_heading(segments, still_ok, facing_deg)
     return {
         "schema_version": SCHEMA_VERSION,
         "subject": montage.get("subject", {}),
@@ -414,7 +501,8 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
             "segment_gravity_deg": DEFAULT_SEG_GRAVITY_DEG,
             "pair_angle_deg": DEFAULT_PAIR_ANGLE_DEG,
         },
-        "heading": compute_heading(segments, still_ok),
+        "heading": heading,
+        "anatomical_frame": build_anatomical_frame(heading),
         "segments": segments,
         "pairs": pairs,
     }
@@ -544,9 +632,19 @@ def print_calibrate_report(cal):
                   f"{h['correction_yaw_deg']:+.0f}° to face forward.")
         else:
             print(f"\nFACING (auto from torso): LOW CONFIDENCE — {h.get('note')}.")
+    elif h.get("source") == "manual":
+        print(f"\nFACING (stated by hand): subject faced {h['facing_deg']:+.0f}° "
+              f"from +Y.")
     elif h.get("source") == "none":
         print("\nFACING: not recovered (no torso node) — the FBD skeleton's "
               "forward/side plane stays nominal.")
+    af = cal.get("anatomical_frame", {})
+    if af.get("quat"):
+        print("ANATOMICAL AXES: set (X anterior, Y superior, Z right) — joint "
+              "angles will be anatomical.")
+    else:
+        print("ANATOMICAL AXES: NOT set — joint angles will be RELATIVE-only "
+              "(add a torso node or pass --facing-deg).")
 
     print("\nWrote per-segment offsets + a heading-independent consistency "
           "baseline. On the next don, run `verify` to decide reuse vs re-pose.")
@@ -619,7 +717,7 @@ def cmd_calibrate(args):
                   f"{t0:.0f}–{t1:.0f} ms (no montage t_window_ms given)")
 
     cal = build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
-                            args.aligned_csv)
+                            args.aligned_csv, facing_deg=args.facing_deg)
     with open(args.out, "w") as f:
         json.dump(cal, f, indent=2)
     print(f"[calibrate] wrote {args.out}\n")
@@ -798,15 +896,39 @@ def selftest():
     print(f"[selftest] facing guards: no-torso source='{no_torso['source']}', "
           f"vertical-forward confident={tilted['confident']} (want False)")
 
+    # (7) Anatomical frame: q_WA maps X->forward, Y->up, Z->right for the
+    #     stated facing, and a manual facing overrides a missing torso.
+    frame_ok = True
+    for f_deg, fwd_w, right_w in ((0.0, [0, 1, 0], [1, 0, 0]),
+                                  (90.0, [1, 0, 0], [0, -1, 0]),
+                                  (40.0, [np.sin(np.radians(40)),
+                                          np.cos(np.radians(40)), 0],
+                                   [np.cos(np.radians(40)),
+                                    -np.sin(np.radians(40)), 0])):
+        q_wa = anatomical_frame_quat(f_deg)
+        got = [qrotate(q_wa, np.array(v, dtype=float))
+               for v in ([1, 0, 0], [0, 1, 0], [0, 0, 1])]
+        frame_ok = frame_ok and all(
+            np.allclose(g, w, atol=1e-9)
+            for g, w in zip(got, (fwd_w, WORLD_UP, right_w)))
+    manual = compute_heading({}, still_ok=True, facing_deg=40.0)
+    af_manual = build_anatomical_frame(manual)
+    af_none = build_anatomical_frame(no_torso)
+    frame_ok = (frame_ok and manual["source"] == "manual" and manual["confident"]
+                and af_manual["quat"] is not None and af_none["quat"] is None)
+    print(f"[selftest] anatomical frame: X->forward, Y->up, Z->right at 0/40/90° "
+          f"facing, manual facing without torso, none when unknown: "
+          f"{'OK' if frame_ok else 'FAIL'}")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]
           and 1500 <= aw0 <= 2500
-          and heading_ok and guards_ok)
+          and heading_ok and guards_ok and frame_ok)
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} "
           f"(offset recovery, heading-independent reuse, slip detection, "
-          f"still-window search, facing recovery + guards)")
+          f"still-window search, facing recovery + guards, anatomical frame)")
     return 0 if ok else 1
 
 
@@ -836,6 +958,10 @@ def main():
                          "t_window_ms / auto-detect)")
     pc.add_argument("--win-ms", type=float, default=DEFAULT_WIN_MS,
                     help="auto-detected window length in ms (default 2000)")
+    pc.add_argument("--facing-deg", type=float, metavar="DEG",
+                    help="subject's facing during the neutral pose, degrees "
+                         "clockwise from world +Y (north); overrides the torso "
+                         "estimate — needed for anatomical axes without a torso")
     pc.add_argument("--update-montage", action="store_true",
                     help="write calibration.captured + calibrated flags back "
                          "into the montage file")
