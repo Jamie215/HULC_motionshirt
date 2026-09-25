@@ -55,10 +55,11 @@ Model preparation (what is changed from the published model, and why)
   rajagopal: forearm pro/sup set to 90° (its zero is palms-forward).
 * Ranges for rehab motion: rajagopal caps shoulder flexion at 90° and stops
   pro/sup at thumb-forward (so it cannot pronate); both widened.
-  thoracoscapular: elevation 0–180°, elbow −15–160°, pro/sup ±100°.
-* Ranges are enforced during IK (clamping on), except angles that must wrap:
-  the thoracoscapular plane of elevation and axial rotation (only their sum
-  is defined with the arm at the side; clamped, the solve sticks at ±180°).
+  thoracoscapular: elbow −15–160°, pro/sup ±100°.
+* Ranges are enforced during IK (clamping on), except the thoracoscapular
+  glenohumeral angles: they must wrap and have poles at 0°/180° elevation,
+  where a clamped solve sticks at a bound. The metrics use the solved bone
+  orientation, which any equivalent angle triple gives equally.
 * thoracoscapular: clavicle and scapula are held at the model's resting
   posture — no node measures them — so the glenohumeral joint carries all
   humerothoracic motion.
@@ -175,16 +176,16 @@ PROFILES = {
         "chains": {"r": [("upper_arm_r", ("plane_elv", "shoulder_elv", "axial_rot")),
                          ("forearm_r", ("elbow_flexion", "pro_sup")),
                          ("hand_r", ())]},           # wrist welded: not solvable
-        # Plane of elevation and axial rotation are angles about axes that
-        # turn with the arm: near the arm-at-side pole only their sum is
-        # defined, and a real movement can carry either past ±180°. Clamped,
-        # the solve cannot wrap and sticks at the bound — so they are left
-        # UNCLAMPED (the orientation is what downstream uses). Elevation starts
-        # at 0°: a negative elevation is the same pose as its mirror branch
-        # (plane+180°, -elevation, axial+180°) and lets the solve flip branches.
-        "ranges": {"shoulder_elv": (0, 180), "elbow_flexion": (-15, 160),
-                   "pro_sup": (-100, 100)},
-        "unclamped": ("plane_elv", "axial_rot"),
+        # The glenohumeral angles are left UNCLAMPED. Plane of elevation and
+        # axial rotation must wrap past ±180° (near the arm-at-side pole only
+        # their sum is defined), and elevation has poles at 0° and 180°: a
+        # clamped solve sticks at a bound and never recovers (seen as the arm
+        # stuck overhead while it hung at the side). Every angle downstream is
+        # taken from the solved bone ORIENTATION, which an out-of-range or
+        # mirror-branch triple represents just as well. The elbow and forearm
+        # stay clamped — those are the ranges that keep the solve physical.
+        "ranges": {"elbow_flexion": (-15, 160), "pro_sup": (-100, 100)},
+        "unclamped": ("plane_elv", "shoulder_elv", "axial_rot"),
         # upright thorax; humerus hanging vertical and facing forward (the
         # resting scapula tilts the glenoid, so that takes 6° of glenohumeral
         # elevation — solved numerically, 0.3° residual); elbow straight. The
