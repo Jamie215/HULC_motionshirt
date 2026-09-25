@@ -261,8 +261,7 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    segment — and `read-segments` builds a montage from the nodes' own headers (the
    §2.2 "user only confirms" flow). Offload drops a `<node_id>.seg.json` sidecar so
    captures are self-describing on disk; `analyze_session` warns when a node's
-   header disagrees with the montage (montage stays authoritative). *(next up:
-   step 4.)*
+   header disagrees with the montage (montage stays authoritative).
 4. ~~**Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
    rest already declared by the resolver. The skeleton linkage exists; the
    per-DOF joint-angle read-out rides along with ROM (same decomposition).~~ —
@@ -277,7 +276,8 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    flagged `clinical: false` (relative-only, same wording as the resolver); a
    blocked joint is reported blocked with the missing node named, never
    fabricated. Angles are unwrapped before ROM so a sweep past ±180° reports its
-   true excursion. Wired into `analyze_session` as stage 5/5 (`metrics.json`).
+   true excursion. Wired into `analyze_session` as stage 4/5 (`metrics.json`),
+   ahead of render so the stage-7 review can bake the metrics panel.
    The remaining declared metrics now ship alongside ROM in the same tool: joint
    angular **velocity** (peak/mean/RMS) and **rep counting** (hysteretic midline
    crossings, calibration-free); segment **angular travel** + active-time
@@ -287,6 +287,21 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    **activity asymmetry**, inter-joint **coordination** (cross-correlation +
    lag), and trunk **compensation**. Each derived metric is emitted only when
    `resolve()` says the montage supports it, and carries the same
-   clinical/relative-only honesty flag.
-5. **Full interface** (stage 7) — the metrics + both FBD layouts in one review UI.
-   *(next up.)*
+   clinical/relative-only honesty flag. Every metric's formula, units, and
+   calibration gate are catalogued in `METRICS.md`.
+5. ~~**Full interface** (stage 7) — the metrics + both FBD layouts in one review
+   UI.~~ — **done**. `floating_fbd.py render` now takes `--metrics metrics.json`
+   and bakes a review panel beside the 3-D body: per-joint **ROM** bars
+   (range + min…max), peak/mean **velocity**, **rep** counts, the **segment**
+   tier (travel/active%/elevation/SPARC), and the **derived** tier — all from the
+   one self-contained page (still no external scripts/CDN). The honesty flags
+   carry straight through the UI: a `clinical:false` joint reads **relative** and
+   its rows **dim while the view shows Raw** (mirroring the scene's amber "· raw"
+   overlay), a blocked joint names its missing node, and each derived metric keeps
+   its note. The panel **shares the raw↔calibrated toggle**, and hovering a
+   joint/segment row **highlights the bone(s) it measures** in the scene (via the
+   baked `joint_segments` adjacency). `analyze_session` now runs metrics *before*
+   render (steps 4/5 → 5/5) and passes it in, so one command produces the whole
+   review. *(Live per-frame angle read-out — a scrubber-linked value under each
+   DOF — is a natural follow-up; it needs the per-frame series added to the baked
+   payload, whereas today the panel carries session summaries only.)*

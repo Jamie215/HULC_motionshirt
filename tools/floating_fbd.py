@@ -72,6 +72,11 @@ Usage
     python tools/floating_fbd.py render aligned.csv montage.json \
         --calibration calibration.json --out fbd.html
 
+    # + metrics.json -> the stage-7 review panel (ROM/velocity/reps/derived)
+    # reads out beside the body, sharing the raw<->calibrated toggle:
+    python tools/floating_fbd.py render aligned.csv montage.json \
+        --calibration calibration.json --metrics metrics.json --out review.html
+
     # validate end-to-end with no hardware (synth a session, bake, check):
     python tools/floating_fbd.py selftest
 """
@@ -143,13 +148,18 @@ def _anat_chain():
     return chain
 
 
-def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES):
+def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
+                metrics=None):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
     single cached mounting offset (identity when uncalibrated). The viewer forms
     the calibrated orientation as q_seg = q_WS ⊗ q_SB on the fly, so both views
     come from one small payload.
+
+    `metrics` (an optional metrics.py report dict) rides along in the scene so the
+    stage-7 review panel reads out beside the 3-D body — one page, one payload. It
+    holds only session SUMMARY stats (no per-frame arrays), so it stays compact.
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
     n = len(t_ms)
@@ -225,9 +235,15 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
+        # joint -> [proximal, distal] segment, so a metrics-panel joint row can
+        # highlight the two bones it spans in the 3-D view. Real body-model
+        # adjacency (JOINTS), not a viewer guess.
+        "joint_segments": {k: [j.proximal, j.distal] for k, j in JOINTS.items()},
         "segments": segments,
         "t_ms": [round(float(t), 1) for t in t_keep],
         "frames": frames,
+        # stage-7 review panel: the metrics.py summary report (or null).
+        "metrics": metrics,
     }
 
 
@@ -257,12 +273,22 @@ def _load_calibration(path):
     return cal
 
 
+def _load_json(path):
+    with open(path, encoding="utf-8-sig") as f:   # tolerate a UTF-8 BOM
+        return json.load(f)
+
+
 def cmd_render(args):
     montage = load_montage(args.montage)
     calibration = _load_calibration(args.calibration) if args.calibration else None
-    scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames)
+    metrics = _load_json(args.metrics) if args.metrics else None
+    scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
+                        metrics=metrics)
     html = render_html(scene)
-    with open(args.out, "w") as f:
+    # UTF-8 always: the page is <meta charset="utf-8"> and carries non-ASCII glyphs
+    # (↔, °, ·, —). Without this, Python on Windows defaults to cp1252 and the
+    # write dies with a UnicodeEncodeError.
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
 
     m = scene["meta"]
@@ -281,6 +307,15 @@ def cmd_render(args):
     else:
         print("[fbd] no calibration given — RAW orientation only (each bar keeps "
               "its mounting tilt). Pass --calibration to enable the toggle.")
+    if metrics:
+        nj = len(metrics.get("joints", []))
+        nd = len(metrics.get("derived", []))
+        print(f"[fbd] metrics panel attached: {nj} joint(s), "
+              f"{len(metrics.get('segments', []))} segment(s), {nd} derived — "
+              f"the stage-7 review reads out beside the body.")
+    else:
+        print("[fbd] no metrics given — 3-D view only. Pass --metrics metrics.json "
+              "for the stage-7 review panel.")
     print(f"[fbd] open it in a browser: file://{os.path.abspath(args.out)}")
 
 
@@ -346,10 +381,16 @@ def selftest():
         np.savetxt(csv, np.column_stack(cols), delimiter=",",
                    header=",".join(header), comments="", fmt="%.6f")
 
-        scene = build_scene(csv, montage, cal, max_frames=200)
+        # a real metrics report over the same synth stream, so the bake carries
+        # the stage-7 panel exactly as analyze_session produces it.
+        from metrics import compute_metrics
+        metrics_report = compute_metrics(montage, t_ms, seg_quats, seg_meta, cal)
+
+        scene = build_scene(csv, montage, cal, max_frames=200,
+                            metrics=metrics_report)
         html = render_html(scene)
         out = os.path.join(d, "fbd.html")
-        with open(out, "w") as f:
+        with open(out, "w", encoding="utf-8") as f:
             f.write(html)
         html_size = os.path.getsize(out)
 
@@ -433,6 +474,16 @@ def selftest():
     check(scene["meta"]["neutral_window_ms"] == [0.0, 4000.0],
           "neutral window carried through for the jump button")
 
+    # (5b) Stage-7 metrics panel: the baked page carries the metrics payload +
+    #      the panel markup, and (this fully-calibrated synth) reads CLINICAL.
+    jkeys = [j["key"] for j in metrics_report["joints"]]
+    panel = ('id="metrics"' in html and '"metrics":' in html
+             and "Session metrics" in html and 'class="flag clin"' in html
+             and scene["metrics"] is not None
+             and scene["joint_segments"].get("elbow_r") == ["upper_arm_r", "forearm_r"])
+    check(panel, f"stage-7 metrics panel baked in ({len(jkeys)} joint(s): "
+          f"{', '.join(jkeys)}); joint→segments map present")
+
     # (6) Kinematic chain baked for the skeleton layout: the parent map is the
     #     real joint adjacency — forearm hangs off upper arm, upper arm off
     #     torso, and the torso roots (no parent).
@@ -473,8 +524,9 @@ def selftest():
           f"middle-gap chain: parents={scene_gap['parents']} anat={ac}")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
-          f"raw↔calibrated promise, the skeleton chain, the no-torso bilateral "
-          f"fallback, and the missing-middle ghost chain.")
+          f"raw↔calibrated promise, the stage-7 metrics panel, the skeleton "
+          f"chain, the no-torso bilateral fallback, and the missing-middle ghost "
+          f"chain.")
     return 0 if ok else 1
 
 
@@ -492,6 +544,8 @@ def main():
     pr.add_argument("montage", help="montage JSON (column<->segment mapping)")
     pr.add_argument("--calibration", help="calibration.json from "
                     "calibrate_segments.py (enables raw<->calibrated toggle)")
+    pr.add_argument("--metrics", help="metrics.json from metrics.py (adds the "
+                    "stage-7 review panel: ROM / velocity / reps / derived)")
     pr.add_argument("--out", default="fbd.html",
                     help="output HTML file (default: fbd.html)")
     pr.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
@@ -583,12 +637,64 @@ _HTML_TEMPLATE = r"""<!doctype html>
   input[type=range]{flex:1;min-width:160px;accent-color:var(--accent)}
   .tlabel{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;
     min-width:150px;text-align:right}
-  @media (max-width:640px){.legend{display:none}}
+
+  /* ---- stage-7 metrics review panel (left drawer over the canvas) ---- */
+  #metrics{position:absolute;left:0;top:0;bottom:0;width:352px;max-width:86vw;
+    background:var(--surface);border-right:1px solid var(--line);
+    box-shadow:var(--shadow);overflow-y:auto;padding:14px 16px 22px;z-index:5;
+    transition:transform .18s ease}
+  #metrics.hidden{transform:translateX(-102%)}
+  #metrics h2{margin:0 0 2px;font-size:14px;font-weight:600}
+  #metrics .msub{color:var(--muted);font-size:11.5px;margin-bottom:10px}
+  #metrics .rawbanner{display:none;margin:0 0 12px;padding:7px 10px;
+    border-radius:8px;font-size:11.5px;
+    background:color-mix(in srgb,var(--planned) 16%,transparent);
+    color:var(--planned);border:1px solid color-mix(in srgb,var(--planned) 34%,transparent)}
+  body[data-mode="raw"] #metrics .rawbanner{display:block}
+  #metrics section{margin:0 0 14px}
+  #metrics section>h3{margin:0 0 7px;font:600 10.5px/1.3 ui-monospace,monospace;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+    border-bottom:1px solid var(--line);padding-bottom:4px}
+  .mcard{border:1px solid var(--line);border-radius:9px;padding:8px 10px;
+    margin-bottom:7px;cursor:default}
+  .mcard.hl{border-color:var(--accent);
+    box-shadow:0 0 0 1px var(--accent) inset}
+  .mcard .mhead{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+  .mcard .mname{font-weight:600;font-size:12.5px}
+  .mcard .mmeta{color:var(--faint);font-size:11px;margin-left:auto;
+    font-family:ui-monospace,monospace}
+  .flag{font:600 9px/1.4 ui-monospace,monospace;padding:2px 6px;border-radius:5px;
+    letter-spacing:.03em;text-transform:uppercase}
+  .flag.rel{background:color-mix(in srgb,var(--planned) 20%,transparent);
+    color:var(--planned)}
+  .flag.clin{background:color-mix(in srgb,var(--built) 18%,transparent);
+    color:var(--built)}
+  .flag.blk{background:color-mix(in srgb,#c0392b 20%,transparent);color:#c0392b}
+  .dof{display:grid;grid-template-columns:1fr auto;gap:2px 10px;
+    font-size:11.5px;padding:4px 0 2px;border-top:1px dashed var(--line);
+    margin-top:5px}
+  .dof:first-of-type{border-top:none;margin-top:3px}
+  .dof .dname{color:var(--muted)}
+  .dof .drom{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;
+    text-align:right;white-space:nowrap}
+  .dof .dvel{grid-column:1/-1;color:var(--faint);font-size:10.5px;
+    font-family:ui-monospace,monospace}
+  .dof .dnote{grid-column:1/-1;color:var(--planned);font-size:10.5px}
+  /* clinical-gated numbers read dim while the view is showing RAW, mirroring
+     the scene's amber "· raw" overlay: the anatomical zero isn't applied. */
+  body[data-mode="raw"] .clin-gated{opacity:.5}
+  .mkv{font-size:11.5px;color:var(--muted);margin-top:2px;
+    font-family:ui-monospace,monospace;word-break:break-word}
+  .mnote{font-size:10.5px;color:var(--planned);margin-top:3px}
+  #metrics .empty{color:var(--faint);font-size:11.5px;font-style:italic}
+  @media (max-width:640px){.legend{display:none}
+    #metrics{width:100%;max-width:100%;top:auto;height:58%}
+    #metrics.hidden{transform:translateY(102%)}}
 </style>
 </head>
 <body>
 <header>
-  <div class="eyebrow">Stage 7 &middot; segment tier</div>
+  <div class="eyebrow" id="eyebrow">Stage 7 &middot; segment tier</div>
   <h1>Floating-segment free-body diagram</h1>
   <div class="sub" id="sub">&mdash;</div>
   <div class="stage" id="stage"><b>Skeleton</b> connects the segments into a
@@ -601,12 +707,14 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </header>
 <main>
   <canvas id="view"></canvas>
+  <aside id="metrics" class="hidden" aria-label="Session metrics"></aside>
   <div class="legend"><h2>Segments</h2><div id="legend"></div></div>
   <div class="hint" id="hint">world up = gravity (Z, blue axis) &middot; north =
     Y (green)</div>
 </main>
 <footer>
   <button id="play" class="primary">&#9654; Play</button>
+  <button id="mstoggle" hidden>&#9776; Metrics</button>
   <div class="toggle" id="layout">
     <button data-layout="skeleton">Skeleton</button>
     <button data-layout="floating">Floating</button>
@@ -661,6 +769,12 @@ const SEG = {
 };
 const rgb = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const shade = (c,f) => [c[0]*f,c[1]*f,c[2]*f];
+// segments the metrics panel is hovering — brightened in both layouts so a
+// joint/segment row visibly points at the bone(s) it measures.
+let HILITE = new Set();
+const hlBoost = (seg,c) => HILITE.has(seg)
+  ? [Math.min(255,c[0]*1.28+34),Math.min(255,c[1]*1.28+34),Math.min(255,c[2]*1.28+34)]
+  : c;
 
 // ---- tiny vec3 + quaternion (Hamilton w,x,y,z, same as the Python tools) ----
 const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
@@ -853,7 +967,7 @@ function renderFloating(){
       const nrm=norm(cross(sub(wp[1],wp[0]),sub(wp[2],wp[0])));
       const lit=0.55+0.45*Math.max(0,Math.abs(dot(nrm,LIGHT)));
       const depth=(pp[0].z+pp[1].z+pp[2].z+pp[3].z)/4;
-      polys.push({pp, color:shade(b.color,lit), depth});
+      polys.push({pp, color:shade(hlBoost(b.seg,b.color),lit), depth});
     }
   }
   polys.sort((a,b)=>b.depth-a.depth);            // painter's: far first
@@ -938,7 +1052,7 @@ function renderSkeleton(){
     for(const hh of [[hip,HIP_W*0.5],[sMid,SHOULDER_W*0.5]])
       for(const sv of [-1,1]) for(const su of [-1,1])
         tc.push(add(hh[0], add(scl(xax,su*hh[1]), scl(dax,sv*TRUNK_W*0.5))));
-    for(const f of BOX_FACES){ const p=faceOf(tc,f,SEG.torso.color); if(p) polys.push(p); }
+    for(const f of BOX_FACES){ const p=faceOf(tc,f,hlBoost('torso',SEG.torso.color)); if(p) polys.push(p); }
   }
   // each limb as a solid shaded box between its two joints
   const raws=[];
@@ -946,7 +1060,7 @@ function renderSkeleton(){
     if(b.seg==='torso') continue;
     const f=pos[b.seg], t=(ANAT[b.seg]&&ANAT[b.seg].thick)||.05;
     const box=boxBetween(f.prox, f.dist, t, t);
-    for(const fc of BOX_FACES){ const p=faceOf(box,fc,SEG[b.seg].color); if(p) polys.push(p); }
+    for(const fc of BOX_FACES){ const p=faceOf(box,fc,hlBoost(b.seg,SEG[b.seg].color)); if(p) polys.push(p); }
     if(!b.calibrated) raws.push([project(f.prox), project(f.dist)]);
   }
   // paint every face far -> near (painter's algorithm) for correct occlusion
@@ -1096,6 +1210,7 @@ playBtn.addEventListener('click',()=>{
 function setMode(m){
   if(m==='cal' && !DATA.meta.has_calibration) return;
   mode=m;
+  document.body.dataset.mode=m;          // CSS dims clinical-gated metric rows in raw
   for(const b of modeBox.querySelectorAll('button'))
     b.classList.toggle('on',b.dataset.mode===m);
 }
@@ -1153,6 +1268,128 @@ subEl.innerHTML=`subject <b>${m.subject}</b> · session <b>${m.session}</b> · `
   `<span class="mono">${m.source_csv}</span>`+
   (m.calibration_source?` + <span class="mono">${m.calibration_source}</span>`:
    ` · <b style="color:var(--planned)">no calibration — raw only</b>`);
+
+// ---- stage-7 metrics review panel (built from the baked metrics.json) ----
+// The panel reads out the session SUMMARY (ROM / velocity / reps / derived)
+// beside the 3-D body, sharing this page's raw↔calibrated toggle. Honesty flags
+// carry straight through: a joint whose two nodes aren't both calibrated is
+// RELATIVE (dimmed while the view shows raw); a blocked joint names its missing
+// node; a derived metric shows its own note. Hovering a row highlights the
+// bone(s) it measures in the scene.
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const n1=(x,u='')=>x==null?'—':(Math.round(x*10)/10)+u;
+function segsFor(row){
+  // segments a metrics row points at, for the hover highlight.
+  if(row.kind==='segment') return [row.data.segment];
+  if(row.kind==='joint'||row.kind==='blocked'){
+    const js=DATA.joint_segments||{}; return js[row.data.key]||[];
+  }
+  if(row.kind==='derived'){
+    const out=new Set();
+    for(const jk of (row.data.requires||[])){
+      for(const s of (DATA.joint_segments||{})[jk]||[]) out.add(s);
+    }
+    return [...out];
+  }
+  return [];
+}
+function romLine(d){
+  if(!d.rom) return `<span class="dname">${esc(d.name)}</span>`+
+    `<span class="drom">— <span style="color:var(--faint)">singular</span></span>`+
+    (d.singularity_note?`<span class="dnote">${esc(d.singularity_note)}</span>`:'');
+  const v=d.velocity, frac=('defined_frac' in d)
+    ? `  ·  ${Math.round(d.defined_frac*100)}% defined` : '';
+  return `<span class="dname">${esc(d.name)}</span>`+
+    `<span class="drom">${n1(d.rom.range_deg,'°')} `+
+    `<span style="color:var(--faint)">[${n1(d.rom.min_deg)}…${n1(d.rom.max_deg)}]</span></span>`+
+    (v?`<span class="dvel">peak ${n1(v.peak_deg_s,'°/s')} · mean ${n1(v.mean_abs_deg_s,'°/s')}${frac}</span>`:'');
+}
+function jointCard(j){
+  const rel=!j.clinical;
+  const flag=rel?`<span class="flag rel" title="one or both nodes uncalibrated">relative</span>`
+                :`<span class="flag clin">clinical</span>`;
+  const reps=(j.reps&&j.reps.count)?`<span class="mmeta">${j.reps.count} reps · ${esc(j.reps.primary_dof)}</span>`:
+    `<span class="mmeta">${esc(j.decomposition)}</span>`;
+  const dofs=j.dofs.map(d=>`<div class="dof${rel?' clin-gated':''}">${romLine(d)}</div>`).join('');
+  const warn=rel&&j.warning?`<div class="mnote">${esc(j.warning)}</div>`:'';
+  return `<div class="mcard" data-i="${ROWS.push({kind:'joint',data:j})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(j.name)}</span>${flag}${reps}</div>`+
+    dofs+warn+`</div>`;
+}
+function segCard(s){
+  const cal=s.calibrated?`<span class="flag clin">cal</span>`
+                        :`<span class="flag rel">raw</span>`;
+  const t=s.travel, sp=s.angular_speed, el=s.elevation;
+  const sm=(s.smoothness_sparc==null)?'still':`SPARC ${s.smoothness_sparc>0?'+':''}${n1(s.smoothness_sparc)}`;
+  const elev=`<span class="${s.calibrated?'':'clin-gated'}">elev ${n1(el.range_deg,'°')}</span>`;
+  return `<div class="mcard" data-i="${ROWS.push({kind:'segment',data:s})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(s.segment)}</span>${cal}`+
+    `<span class="mmeta">${esc(s.node_id||'')}</span></div>`+
+    `<div class="mkv">travel ${n1(t.travel_deg,'°')} · active ${Math.round(t.active_time_frac*100)}%`+
+    ` · ${elev} · peak ${n1(sp.peak_deg_s,'°/s')} · ${sm}</div></div>`;
+}
+function derivedCard(d){
+  const gated=(d.clinical===false);
+  const kv=Object.entries(d.metrics||{}).filter(([,v])=>!Array.isArray(v)&&v!=null)
+    .map(([k,v])=>`${esc(k)}=${esc(v)}`).join(' · ');
+  const flag=('clinical' in d)?(d.clinical?`<span class="flag clin">clinical</span>`
+             :`<span class="flag rel">relative</span>`):'';
+  const note=d.note?`<div class="mnote">${esc(d.note)}</div>`:'';
+  return `<div class="mcard${gated?' clin-gated':''}" data-i="${ROWS.push({kind:'derived',data:d})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(d.name)}</span>${flag}`+
+    `<span class="mmeta">${esc(d.target)}</span></div>`+
+    `<div class="mkv">${kv||'—'}</div>${note}</div>`;
+}
+function blockedCard(b){
+  return `<div class="mcard" data-i="${ROWS.push({kind:'blocked',data:b})-1}">`+
+    `<div class="mhead"><span class="mname">${esc(b.name)}</span>`+
+    `<span class="flag blk">blocked</span>`+
+    `<span class="mmeta">needs ${esc((b.missing||[]).join(', '))}</span></div></div>`;
+}
+const ROWS=[];         // index -> {kind,data}, so a hovered card knows its segments
+const MET=DATA.metrics, metricsEl=document.getElementById('metrics'),
+  msToggle=document.getElementById('mstoggle');
+if(MET){
+  document.getElementById('eyebrow').innerHTML='Stage 7 &middot; review';
+  const calLbl=MET.calibration_used?'calibration applied'
+    :'<b style="color:var(--planned)">no calibration — relative only</b>';
+  const sec=(title,inner,empty)=>`<section><h3>${title}</h3>`+
+    (inner||`<div class="empty">${empty}</div>`)+`</section>`;
+  const joints=(MET.joints||[]).map(jointCard).join('')+
+    (MET.blocked_joints||[]).map(blockedCard).join('');
+  const segs=(MET.segments||[]).map(segCard).join('');
+  const der=(MET.derived||[]).map(derivedCard).join('');
+  metricsEl.innerHTML=
+    `<h2>Session metrics</h2>`+
+    `<div class="msub">${MET.n_samples} samples · ${MET.duration_s}s · `+
+      `${MET.sample_rate_hz} Hz · ${calLbl}</div>`+
+    `<div class="rawbanner">Showing <b>raw</b> — angles below assume the mounting `+
+      `offset; the dimmed <b>relative</b> rows aren't anatomically anchored until `+
+      `you flip to <b>Calibrated</b>.</div>`+
+    sec('Joints &amp; range of motion',joints,'no computable joints for this montage')+
+    sec('Segments',segs,'no segments')+
+    sec('Derived',der,'none unlocked by this montage');
+
+  // hover a card -> highlight its bone(s) in the 3-D scene
+  metricsEl.addEventListener('mouseover',e=>{
+    const card=e.target.closest('.mcard'); if(!card) return;
+    HILITE=new Set(segsFor(ROWS[+card.dataset.i]||{}));
+    for(const c of metricsEl.querySelectorAll('.mcard')) c.classList.remove('hl');
+    card.classList.add('hl');
+  });
+  metricsEl.addEventListener('mouseleave',()=>{
+    HILITE=new Set();
+    for(const c of metricsEl.querySelectorAll('.mcard')) c.classList.remove('hl');
+  });
+
+  // toggle button (shown only when metrics are present); open by default on a
+  // wide screen so the review reads as one page, closed on a phone.
+  msToggle.hidden=false;
+  const openMetrics=o=>{metricsEl.classList.toggle('hidden',!o);
+    msToggle.classList.toggle('primary',o);};
+  msToggle.addEventListener('click',()=>openMetrics(metricsEl.classList.contains('hidden')));
+  openMetrics(window.innerWidth>820);
+}
 
 // ---- animation loop (real-time playback keyed on baked t_ms) ----
 let last=performance.now(), acc=0;
