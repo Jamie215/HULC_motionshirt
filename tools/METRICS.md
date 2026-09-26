@@ -34,7 +34,22 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
   stage-7 viewer its rows dim in raw view. Calibration is what turns an orientation
   into an *anatomical* angle (`MONTAGE_SCHEMA.md` §4).
 - **Unwrap before range.** Angle series are unwrapped (`np.unwrap`) before ROM, so
-  a real sweep through ±180° reports its true excursion instead of a fake 360°.
+  a real sweep through ±180° reports its true excursion instead of a fake 360°;
+  the unwrapped series is then re-centred by whole turns so its median sits in
+  ±180° (an unwrap never shifts the zero).
+- **Implausible ⇒ flagged.** Every DOF carries a `plausibility` check (§3): a
+  range over a full turn, sample-to-sample jumps over `JUMP_MAX_DEG`, or — with
+  anatomical axes — more than 2% of samples outside the DOF's physiological
+  limits. A failing joint gets a `plausibility_warning` naming the likely causes
+  (calibration pose, facing, sensor slip) rather than silently reporting it.
+- **Only the protocol is analysed.** By default the stream is trimmed to the
+  *analysis window*: from the opening neutral hold to the closing hold
+  (`trim_to_analysis`, both located by stage 5). Strapping on and the warm-up
+  before, and carrying the nodes to the charger after, never enter ROM, reps or
+  activity. Each end is cut only when its hold is this recording's own still
+  window (a calibration reused from another take cuts nothing); a missing
+  closing hold leaves the tail in and prints a warning. `--keep-pre-neutral`
+  analyses the whole stream.
 
 Session-level trust inputs from reconcile — `sync_confidence`, dropout — are **not**
 recomputed here; they travel alongside these numbers and should be surfaced with
@@ -60,11 +75,20 @@ angle_dof = (α|β|γ)[seq_index]                pick the slot that IS this clin
 - `q_WA` is the **anatomical frame at neutral** from `calibration.json`'s
   `anatomical_frame` block: X = anterior, Y = superior (along a hanging limb),
   Z = X × Y = the subject's right. It is built from gravity plus the subject's
-  facing (torso heading, or `--facing-deg` when there is no torso node). The
+  facing — the torso node's heading, else the elbow hinge axis (the facing that
+  makes elbow motion a pure hinge, `estimate_facing_from_elbow`), else
+  `--facing-deg`. The
   mounting offset alone zeroes each segment but leaves its axes on the world
   compass (Z = up), while the ISB sequences assume anatomical axes — without
   `q_WA` a pure elbow flexion lands in whichever slot the facing puts it. No
   confident facing ⇒ no `q_WA` ⇒ the joint is `clinical: false`.
+- **Wrist frame.** The N-pose holds the palms facing the thighs, i.e. the hand
+  is turned `NEUTRAL_FOREARM_DEG` (90°) about the long axis from the
+  palms-forward anatomical position the wrist's `ZXY` split assumes. Wrist
+  joints are therefore split in the hand's own neutral frame
+  (`joint_frame_deg`/`joint_frame_quat`: `q_anat` is additionally rotated by
+  that angle about Y), so wrist flexion reads as flexion and not as
+  radial/ulnar deviation. Elbow and shoulder are unaffected.
 - One frame serves both sides, so for a **left** joint `q_anat` is mirrored
   through the sagittal plane (`mirror_left`: `[w,x,y,z] → [w,−x,−y,z]`) before
   the split. A left joint then decomposes exactly like a right one and every DOF
@@ -111,13 +135,15 @@ Emitted per computable joint, into `joints[]`. Each joint object has `key`, `nam
 | **Per-DOF angle** | `dofs[].` (series, feeds the rest) | Euler decomposition of `q_rel` in the joint's sequence, unwrapped in radians before converting (§2). | ° | For *anatomical* zero, yes; relative shape works without |
 | **Range of motion** | `dofs[].rom` = `{min_deg,max_deg,range_deg,median_deg}` | `range = max − min` over the unwrapped angle (`_rom`/`_stats`). `null` if the DOF is singular for the whole session. | ° | Gates *clinical* ROM; relative-only when `clinical:false` |
 | **Angular velocity** | `dofs[].velocity` = `{peak_deg_s,mean_abs_deg_s,rms_deg_s}` | `v = d(angle)/dt` via `np.gradient` (`velocity_stats`); peak = max\|v\|, mean = mean\|v\|, RMS = √mean(v²). Differentiated **only within** contiguous valid runs, so a masked singular gap never fakes a huge peak. | °/s | No (shape metric) |
-| **Repetitions** | `reps` = `{count,primary_dof}` | Hysteretic midline crossings on the joint's primary DOF (`count_reps`; see below): the signal must dip below `mid−h` then rise above `mid+h` to score one cycle, with band `h = 25% of swing` and midline `mid = (max+min)/2`. Swings under `REP_MIN_AMPLITUDE_DEG` (15°) score 0 (noise/tremor). | count | No — only shape matters |
+| **Repetitions** | `reps` = `{count,primary_dof,bouts[]}` | Zig-zag turning points on the joint's primary DOF (`find_rep_bouts`): a rep is one out-and-back swing of at least `rep_threshold` = max(`REP_MIN_AMPLITUDE_DEG` (15°), 25% of the session's 2–98th-percentile range), each swing measured from its own local extremes so a set of small curls still counts beside a big movement elsewhere. Reps are grouped into **bouts**: a dwell at an extreme longer than `REP_PAUSE_S` (5 s) or a swing slower than `REP_MAX_LEG_S` (8 s) ends one — so curls, then rotations, then curls report as separate phases. Each bout = `{t_start_ms,t_end_ms,reps,mean_amplitude_deg}`; `count` is their sum. | count | No — only shape matters |
+| **Plausibility** | `dofs[].plausibility` = `{ok,issues[],jumps,outside_limits_frac?,limits_deg?}` | `check_plausibility`: range > 360°, jumps > `JUMP_MAX_DEG` (120°) between samples, and (anatomical axes only) > `PLAUSIBLE_OUTSIDE_FRAC` (2%) of samples outside the DOF's `plausible_deg` from `motion_capabilities`. Any failing DOF adds a joint-level `plausibility_warning`. | — | Limits check needs anatomical axes |
 
 A `clinical:false` joint also carries a `warning` string spelling out that its
 angles are relative-only.
 
 **Primary DOF.** Reps, L/R symmetry and coordination use the joint's declared
-primary DOF (`Joint.primary`; shoulder = `elevation`), falling back to the DOF
+primary DOF (`Joint.primary`; shoulder = `elevation`, elbow and wrist =
+`flex_ext`), falling back to the DOF
 that swung the most when none is declared or it is singular all session.
 
 **Shoulder DOFs** follow the ISB `YXY` names rather than flexion/abduction:
@@ -171,7 +197,12 @@ All defined at the top of `metrics.py`:
 |---|---|---|
 | `SINGULARITY_GUARD_DEG` | 10° | Band around each Euler pole where outer-slot DOFs are marked undefined |
 | `ACTIVE_SPEED_DEG_S` | 20°/s | Threshold for "active" (active-time fraction, activity comparison) |
-| `REP_MIN_AMPLITUDE_DEG` | 15° | Minimum primary-DOF swing for a rep to count |
+| `REP_MIN_AMPLITUDE_DEG` | 15° | Floor of the rep threshold (the threshold is the larger of this and 25% of the range) |
+| `REP_PAUSE_S` | 5 s | A dwell at an extreme longer than this ends a rep bout |
+| `REP_MAX_LEG_S` | 8 s | A single swing slower than this ends a rep bout |
+| `NEUTRAL_FOREARM_DEG` | 90° | Hand rotation from palms-forward at the N-pose (wrist frame) |
+| `JUMP_MAX_DEG` | 120° | Sample-to-sample step flagged as implausible |
+| `PLAUSIBLE_OUTSIDE_FRAC` | 0.02 | Share of samples outside physiological limits that fails plausibility |
 | `POSTURE_BIN_EDGES_DEG` | 0/30/60/90/120/150/180° | Elevation bands for the posture-dwell histogram |
 | `SPARC_FC_MAX_HZ` | 10 Hz | Upper frequency ignored by SPARC |
 | `SPARC_AMP_THRESH` | 0.05 | Normalized-magnitude floor that sets the SPARC cutoff band |
@@ -187,12 +218,19 @@ All defined at the top of `metrics.py`:
   "subject": { ... }, "session": { ... },
   "calibration_used": true, "anatomical_axes": true,
   "sample_rate_hz": 50.0, "n_samples": 4000, "duration_s": 79.98,
+  "analysis_window_ms": [t0, t1],            // opening hold → closing hold
+  "trimmed_before_neutral_s": 12.4 | null,   // setup dropped before the hold
+  "trimmed_after_closing_s": 8.1,            // tail dropped after the closing hold
+  "closing_hold_found": true,
   "joints": [ { "key","name","clinical","decomposition",
                 "dofs": [ { "key","name","plane",
                             "rom": {min_deg,max_deg,range_deg,median_deg} | null,
                             "velocity": {peak_deg_s,mean_abs_deg_s,rms_deg_s} | null,
+                            "plausibility": {ok,issues,jumps,...},
                             "defined_frac"?, "singularity_note"? } ],
-                "reps": {count,primary_dof}, "warning"? } ],
+                "reps": {count,primary_dof,
+                         bouts: [ {t_start_ms,t_end_ms,reps,mean_amplitude_deg} ]},
+                "warning"?, "plausibility_warning"? } ],
   "blocked_joints": [ { "key","name","missing": [ ... ] } ],
   "segments": [ { "segment","node_id","calibrated",
                   "angular_speed": {mean_deg_s,peak_deg_s},
@@ -222,5 +260,6 @@ All defined at the top of `metrics.py`:
 
   round-trips every Euler sequence, recovers a known injected flexion sweep (and
   a forearm twist) at several facings, checks the calibration and anatomical-axis
-  gates and wrap handling, and exercises the rep/SPARC/cross-correlation
-  primitives and the full derived tier.
+  gates and wrap handling, the wrist's hand-frame signs, the analysis-window trim
+  (and its guard against a reused calibration), plausibility flags, rep bouts,
+  the SPARC/cross-correlation primitives and the full derived tier.

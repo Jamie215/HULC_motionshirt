@@ -5,31 +5,38 @@ Turns a directory of offloaded node logs + a montage into a viewer + metrics in
 ONE command, running the post-offload stages in order and binding logs to
 segments automatically (no hand-ordering of .bin files):
 
-    reconcile  -> aligned.csv        (logs passed in montage column order)
+    reconcile  -> aligned.csv        (logs passed in montage column order;
+                                      vector clock sync, clock-restart check)
     capability -> which joints are computable for this montage
-    calibrate  -> calibration.json   (neutral window auto-detected)
-    metrics    -> metrics.json       (per-DOF joint angles + range of motion)
+    calibrate  -> calibration.json   (neutral hold auto-located if the montage
+                                      window isn't still; facing; closing hold)
+    metrics    -> metrics.json       (per-DOF joint angles, ROM, rep bouts over
+                                      the opening -> closing hold window)
     render     -> <out>.html         (stage-7 review: viewer + metrics panel)
+    opensense  -> <outdir>/opensense/ (optional, --opensense-model)
 
 The montage records each node's column (n0, n1, ...) and its id. Offload names
 each file by node id (e.g. HULC-IMU-485C.bin), so this tool resolves every
 node's log from --capture-dir and feeds reconcile the files in the RIGHT order.
+Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
+its own folder — see COLLECTION_SOP.md).
 
 Usage
 -----
     # validate the orchestration on synthetic logs (no hardware):
     python tools/analyze_session.py selftest
 
-    # run the whole chain from a capture dir + montage:
-    python tools/analyze_session.py run --montage montage.json --capture-dir ./capture
+    # run the whole chain for one block:
+    python tools/analyze_session.py run --montage montage.json \
+        --capture-dir ./capture/block1 --outdir ./out/block1
 
-    # no torso node? state the subject's facing so joint axes are anatomical:
-    python tools/analyze_session.py run --montage montage.json --capture-dir ./capture \
-        --facing-deg 90
+    # no torso node and too little elbow flexion to infer the facing? state it:
+    python tools/analyze_session.py run --montage montage.json \
+        --capture-dir ./capture/block1 --outdir ./out/block1 --facing-deg 90
 
     # override the neutral window / output name:
-    python tools/analyze_session.py run --montage montage.json --capture-dir ./capture \
-        --window 1200,4000 --out elbow.html
+    python tools/analyze_session.py run --montage montage.json \
+        --capture-dir ./capture/block1 --window 1200,4000 --out elbow.html
 """
 import argparse
 import json
@@ -121,7 +128,7 @@ def _run(cmd, step):
 
 
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
-        facing_deg=None):
+        facing_deg=None, opensense_model=None):
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -169,12 +176,24 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
           "--out", out_html],
          "5/5 render (stage-7 review: viewer + metrics panel)")
 
+    # 6. (optional) the OpenSense path — the same session solved on OpenSim's
+    #    musculoskeletal model, reported through the same metrics + viewer.
+    os_dir = os.path.join(outdir, "opensense")
+    if opensense_model:
+        _run([py, os.path.join(TOOLS, "opensense_ik.py"), "run", aligned,
+              montage_path, "--calibration", calib, "--model", opensense_model,
+              "--outdir", os_dir],
+             "6/6 OpenSense path (pose solved on the OpenSim model)")
+
     print("\n===== DONE =====")
     print(f"  aligned stream : {aligned}")
     print(f"  calibration    : {calib}")
     print(f"  metrics        : {metrics}")
     print(f"  review (html)  : {out_html}   (3-D viewer + metrics panel)")
     print(f"  open it        : file://{os.path.abspath(out_html)}")
+    if opensense_model:
+        print(f"  opensense      : {os.path.join(os_dir, 'opensense_metrics.json')}"
+              f" + opensense.html")
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +316,11 @@ def main():
                     help="subject's facing at neutral, degrees clockwise from "
                          "world +Y; gives anatomical joint axes when the montage "
                          "has no torso node")
+    pr.add_argument("--opensense-model", metavar="OSIM",
+                    help="also solve the session with OpenSim OpenSense on this "
+                         "model (ThoracoscapularShoulderModel.osim for the right "
+                         "arm, or Rajagopal2015_opensense.osim; needs "
+                         "`pip install opensim`) -> <outdir>/opensense/")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
 
@@ -305,7 +329,7 @@ def main():
         sys.exit(selftest())
     if args.cmd == "run":
         run(args.montage, args.capture_dir, args.out, args.outdir,
-            args.window, args.fs, args.facing_deg)
+            args.window, args.fs, args.facing_deg, args.opensense_model)
         return
     ap.error("choose a command: run | selftest")
 

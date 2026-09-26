@@ -92,10 +92,11 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 ## Analysis pipeline (`tools/`)
 
-The pipeline is pure-Python and mostly **standard library** — no NumPy. The one
-exception is `bleak`, needed only for the live BLE actions in
-`multinode_test.py` (`pip install bleak`); everything offline, including every
-`selftest`, runs with a bare Python 3 install.
+The pipeline is pure Python on top of **NumPy** (`pip install numpy`), which
+every offline tool and `selftest` needs. Two optional extras: `bleak`, only for
+the live BLE actions in `multinode_test.py` (`pip install bleak`), and OpenSim,
+only for the optional OpenSense path and its comparison harness
+(`pip install opensim`, see `tools/opensense_ik.py`).
 
 Each node records the ORIENTATION of the SEGMENT it is strapped to. A clinical
 **joint angle** is the *relative* orientation of two adjacent segments, so what
@@ -114,11 +115,12 @@ number a placement can't support.
 | Stage | Tool | What it does |
 |-------|------|--------------|
 | 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` | Nodes log autonomously; the central offloads each node's `.bin` |
-| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating angular speed), so alignment doesn't depend on BLE latency → `aligned.csv`, plus `aligned.quality.json` (per-sensor sync confidence and data gaps, shown in the review page) |
+| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating world-frame angular-velocity vectors; angular speed as fallback), so alignment doesn't depend on BLE latency → `aligned.csv`, plus `aligned.quality.json` (per-sensor sync confidence and peak distinctness, data gaps, clock restarts — shown in the review page) |
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
-| 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from a short neutral pose, with a cache-and-verify contract so re-donning is cheap → `calibration.json` |
-| 6 Metrics | `metrics.py` | Per-DOF joint angles → range of motion, angular velocity, reps, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
+| 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from the opening neutral hold (found automatically if the montage window isn't still), estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and locates the closing hold → `calibration.json` |
+| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window (opening hold → closing hold) → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
 | 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views |
+| (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
 
 `analyze_session.py` orchestrates stages 3–7 in one command, binding each log
 to its segment automatically from the montage.
@@ -132,14 +134,17 @@ pip install bleak
 # 1. enroll boards → montage.json (power ONE node on at a time)
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 
-# 2. record: strap on, move with the laptop DISCONNECTED
-#    (each node logs to its own flash while in ACTIVE_RECORDING)
+# 2. record one block per tools/COLLECTION_SOP.md, laptop DISCONNECTED:
+#    warm-up → neutral hold → sync gesture → task(s) → closing hold
+#    (each node logs to its own flash while it is moving)
 
-# 3. offload each node's log while the subject is at rest (nodes must be IDLE)
-python tools/multinode_test.py offload --count 2 --out-dir ./capture
+# 3. charging checkpoint: nodes off the body onto the charger (they go IDLE and
+#    stop logging), then offload this block into its own folder
+python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
 
-# 4. run the whole analysis chain from the capture dir + montage
-python tools/analyze_session.py run --montage montage.json --capture-dir ./capture
+# 4. run the whole analysis chain for the block
+python tools/analyze_session.py run --montage montage.json \
+    --capture-dir ./capture/block1 --outdir ./out/block1
 #    → aligned.csv, calibration.json, metrics.json, and an HTML viewer
 ```
 
@@ -154,6 +159,9 @@ python tools/multinode_test.py selftest
 
 ### Pipeline docs
 
+- [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the recording procedure:
+  warm-up, neutral hold, sync gesture per montage, task pacing, timings (each
+  tied to the firmware / pipeline setting behind it) and accept/redo checks.
 - [`COLLECTION_CHECKLIST.md`](tools/COLLECTION_CHECKLIST.md) — the end-to-end
   run-sheet for a session, including the minimal-connect BLE workflow and
   sensor-placement guidance.
@@ -163,6 +171,14 @@ python tools/multinode_test.py selftest
   design of stages 5–7 (calibration, metrics, visual).
 - [`pipeline_walkthrough.html`](tools/pipeline_walkthrough.html) — the whole
   pipeline at a glance.
+- `timing_bench.py` — synthetic sessions pushed through the real reconcile
+  step (own clocks, firmware sampling schedule, STATIC gaps, strap wobble) to
+  measure what sync and sampling cost; it motivated the vector clock sync and
+  the 1 Hz STATIC logging.
+- [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) — default chain vs
+  OpenSense (two models) on synthetic ground truth and a real capture, with a
+  draft methods paragraph; [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)
+  — what OpenSense can and cannot recover for each montage.
 - `montage.example.json` — a filled-in montage to copy.
 
 ---

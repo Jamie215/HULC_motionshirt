@@ -28,8 +28,9 @@ sensor reading recovers the offset for each node.
 
 Cache-and-verify (the "feels like skipping" path)
 -------------------------------------------------
-The offset is a property of THIS wear — a power cycle for charging does NOT break
-it, re-donning does. So it is cacheable. Alongside each offset we cache a
+The offset is a property of THIS mounting — a power cycle does NOT break it,
+taking a node off (e.g. to charge it between blocks) and re-mounting it does.
+Within one mounting it is cacheable. Alongside each offset we cache a
 HEADING-INDEPENDENT consistency baseline so the next don can decide reuse vs.
 re-pose without a fresh deliberate pose every time:
 
@@ -45,6 +46,23 @@ compares to the baseline: all deviations small -> REUSE silently; any over
 threshold -> prompt for a fresh ~2 s pose. The same check run on a later still
 window within one session catches intra-session slippage.
 
+Which window is the neutral hold
+--------------------------------
+`choose_neutral_window`: an explicit `--window` wins; otherwise the montage's
+`calibration.t_window_ms` is used only if the data there is actually still
+(<= STILL_MAX_RAD_S) — a placeholder or mistimed window is ignored — and
+otherwise `find_neutral_window` takes the FIRST still stretch of the recording
+(mean angular speed <= NEUTRAL_MAX_RAD_S) and the quietest window inside it.
+
+The closing hold — the `closing` block
+--------------------------------------
+The protocol ends with a second neutral hold before the nodes come off.
+`find_closing_hold` finds the LAST still window at least CLOSING_MIN_GAP_MS after
+the opening hold whose pose matches neutral (every segment's gravity direction
+and every pair's relative rotation within CLOSING_POSE_DEG). It is recorded
+with its deviations (a free end-of-block slip check) and ends metrics'
+analysis window; none found -> the note says so and nothing is cut.
+
 Heading (facing) recovery — the `heading` block
 -----------------------------------------------
 The shared world frame gives absolute orientation but not how the subject's
@@ -55,8 +73,11 @@ out of the chest), and self-checks it — the axis must land ~horizontal at the
 upright neutral pose, and the pose must be still — marking the result
 low-confidence rather than confidently wrong. No torso -> not recovered. The
 skeleton viewer applies a confident heading as a fixed yaw; nothing here asks the subject
-to do or remember anything extra. A montage without a torso node can supply the
-facing by hand (`--facing-deg`).
+to do or remember anything extra. Without a torso node the facing comes from
+the elbow when the recording has enough elbow flexion
+(`estimate_facing_from_elbow`: the facing that makes the upper-arm → forearm
+motion a pure hinge, i.e. minimises varus/valgus; the sign of flexion resolves
+the 180° ambiguity), or is given by hand (`--facing-deg`).
 
 Anatomical axes — the `anatomical_frame` block
 ----------------------------------------------
@@ -78,7 +99,8 @@ metrics reports the joints RELATIVE-only.
 
 Usage
 -----
-    # solve offsets + baseline from the neutral-pose window in a montage:
+    # solve offsets + baseline from the neutral hold (auto-located when the
+    # montage window isn't still), plus facing and the closing hold:
     python tools/calibrate_segments.py calibrate aligned.csv montage.json \
         --out calibration.json
 
@@ -146,6 +168,24 @@ DEFAULT_PAIR_ANGLE_DEG = 10.0    # per-pair relative-orientation drift
 STILL_MAX_RAD_S = 0.30
 
 DEFAULT_WIN_MS = 2000.0          # auto-detected still-window length
+# Auto-detection looks for the protocol's neutral HOLD, which is much quieter
+# than STILL_MAX_RAD_S (a deliberate hold sits around 0.01–0.05 rad/s); the
+# stricter bar keeps a slow setup fidget from passing for it.
+NEUTRAL_MAX_RAD_S = 0.10
+
+# ---- facing from elbow motion (montages without a torso node) --------------
+# The elbow must flex at least this far (95th percentile) for its hinge axis to
+# be observable, and the best facing's varus/valgus RMS must be at most this
+# fraction of the median over all facings (a clear minimum, not a flat cost).
+# ---- closing hold (the end of the protocol) --------------------------------
+# The last still window at least CLOSING_MIN_GAP_MS after the opening hold whose
+# pose matches it within CLOSING_POSE_DEG (each node's gravity direction and each
+# adjacent pair's relative rotation) closes the analysis window.
+CLOSING_MIN_GAP_MS = 5000.0
+CLOSING_POSE_DEG = 10.0
+
+HINGE_MIN_FLEX_DEG = 30.0
+HINGE_MAX_COST_RATIO = 0.75
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +330,183 @@ def auto_still_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
     return best_t0, best_t0 + win_ms
 
 
+def _window_means(t_ms, seg_quats, win_ms):
+    """(t0[k], mean speed over [t0, t0+win]) for every sample start that fits.
+
+    Cumulative sums keep this O(N log N), so a long session stays cheap."""
+    t_mid, speed = combined_speed(t_ms, seg_quats)
+    ok = np.isfinite(speed)
+    cs = np.concatenate([[0.0], np.cumsum(np.where(ok, speed, 0.0))])
+    cn = np.concatenate([[0], np.cumsum(ok)])
+    starts = t_ms[:-1][t_ms[:-1] + win_ms <= t_ms[-1]]
+    lo = np.searchsorted(t_mid, starts, side="left")
+    hi = np.searchsorted(t_mid, starts + win_ms, side="right")
+    n = cn[hi] - cn[lo]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(n >= 2, (cs[hi] - cs[lo]) / np.maximum(n, 1), np.inf)
+    return starts, mean
+
+
+def find_neutral_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
+    """The protocol's neutral hold: the FIRST window that is genuinely still.
+
+    The collection protocol opens with the neutral hold, but a log usually
+    starts a little earlier (strapping on, getting set) — so the quietest window
+    of the whole record can be the closing rest instead, and a fixed window from
+    the montage can land in the setup fidget. We take the earliest window whose
+    mean angular speed is under NEUTRAL_MAX_RAD_S; if none qualifies, fall back
+    to the quietest window (and say so). Returns (t0, t1, source).
+    """
+    if len(t_ms) < 3 or t_ms[-1] - t_ms[0] <= win_ms:
+        t0, t1 = auto_still_window(t_ms, seg_quats, win_ms)
+        return t0, t1, "whole_record"
+    starts, mean = _window_means(t_ms, seg_quats, win_ms)
+    still = mean <= NEUTRAL_MAX_RAD_S
+    if still.any():
+        # the first still stretch, then its quietest window (not its edge, which
+        # still carries the settle-in)
+        a = int(np.argmax(still))
+        b = a + int(np.argmin(still[a:])) if not still[a:].all() else len(still)
+        t0 = float(starts[a + int(np.argmin(mean[a:b]))])
+        return t0, t0 + win_ms, "first_still"
+    t0, t1 = auto_still_window(t_ms, seg_quats, win_ms)
+    return t0, t1, "quietest"
+
+
+def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
+                          window=None):
+    """Resolve the calibration window: --window > a STILL montage window > auto.
+
+    A montage window is only trusted if it was actually still — enrollment
+    writes a placeholder, and calibrating on motion biases every offset.
+    Returns (t0, t1, message)."""
+    if window:
+        t0, t1 = window
+        return float(t0), float(t1), f"using --window {t0:.0f}–{t1:.0f} ms"
+    cal_win = montage.get("calibration", {}).get("t_window_ms")
+    note = ""
+    if cal_win and len(cal_win) == 2:
+        t0, t1 = float(cal_win[0]), float(cal_win[1])
+        s = window_stillness(t_ms, seg_quats, t0, t1)
+        if np.isfinite(s) and s <= STILL_MAX_RAD_S:
+            return t0, t1, f"using montage neutral window {t0:.0f}–{t1:.0f} ms"
+        note = (f"montage window {t0:.0f}–{t1:.0f} ms was not still "
+                f"({s:.2f} rad/s) — ignoring it; ")
+    t0, t1, src = find_neutral_window(t_ms, seg_quats, win_ms)
+    how = {"first_still": "first still window",
+           "quietest": "no window under "
+                       f"{NEUTRAL_MAX_RAD_S} rad/s — quietest window",
+           "whole_record": "record too short — whole record"}[src]
+    return t0, t1, f"{note}auto-detected {how} {t0:.0f}–{t1:.0f} ms"
+
+
+def analysis_start_ms(calibration, t_ms=None, seg_quats=None):
+    """Where analysis should begin: the start of the neutral hold, or None.
+
+    Everything before the neutral pose is setup (strapping on, fidgeting) and is
+    not part of the protocol, so metrics and the viewer drop it by default.
+
+    With the stream (t_ms, seg_quats), the window must also belong to THIS
+    recording: inside its time span and still in its data. A calibration reused
+    from an earlier session (verify -> reuse) carries that session's window
+    times, which say nothing about where this recording's protocol starts —
+    trimming on them would silently drop real data, so None is returned."""
+    nw = (calibration or {}).get("neutral", {}).get("t_window_ms")
+    if not nw or len(nw) != 2:
+        return None
+    t0, t1 = float(nw[0]), float(nw[1])
+    if t_ms is not None and seg_quats is not None:
+        if t0 < t_ms[0] or t1 > t_ms[-1]:
+            return None
+        s = window_stillness(t_ms, seg_quats, t0, t1)
+        if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
+            return None
+    return t0
+
+
+def _pose_deviation(t_ms, seg_quats, segments, t0, t1):
+    """How far the pose in [t0, t1] is from the calibration's neutral pose.
+
+    Heading-independent, like `verify`: per segment, the angle between where
+    gravity points in the SENSOR frame now vs at neutral; per adjacent pair, the
+    angle of their relative rotation now vs at neutral. Returns
+    (max_segment_deg, max_pair_deg), or None if the window holds < 2 samples."""
+    m = window_mask(t_ms, t0, t1)
+    if m.sum() < 2:
+        return None
+    now = {seg: quat_average(q[m]) for seg, q in seg_quats.items()}
+    seg_dev = 0.0
+    for seg, qn in now.items():
+        ref = segments.get(seg, {}).get("neutral_mean_quat")
+        if ref is None:
+            continue
+        g_ref = qrotate(qconj(np.asarray(ref, float)), WORLD_UP)
+        g_now = qrotate(qconj(qn), WORLD_UP)
+        c = np.clip(np.dot(g_ref, g_now) / (np.linalg.norm(g_ref) * np.linalg.norm(g_now)),
+                    -1.0, 1.0)
+        seg_dev = max(seg_dev, float(np.degrees(np.arccos(c))))
+    pair_dev = 0.0
+    for prox, dist in _adjacent_pairs(now).values():
+        ra, rb = segments.get(prox), segments.get(dist)
+        if not ra or not rb:
+            continue
+        rel_ref = qmul(qconj(np.asarray(ra["neutral_mean_quat"], float)),
+                       np.asarray(rb["neutral_mean_quat"], float))
+        rel_now = qmul(qconj(now[prox]), now[dist])
+        pair_dev = max(pair_dev, float(np.degrees(angle_between_quats(rel_ref, rel_now))))
+    return seg_dev, pair_dev
+
+
+def find_closing_hold(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS):
+    """The protocol's CLOSING hold: the last still window, at least
+    CLOSING_MIN_GAP_MS after the opening hold, in the same pose as it.
+
+    It marks where the recording stops being protocol: after it the nodes are
+    usually taken off and carried to the charger, and that handling motion is
+    logged like any other. Rests in other poses (elbow bent, arm raised) fail
+    the pose test; a mid-session N-pose rest passes, so the LAST match wins.
+    Returns a dict (t_window_ms, stillness, deviations) or None."""
+    if len(t_ms) < 3 or t_ms[-1] - after_ms < win_ms + CLOSING_MIN_GAP_MS:
+        return None
+    starts, mean = _window_means(t_ms, seg_quats, win_ms)
+    ok = (mean <= NEUTRAL_MAX_RAD_S) & (starts >= after_ms + CLOSING_MIN_GAP_MS)
+    if not ok.any():
+        return None
+    # candidate still stretches, latest first; test each stretch's quietest window
+    idx = np.flatnonzero(ok)
+    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+    for run in reversed(runs):
+        k = run[int(np.argmin(mean[run]))]
+        t0 = float(starts[k]); t1 = t0 + win_ms
+        dev = _pose_deviation(t_ms, seg_quats, segments, t0, t1)
+        if dev is None:
+            continue
+        seg_dev, pair_dev = dev
+        if seg_dev <= CLOSING_POSE_DEG and pair_dev <= CLOSING_POSE_DEG:
+            return {"t_window_ms": [round(t0, 1), round(t1, 1)],
+                    "stillness_rad_s": round(float(mean[k]), 4),
+                    "segment_gravity_dev_deg": round(seg_dev, 2),
+                    "pair_rel_dev_deg": round(pair_dev, 2)}
+    return None
+
+
+def analysis_end_ms(calibration, t_ms=None, seg_quats=None):
+    """Where analysis should end: the end of the closing hold, or None (keep to
+    the end of the log). Same ownership test as analysis_start_ms: the window
+    must lie in THIS recording and be still in its data."""
+    cw = (calibration or {}).get("closing", {}).get("t_window_ms")
+    if not cw or len(cw) != 2:
+        return None
+    t0, t1 = float(cw[0]), float(cw[1])
+    if t_ms is not None and seg_quats is not None:
+        if t0 < t_ms[0] or t1 > t_ms[-1]:
+            return None
+        s = window_stillness(t_ms, seg_quats, t0, t1)
+        if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
+            return None
+    return t1
+
+
 def window_stillness(t_ms, seg_quats, t0, t1):
     """Mean angular speed (rad/s) inside [t0, t1] — a pose-quality number."""
     t_mid, speed = combined_speed(t_ms, seg_quats)
@@ -426,6 +643,97 @@ def compute_heading(segments, still_ok, facing_deg=None):
     }
 
 
+def _elbow_splits(pairs, facing_deg):
+    """ZXY split of each calibrated elbow's relative rotation, expressed in the
+    anatomical frame for `facing_deg` (left mirrored) — metrics.py's chain."""
+    from metrics import euler_from_quat, mirror_left   # local: metrics imports us
+    q_wa = anatomical_frame_quat(facing_deg)
+    out = []
+    for side, q_rel in pairs:
+        r = qnorm(qmul(qmul(qconj(q_wa), q_rel), q_wa))
+        if side == "l":
+            r = mirror_left(r)
+        out.append(np.degrees(euler_from_quat(r, "ZXY")))
+    return out
+
+
+def estimate_facing_from_elbow(t_ms, seg_quats, segments, t_start, still_ok):
+    """Recover the subject's facing from elbow motion (no torso node needed).
+
+    The elbow is a hinge: in the right anatomical frame its relative rotation
+    splits into flexion (about Z) and pro/supination (about the forearm, Y) with
+    almost no varus/valgus (about X). With the wrong facing the hinge axis is
+    misread, and flexion leaks into that middle slot. So the facing that
+    minimizes the RMS varus/valgus over the session is the subject's facing.
+
+    That criterion cannot tell f from f+180° (both put the hinge on the same
+    line); the elbow's one-sided range settles it — flexion must be the positive
+    direction. Confidence needs real flexion in the record and a clear minimum;
+    a still or barely-flexing elbow leaves the facing unknown rather than guessed.
+    Returns a heading dict (source "elbow_hinge") or None if no elbow pair.
+    """
+    pairs = []
+    for side in ("r", "l"):
+        ua, fa = f"upper_arm_{side}", f"forearm_{side}"
+        if ua in seg_quats and fa in seg_quats and ua in segments and fa in segments:
+            keep = t_ms >= t_start
+            q_ua = qmul(seg_quats[ua][keep],
+                        np.asarray(segments[ua]["mounting_offset_quat"], float))
+            q_fa = qmul(seg_quats[fa][keep],
+                        np.asarray(segments[fa]["mounting_offset_quat"], float))
+            pairs.append((side, qnorm(qmul(qconj(q_ua), q_fa))))
+    if not pairs or min(len(q) for _, q in pairs) < 10:
+        return None
+
+    def cost(f):
+        e = np.concatenate([s[:, 1] for s in _elbow_splits(pairs, f)])
+        return float(np.sqrt(np.mean(e * e)))
+
+    grid = np.arange(0.0, 360.0, 2.0)
+    costs = np.array([cost(f) for f in grid])
+    f0 = grid[int(np.argmin(costs))]
+    fine = np.arange(f0 - 2.0, f0 + 2.0001, 0.25)
+    fine_costs = [cost(f) for f in fine]
+    best = float(fine[int(np.argmin(fine_costs))]) % 360.0
+    best_cost = float(min(fine_costs))
+    contrast = best_cost / float(np.median(costs) or 1.0)
+
+    def flex_pct(f):
+        fl = np.concatenate([s[:, 0] for s in _elbow_splits(pairs, f)])
+        fl = (fl + 180.0) % 360.0 - 180.0
+        return float(np.percentile(fl, 5)), float(np.percentile(fl, 95))
+
+    p5, p95 = flex_pct(best)
+    if -p5 > p95:                      # flexion reads negative: other branch
+        best = (best + 180.0) % 360.0
+        p5, p95 = flex_pct(best)
+    flex_ok = p95 >= HINGE_MIN_FLEX_DEG and p95 >= 2.0 * max(0.0, -p5)
+    sharp = contrast <= HINGE_MAX_COST_RATIO
+    confident = bool(flex_ok and sharp and still_ok)
+    if confident:
+        note = "ok"
+    elif not flex_ok:
+        note = (f"elbow flexion too small or two-sided (5–95%: {p5:.0f}…{p95:.0f}°)"
+                f" — facing left unknown; flex the elbow, or pass --facing-deg")
+    elif not sharp:
+        note = (f"no clear hinge axis (varus/valgus {best_cost:.0f}° vs median "
+                f"{np.median(costs):.0f}°) — facing left unknown")
+    else:
+        note = "neutral pose was not still — facing left unknown"
+    f = round(best if best <= 180.0 else best - 360.0, 2)
+    return {
+        "source": "elbow_hinge",
+        "confident": confident,
+        "facing_deg": f,
+        "correction_yaw_deg": f,
+        "varus_valgus_rms_deg": round(best_cost, 2),
+        "cost_contrast": round(contrast, 3),
+        "flexion_p5_p95_deg": [round(p5, 1), round(p95, 1)],
+        "elbows": [side for side, _ in pairs],
+        "note": note,
+    }
+
+
 def _quat_from_rotmat(R):
     """Unit quaternion [w,x,y,z] of a proper rotation matrix (Shepperd's method)."""
     tr = R[0, 0] + R[1, 1] + R[2, 2]
@@ -483,7 +791,13 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
     stillness = window_stillness(t_ms, seg_quats, t0, t1)
     segments, pairs = solve_calibration(t_ms, seg_quats, seg_meta, t0, t1, targets)
     still_ok = bool(stillness <= STILL_MAX_RAD_S)
+    closing = find_closing_hold(t_ms, seg_quats, segments, t1)
     heading = compute_heading(segments, still_ok, facing_deg)
+    if heading["source"] == "none":
+        # no torso, no stated facing: read it off the elbow's hinge motion
+        hinge = estimate_facing_from_elbow(t_ms, seg_quats, segments, t0, still_ok)
+        if hinge is not None:
+            heading = hinge
     return {
         "schema_version": SCHEMA_VERSION,
         "subject": montage.get("subject", {}),
@@ -501,6 +815,13 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
             "segment_gravity_deg": DEFAULT_SEG_GRAVITY_DEG,
             "pair_angle_deg": DEFAULT_PAIR_ANGLE_DEG,
         },
+        # end of the protocol: analysis stops here (see find_closing_hold)
+        "closing": (closing if closing else
+                    {"t_window_ms": None,
+                     "note": "no closing hold found (a still stretch in the "
+                             "neutral pose after the task) — analysis runs to "
+                             "the end of the log, which may include taking the "
+                             "nodes off"}),
         "heading": heading,
         "anatomical_frame": build_anatomical_frame(heading),
         "segments": segments,
@@ -614,6 +935,14 @@ def print_calibrate_report(cal):
     if not n["still_ok"]:
         print("  ! the pose window was not still — offsets may be biased; "
               "re-capture a quiet ~2 s neutral pose.")
+    c = cal.get("closing") or {}
+    if c.get("t_window_ms"):
+        print(f"  closing hold:   {c['t_window_ms'][0]:.0f}–{c['t_window_ms'][1]:.0f} ms "
+              f"(pose within {max(c['segment_gravity_dev_deg'], c['pair_rel_dev_deg']):.1f}° "
+              f"of neutral) — analysis ends here")
+    else:
+        print("  ! no closing hold found — analysis runs to the end of the log "
+              "(may include taking the nodes off); end each take with the N-pose")
     print(f"\nSEGMENT mounting offsets ({len(cal['segments'])})")
     for seg, s in cal["segments"].items():
         flag = "" if s["pose_residual_deg"] < 3.0 else "  ! noisy pose"
@@ -635,6 +964,15 @@ def print_calibrate_report(cal):
     elif h.get("source") == "manual":
         print(f"\nFACING (stated by hand): subject faced {h['facing_deg']:+.0f}° "
               f"from +Y.")
+    elif h.get("source") == "elbow_hinge":
+        if h.get("confident"):
+            print(f"\nFACING (from elbow hinge motion, {'+'.join(h['elbows'])}): "
+                  f"subject faced {h['facing_deg']:+.0f}° from +Y "
+                  f"(varus/valgus {h['varus_valgus_rms_deg']:.0f}° RMS, "
+                  f"contrast {h['cost_contrast']:.2f}).")
+        else:
+            print(f"\nFACING (from elbow hinge motion): NOT confident — "
+                  f"{h.get('note')}.")
     elif h.get("source") == "none":
         print("\nFACING: not recovered (no torso node) — the FBD skeleton's "
               "forward/side plane stays nominal.")
@@ -703,18 +1041,9 @@ def cmd_calibrate(args):
     montage = load_montage(args.montage)
     t_ms, seg_quats, seg_meta = load_aligned(args.aligned_csv, montage)
 
-    if args.window:
-        t0, t1 = args.window
-    else:
-        cal_win = montage.get("calibration", {}).get("t_window_ms")
-        if cal_win and len(cal_win) == 2:
-            t0, t1 = float(cal_win[0]), float(cal_win[1])
-            print(f"[calibrate] using montage neutral window "
-                  f"{t0:.0f}–{t1:.0f} ms")
-        else:
-            t0, t1 = auto_still_window(t_ms, seg_quats, args.win_ms)
-            print(f"[calibrate] auto-detected quietest window "
-                  f"{t0:.0f}–{t1:.0f} ms (no montage t_window_ms given)")
+    t0, t1, msg = choose_neutral_window(montage, t_ms, seg_quats, args.win_ms,
+                                        args.window)
+    print(f"[calibrate] {msg}")
 
     cal = build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
                             args.aligned_csv, facing_deg=args.facing_deg)
@@ -920,7 +1249,86 @@ def selftest():
           f"facing, manual facing without torso, none when unknown: "
           f"{'OK' if frame_ok else 'FAIL'}")
 
+    # (8) Protocol-shaped elbow session with NO torso: setup fidget, neutral hold,
+    #     elbow curls with some pro/sup, a quieter closing rest. The neutral
+    #     finder must take the hold (not the quieter end, not a placeholder
+    #     montage window over the fidget), and the elbow hinge must give back
+    #     the subject's facing.
+    face = 70.0
+    q_wa = anatomical_frame_quat(face)
+    to_world = lambda q: qnorm(qmul(qmul(q_wa, q), qconj(q_wa)))
+    t_e = np.arange(0, 30000, 50.0)
+    n_e = len(t_e)
+    rng = np.random.default_rng(11)
+    flex = np.zeros(n_e); ps = np.zeros(n_e); fidget = np.zeros((n_e, 3))
+    setup = t_e < 4000
+    fidget[setup] = np.cumsum(0.02 * rng.standard_normal((setup.sum(), 3)), axis=0)
+    curls = (t_e >= 7000) & (t_e < 25000)
+    ph = (t_e[curls] - 7000) / 3000.0 * 2 * np.pi
+    flex[curls] = np.radians(60) * (1 - np.cos(ph))          # 0..120°
+    ps[curls] = np.radians(30) * np.sin(0.5 * ph)
+    ua_anat = qnorm(np.column_stack([np.ones(n_e), fidget]))
+    fa_rel = np.stack([qmul(_axis_angle([0, 0, 1], np.degrees(a)),
+                            _axis_angle([0, 1, 0], np.degrees(b)))
+                       for a, b in zip(flex, ps)])
+    fa_anat = qmul(ua_anat, fa_rel)
+    mnt = {"upper_arm_r": _axis_angle([1, 2, 3], 70.0),
+           "forearm_r": _axis_angle([3, -1, 2], 110.0)}
+    elbow_q = {}
+    for seg, qa in (("upper_arm_r", ua_anat), ("forearm_r", fa_anat)):
+        q_ws = qmul(to_world(qa), qconj(mnt[seg]))
+        noise = qnorm(np.column_stack([np.ones(n_e),
+                                       0.0003 * rng.standard_normal((n_e, 3))]))
+        elbow_q[seg] = qnorm(qmul(q_ws, noise))
+    # closing rest: dead still (quieter than the neutral hold's noise)
+    rest = t_e >= 27000
+    for seg in elbow_q:
+        elbow_q[seg][rest] = elbow_q[seg][rest][0]
+    placeholder = {"calibration": {"t_window_ms": [1000, 3000]}}
+    n0, n1, nmsg = choose_neutral_window(placeholder, t_e, elbow_q)
+    window_ok = 4000 <= n0 and n1 <= 7000 and "not still" in nmsg
+    print(f"[selftest] neutral finder: {n0:.0f}–{n1:.0f} ms (hold 4000–7000, "
+          f"placeholder over the fidget ignored: {'not still' in nmsg}) "
+          f"{'OK' if window_ok else 'FAIL'}")
+    meta_e = {s: {"column": f"n{i}", "node_id": f"E{i}"}
+              for i, s in enumerate(elbow_q)}
+    segs_e, _ = solve_calibration(t_e, elbow_q, meta_e, n0, n1)
+    hinge = estimate_facing_from_elbow(t_e, elbow_q, segs_e, n0, True)
+    dface = abs((hinge["facing_deg"] - face + 180) % 360 - 180)
+    # a session with no flexion must NOT claim a facing
+    flat_q = {s: q.copy() for s, q in elbow_q.items()}
+    flat_q["forearm_r"] = qnorm(qmul(to_world(ua_anat), qconj(mnt["forearm_r"])))
+    hinge_flat = estimate_facing_from_elbow(t_e, flat_q, segs_e, n0, True)
+    hinge_ok = hinge["confident"] and dface < 3.0 and not hinge_flat["confident"]
+    print(f"[selftest] facing from elbow hinge: faced {face:.0f}°, recovered "
+          f"{hinge['facing_deg']:.1f}° (contrast {hinge['cost_contrast']:.2f}); "
+          f"no-flexion session confident={hinge_flat['confident']} (want False) "
+          f"{'OK' if hinge_ok else 'FAIL'}")
+
+    # (9) Closing hold: the session ends with a still N-pose (27-30 s) — found,
+    #     and it bounds the analysis. If the last still stretch is in another
+    #     pose (the forearm node turned 80°, as when lying on the charger), it is
+    #     never taken: the closing hold falls back to the last still N-pose
+    #     BEFORE it (the arm settles in neutral at 25-27 s after the curls).
+    closing = find_closing_hold(t_e, elbow_q, segs_e, n1)
+    moved = {sg: q.copy() for sg, q in elbow_q.items()}
+    moved["forearm_r"][rest] = qmul(moved["forearm_r"][rest],
+                                    _axis_angle([1, 0, 0], 80.0))
+    closing_moved = find_closing_hold(t_e, moved, segs_e, n1)
+    end_ok = (closing is not None and closing["t_window_ms"][0] >= 25000
+              and (closing_moved is None
+                   or closing_moved["t_window_ms"][1] <= 27000)
+              and analysis_end_ms({"closing": closing}, t_e, elbow_q)
+              == closing["t_window_ms"][1])
+    print(f"[selftest] closing hold: found "
+          f"{closing['t_window_ms'] if closing else None} (want within the 27–30 s "
+          f"rest), other-pose ending -> "
+          f"{closing_moved['t_window_ms'] if closing_moved else None} (want "
+          f"before 27 s) "
+          f"{'OK' if end_ok else 'FAIL'}")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
+          and window_ok and hinge_ok and end_ok
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]
@@ -928,7 +1336,8 @@ def selftest():
           and heading_ok and guards_ok and frame_ok)
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} "
           f"(offset recovery, heading-independent reuse, slip detection, "
-          f"still-window search, facing recovery + guards, anatomical frame)")
+          f"still-window search, neutral + closing hold finders, facing recovery + guards "
+          f"(torso and elbow hinge), anatomical frame)")
     return 0 if ok else 1
 
 

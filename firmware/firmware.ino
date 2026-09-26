@@ -112,7 +112,7 @@
 //                        one-shot. Lowest idle (~7.4mA, no self-reset) but only
 //                        fires on energetic motion (shake/pickup), NOT slow
 //                        held-limb stretches. Motion = event fires.
-//   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, writes gated to 0.2Hz
+//   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, every RV report logged (~1Hz)
 //   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
 //
 // Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
@@ -300,14 +300,28 @@
 // =============================================================================
 
 #define DEFAULT_ACTIVE_HZ           10
-#define STATIC_SAMPLE_INTERVAL_MS   5000
+// STATIC logs every ~1 Hz RV report (was one per 5 s). A torso node spends
+// most of an arm session in STATIC, and every shoulder angle is measured
+// against it: at 5 s the slow trunk drift between samples was lost (shoulder
+// axial rotation 6.3° -> 1.9° RMS, elevation 5.1° -> 2.5° in
+// tools/timing_bench.py). The RV already runs at 1 Hz here, so the change adds
+// only the flash writes: +16 B/s while STATIC, ~+3.5% of a torso+arm session.
+#define STATIC_SAMPLE_INTERVAL_MS   1000
+// A report that lands a few ms early must not be skipped (which would double
+// the spacing to ~2 s): a sample is due once the interval minus this slack
+// has passed. Kept well under the interval so it never logs two per period.
+#define STATIC_SAMPLE_SLACK_MS      250
+// ACTIVE: a report may take its slot up to period/ACTIVE_SAMPLE_SLACK_DIV early
+// (25 ms at 10 Hz). ACTIVE also schedules slots (see handleActiveRecording) so
+// the average rate is exactly activeHz, not just "at least one period apart".
+#define ACTIVE_SAMPLE_SLACK_DIV     4
 // RV report interval, matched to the ACTIVE log period (1000/DEFAULT_ACTIVE_HZ
 // = 100ms) so the BNO doesn't fuse and ship samples we'd only discard. Tier A;
 // rationale and the STATIC-specific follow-up are in firmware/POWER_OPTIMIZATION.md.
 #define BNO_RV_INTERVAL_MS          100
-// STATIC-specific (slow) RV interval — Tier B. STATIC only snapshots posture at
-// 0.2Hz, so running the fusion vector slow saves the wasted reads the 10Hz rate
-// would discard. The Classifier stays at ACTIVE_STABILITY_MS, so motion
+// STATIC-specific (slow) RV interval — Tier B. STATIC logs posture at ~1 Hz
+// (STATIC_SAMPLE_INTERVAL_MS), so running the fusion vector at that same slow
+// rate saves the reads the 10Hz rate would discard. The Classifier stays at ACTIVE_STABILITY_MS, so motion
 // detection is unaffected. See firmware/POWER_OPTIMIZATION.md.
 #define BNO_RV_STATIC_INTERVAL_MS   1000
 #define ACTIVE_STABILITY_MS         500
@@ -514,7 +528,8 @@ alignas(4) uint8_t pktBuf[20];     // Shared record packing buffer
 // ── Timers ──
 uint32_t     lastMotionTime      = 0;
 uint32_t     onTableStartTime    = 0;
-uint32_t     lastActiveSample    = 0;
+uint32_t     lastActiveSample    = 0;   // start of the current ACTIVE sample
+                                        // slot (0 = resync on the next report)
 uint32_t     lastStaticSample    = 0;
 uint8_t      lastLoggedStability = 255;
 
@@ -1630,7 +1645,8 @@ void handleStaticPosture() {
     uint32_t now = millis();
 
     if (id == FUSION_REPORT_ID) {
-      bool timeToSample = (now - lastStaticSample >= STATIC_SAMPLE_INTERVAL_MS);
+      bool timeToSample = (now - lastStaticSample + STATIC_SAMPLE_SLACK_MS
+                           >= STATIC_SAMPLE_INTERVAL_MS);
       if (timeToSample) {
         writeQuaternionSample(
           fusionQuatI(), fusionQuatJ(),
@@ -1702,13 +1718,32 @@ void handleActiveRecording() {
     uint32_t now = millis();
 
     if (id == FUSION_REPORT_ID) {
-      bool timeToSample = (now - lastActiveSample >= (1000u / activeHz));
+      // Scheduled slots, not "time since the last write": each write advances
+      // the slot by exactly one period, so the logged rate averages activeHz
+      // however the BNO's report times fall. With a plain "now - last >=
+      // period" gate, reports at a cadence that doesn't divide the period (a
+      // ~60 ms stream vs 100 ms gives 120 ms spacing, 8.3 Hz) or that land a
+      // ms early (skipped -> 200 ms gap) both log below activeHz. The slack
+      // lets a slightly early report take its slot.
+      // Signed: after an early write the next slot can lie a few ms ahead.
+      // lastActiveSample == 0 is the "resync" marker the transitions set; it
+      // is handled explicitly, because once millis() passes 2^31 (~24.8 days)
+      // a signed now - 0 reads negative and would never be due.
+      int32_t period = 1000 / (int32_t)activeHz;
+      bool resync = (lastActiveSample == 0);
+      int32_t sinceSlot = (int32_t)(now - lastActiveSample);
+      bool timeToSample = resync ||
+                          (sinceSlot + period / ACTIVE_SAMPLE_SLACK_DIV >= period);
       if (timeToSample) {
         writeQuaternionSample(
           fusionQuatI(), fusionQuatJ(),
           fusionQuatK(), fusionQuatReal()
         );
-        lastActiveSample = now;
+        lastActiveSample += (uint32_t)period;
+        // first sample, or fell behind (a pause in reports, a rate change):
+        // restart the schedule at this sample instead of bursting to catch up
+        if (resync || (int32_t)(now - lastActiveSample) >= period)
+          lastActiveSample = now;
       }
     }
 

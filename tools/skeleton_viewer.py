@@ -113,7 +113,9 @@ from calibrate_segments import (  # noqa: E402
     load_aligned, load_montage, qmul, qnorm, _q_list,
 )
 from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
-from metrics import resolve_anatomical_frame  # noqa: E402
+from metrics import (  # noqa: E402
+    resolve_anatomical_frame, trim_to_analysis, joint_frame_deg,
+)
 from reconcile_nodes import quality_path  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
@@ -166,7 +168,7 @@ def _anat_chain():
 
 
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
-                metrics=None, quality=None):
+                metrics=None, quality=None, trim=True):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
@@ -180,8 +182,13 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
 
     `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
     confidence, shown as a header chip and per-card warnings.
+
+    With `trim` (default) playback starts at the neutral hold — the setup before
+    it is not protocol, and metrics.py drops it the same way.
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
+    if trim:
+        t_ms, seg_quats, _ = trim_to_analysis(t_ms, seg_quats, calibration)
     n = len(t_ms)
     stride = _stride_for(n, max_frames)
     keep = slice(0, n, stride)
@@ -268,6 +275,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
         # with the same body model (and conventions) as metrics.py
         "joint_defs": {k: {"proximal": j.proximal, "distal": j.distal,
                            "seq": j.decomposition.split()[0],
+                           "frame_y_deg": joint_frame_deg(j),
                            "dofs": [{"key": d.key, "seq_index": d.seq_index}
                                     for d in j.dofs]}
                        for k, j in JOINTS.items()},
@@ -1108,7 +1116,9 @@ function liveAngles(jk){
 function jointAngles(J, qp, qd, qwa){
   let q=qmul(qconj(qp),qd);
   if(qwa){
-    q=qmul(qmul(qconj(qwa),q),qwa);
+    // the joint's own neutral frame (the wrist turns with the palms-in forearm)
+    const h=(J.frame_y_deg||0)*D2R/2, f=qmul(qwa,[Math.cos(h),0,Math.sin(h),0]);
+    q=qmul(qmul(qconj(f),q),f);
     if(J.distal.endsWith('_l')) q=[q[0],-q[1],-q[2],q[3]];
   }
   const R=rotm(q), cl=v=>Math.max(-1,Math.min(1,v));
@@ -1482,9 +1492,13 @@ if(!DATA.meta.has_calibration){
 const FACING=FRONT_KNOWN
   ? (HEADING.source==='manual'
       ? `Front direction entered by hand (${FACE_DEG.toFixed(0)}° from north).`
-      : `Front direction found from the chest sensor (${FACE_DEG.toFixed(0)}° from north).`)
+      : HEADING.source==='elbow_hinge'
+        ? `Front direction found from how the elbow bends (${FACE_DEG.toFixed(0)}° from north).`
+        : `Front direction found from the chest sensor (${FACE_DEG.toFixed(0)}° from north).`)
   : HEADING.source==='torso_auto'
     ? 'The chest sensor could not tell which way the person faced, so the FRONT arrow is a guess.'
+    : HEADING.source==='elbow_hinge'
+    ? 'The elbow did not bend enough to tell which way the person faced, so the FRONT arrow is a guess.'
     : 'No chest sensor, so the FRONT arrow is a guess. Enter the facing at calibration to fix this.';
 const labelsBtn=document.getElementById('labels');
 labelsBtn.addEventListener('click',()=>{

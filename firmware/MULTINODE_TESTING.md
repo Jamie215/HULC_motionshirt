@@ -147,8 +147,9 @@ than falsely showing `log=0KB`.
 ## Offline reconciliation (`tools/reconcile_nodes.py`)
 
 Aligns the offloaded per-node quaternion logs onto one common timeline by
-cross-correlating the motion itself (angular speed), so it recovers the clock
-offset from the data — no dependence on BLE read latency. This is the
+cross-correlating the motion itself (world-frame angular-velocity vectors by
+default, `--sync speed` for the older angular-speed method), so it recovers the
+clock offset from the data — no dependence on BLE read latency. This is the
 production sync path (see `MULTINODE_SYNC_DESIGN.md`).
 
 ```bash

@@ -37,7 +37,7 @@ These three facts drive everything below.
 
 **Decision: separate "which node is where" (config) from "how the sensor sits on
 the bone" (calibration).** They have different lifetimes (config is stable across
-wears if sensors live in fixed garment pockets; calibration is per-don), so they
+wears if sensors live in fixed garment pockets; calibration is per-mounting), so they
 are different artifacts, not one step.
 
 ### 2.1 Persist the segment assignment on the node
@@ -122,14 +122,16 @@ must not be conflated:
 - **Mounting calibration survives a power cycle** (it is a physical relationship,
   not a clock) and is broken only by physically re-wearing the garment — so it
   *can* be cached and verified.
-- A charge-then-rewear trips **both**, for different reasons (the power cycle
-  resets clocks; the re-don shifts straps). That coincidence is why bundling them
-  into one session-start step is convenient — not extra burden, since the
-  session-start moment already exists for timing.
+- A charge-then-rewear trips **both**. The re-mount shifts straps; and although
+  the nodes stay powered on their battery while charging (so the clocks keep
+  running), each charge is also the offload-and-erase point, so every **block**
+  starts a fresh log that is reconciled on its own. That coincidence is why
+  bundling them into one block-start step (neutral hold + sync gesture) is
+  convenient — not extra burden, since the moment already exists for timing.
+  A node that *did* reboot mid-log is caught by reconcile's clock-restart check.
 
-**Correction this supersedes:** the sync gesture is per-*session*, not
-once-forever. "Once at the beginning" means the beginning of each wear/session,
-because power-up resets the clocks.
+**Correction this supersedes:** the sync gesture is per-*block* (one mounting,
+one offload), not once-forever. See `COLLECTION_SOP.md` §3b.
 
 ---
 
@@ -141,6 +143,21 @@ because power-up resets the clocks.
 > consistency baseline. `verify` runs the reuse-vs-re-pose check below against a
 > cached calibration. Anatomy (segments, joint adjacency) is imported from
 > `motion_capabilities.py` so there is one body model.
+>
+> **Since built on top:**
+> - **Neutral window precedence** — `--window` › the montage's
+>   `calibration.t_window_ms` *only if the data there is still* › auto-detect
+>   (the first still stretch, quietest window inside it). A placeholder window
+>   in the montage can no longer silently calibrate on motion.
+> - **Facing sources** — torso node heading › elbow hinge axis (the facing
+>   that makes elbow motion a pure hinge; needs ≥30° of flexion in the
+>   recording) › `--facing-deg` › none (joints relative-only).
+> - **Closing hold** — the last still, neutral-matching window ≥5 s after the
+>   opening one is stored as the `closing` block (with its slip deviations) and
+>   ends the metrics analysis window. The SOP makes it required
+>   (`COLLECTION_SOP.md`).
+> - **Blocks** — nodes come off to charge between blocks, which ends the
+>   mounting: each block re-poses, so each block gets its own calibration.
 
 **In plain terms.** A sensor is like a compass strapped to the arm at some unknown
 angle: it always reports honestly in a fixed world frame (gravity + magnetic
@@ -298,7 +315,9 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    ahead of render so the stage-7 review can bake the metrics panel.
    The remaining declared metrics now ship alongside ROM in the same tool: joint
    angular **velocity** (peak/mean/RMS) and **rep counting** (hysteretic midline
-   crossings, calibration-free); segment **angular travel** + active-time
+   crossings, calibration-free — since replaced by zig-zag rep **bouts**, and
+   joined by per-DOF **plausibility** flags and the opening→closing-hold
+   analysis window; see `METRICS.md`); segment **angular travel** + active-time
    fraction, **elevation** from vertical, **smoothness** (SPARC spectral arc
    length), and a **posture-dwell** histogram (calibration-gated); and the full
    **derived** tier the resolver unlocks — L/R ROM **symmetry**, bilateral
@@ -322,4 +341,6 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    render (steps 4/5 → 5/5) and passes it in, so one command produces the whole
    review. *(Live per-frame angle read-out — a scrubber-linked value under each
    DOF — is a natural follow-up; it needs the per-frame series added to the baked
-   payload, whereas today the panel carries session summaries only.)*
+   payload, whereas today the panel carries session summaries only.)* —
+   since done: a corner panel reads every joint's live angles, and clicking a
+   movement graphs it over time with a synced playhead (§5).

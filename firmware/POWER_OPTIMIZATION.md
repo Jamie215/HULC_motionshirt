@@ -82,7 +82,8 @@ machine's logic; each is commented at its site.
    hold). **The Classifier is untouched — it keeps running at
    `ACTIVE_STABILITY_MS` (500 ms) in both RUNNING states, so it (not the RV)
    still drives every transition and motion detection out of STATIC is
-   unchanged.** No change to the recorded data format or the 0.2 Hz log rate.
+   unchanged.** No change to the recorded data format. (The STATIC log rate
+   was 0.2 Hz at the time; item 9 raised it to match this ~1 Hz RV.)
 
    Structural notes (this was the "needs careful validation" backlog item):
    - The old `bnoInRunningMode` bool couldn't tell an ACTIVE↔STATIC switch (rate
@@ -136,6 +137,42 @@ machine's logic; each is commented at its site.
    ~0.2 mA idle trim, with the ~6.7 s self-reset cadence and slow-motion
    sensitivity both unchanged. `handleIdle()` logs ms-since-last-reset as a field
    diagnostic of that cadence.
+
+9. **STATIC logs every RV report (~1 Hz, was 0.2 Hz).**
+   `STATIC_SAMPLE_INTERVAL_MS` 5000 → 1000, with a 250 ms slack
+   (`STATIC_SAMPLE_SLACK_MS`) so a report arriving a few ms early is not
+   skipped. Motivation is data quality, not power: a torso node spends most of
+   an arm session in STATIC (the trunk is still while the arm works), and every
+   shoulder angle is measured against it, so 5 s between torso samples lost the
+   slow trunk drift in between. `tools/timing_bench.py` (6 seeds, firmware
+   schedule model) on torso + upper arm: shoulder axial rotation 6.3° → 1.9°
+   RMS, elevation 5.1° → 2.5°, plane of elevation 9.5° → 5.9°; arm-only
+   montages unchanged. **Cost:** the RV already runs at ~1 Hz in STATIC (Tier
+   B), so no extra BNO work or nRF wakes — only 4 more 20-byte flash writes per
+   5 s while STATIC: +16 B/s in STATIC, ~+14% of a torso node's log and ~+3.5%
+   of a torso + arm session. Write energy is expected to be a small fraction of
+   a percent of the ~9 mA STATIC draw (page program of a few ms at ~10–15 mA,
+   datasheet-typical) — **not yet bench-measured.**
+
+10. **ACTIVE logs at exactly `activeHz` (scheduled slots + slack).** The old
+   gate, `now - lastActiveSample >= 1000/activeHz` with `lastActiveSample =
+   now`, logs *below* the configured rate whenever the RV report times don't
+   line up with the period: a report landing a few ms early is skipped (the
+   gap doubles), and a report stream whose cadence doesn't divide the period
+   keeps only a subset. Simulated against the old and new gate at 10 Hz:
+   100 ms ± 3 ms jitter → old **6.9 Hz**; a ~60 ms stream → old **8.3 Hz** (120
+   ms spacing — exactly what a real capture showed, most likely from the older
+   65 ms RV setting of item 3); 65 ms → 7.7 Hz. The new gate advances a
+   schedule by exactly one period per write, lets a report take its slot up to
+   period/4 early (`ACTIVE_SAMPLE_SLACK_DIV`), and restarts the schedule (no
+   catch-up burst) after falling a period behind — 10.00 Hz in every case, the
+   watermark throttle (10→5→2 Hz) and the `millis()` rollover included.
+   **Storage/battery:** this brings ACTIVE up to the rate it was designed for,
+   so it logs more than recent firmware actually did — up to ~+20% (from 8.3
+   Hz) or ~+44% (from 6.9 Hz) of ACTIVE records, and a matching share of flash
+   writes. If the storage budget was sized on the observed rate, lower
+   `DEFAULT_ACTIVE_HZ` instead of keeping the lossy gate. **Not yet
+   bench-measured on hardware.**
 
 ## Backlog — worth exploring
 
