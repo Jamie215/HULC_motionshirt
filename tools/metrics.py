@@ -89,7 +89,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import JOINTS, resolve  # noqa: E402
 from calibrate_segments import (  # noqa: E402
     qmul, qconj, qnorm, load_aligned, load_montage, anatomical_frame_quat,
-    build_anatomical_frame, analysis_start_ms,
+    build_anatomical_frame, analysis_start_ms, analysis_end_ms,
 )
 
 SCHEMA_VERSION = "1.0"
@@ -874,17 +874,24 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
 # Top-level assembly
 # ---------------------------------------------------------------------------
 def trim_to_analysis(t_ms, seg_quats, calibration):
-    """Drop the samples before the neutral hold (setup, not protocol).
+    """Keep only the protocol: from the opening neutral hold to the closing one.
 
-    Returns (t_ms, seg_quats, start_ms or None). Leaves the stream untouched
-    when there is no calibration window, when the window is not this
-    recording's own still neutral hold (a reused calibration), or when too
-    little would be left. `seg_quats` must be the RAW stream (the stillness
-    check is mounting-invariant, so raw or calibrated both work)."""
+    Before the opening hold is setup (strapping on, warm-up); after the closing
+    hold the nodes are usually taken off and carried to the charger. Returns
+    (t_ms, seg_quats, start_ms or None). Each end is only cut when the
+    calibration's window for it is this recording's own still hold (a
+    calibration reused from another session cuts nothing), and nothing is cut
+    if too little would be left. `seg_quats` must be the RAW stream (the
+    stillness check is mounting-invariant, so raw or calibrated both work)."""
     t0 = analysis_start_ms(calibration, t_ms, seg_quats)
-    if t0 is None or t0 <= t_ms[0]:
-        return t_ms, seg_quats, None
-    keep = t_ms >= t0
+    t1 = analysis_end_ms(calibration, t_ms, seg_quats)
+    keep = np.ones(len(t_ms), dtype=bool)
+    if t0 is not None and t0 > t_ms[0]:
+        keep &= t_ms >= t0
+    else:
+        t0 = None
+    if t1 is not None and t1 < t_ms[-1]:
+        keep &= t_ms <= t1
     if keep.sum() < 3:
         return t_ms, seg_quats, None
     return t_ms[keep], {s: q[keep] for s, q in seg_quats.items()}, t0
@@ -895,8 +902,9 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
 
     With `trim` (default) the analysis starts at the neutral hold, so setup
     motion before the protocol never enters the ROM / rep / activity numbers."""
-    t_full0 = float(t_ms[0])
+    t_full0, t_full1 = float(t_ms[0]), float(t_ms[-1])
     start = None
+    has_closing = bool((calibration or {}).get("closing", {}).get("t_window_ms"))
     if trim:
         t_ms, seg_quats, start = trim_to_analysis(t_ms, seg_quats, calibration)
     q_seg, calibrated = apply_calibration(seg_quats, calibration)
@@ -968,6 +976,8 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
         "analysis_window_ms": [round(float(t_ms[0]), 1), round(float(t_ms[-1]), 1)],
         "trimmed_before_neutral_s": (round((start - t_full0) / 1000.0, 2)
                                      if start is not None else 0.0),
+        "trimmed_after_closing_s": round((t_full1 - float(t_ms[-1])) / 1000.0, 2),
+        "closing_hold_found": has_closing,
         "joints": joints_out,
         "blocked_joints": blocked_out,
         "segments": segments_out,
@@ -992,6 +1002,13 @@ def print_report(rep):
         print(f"  analysis starts at the neutral hold "
               f"({rep['analysis_window_ms'][0]:.0f} ms) — dropped "
               f"{rep['trimmed_before_neutral_s']:.1f} s of pre-protocol setup")
+    if rep.get("trimmed_after_closing_s"):
+        print(f"  analysis ends at the closing hold "
+              f"({rep['analysis_window_ms'][1]:.0f} ms) — dropped "
+              f"{rep['trimmed_after_closing_s']:.1f} s after it (nodes taken off)")
+    elif rep["calibration_used"] and not rep.get("closing_hold_found"):
+        print("  ! no closing hold found — analysis runs to the end of the log, "
+              "which may include taking the nodes off")
     if rep["calibration_used"] and not rep.get("anatomical_axes"):
         print("  ! anatomical axes unknown (no confident facing) — joint angles "
               "are RELATIVE-only")

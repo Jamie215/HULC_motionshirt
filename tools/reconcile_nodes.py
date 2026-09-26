@@ -76,6 +76,9 @@ RECORD_SIZE = RECORD.size          # 20
 # spanning ~4.29e9 ms (hundreds of millions of samples) and the tool hangs. So
 # every log is sanitized on load.
 _ERASED_TS = 0xFFFFFFFF
+# A timestamp this far BELOW the previous one is a clock restart (reboot), not
+# a stray junk record.
+CLOCK_RESET_MS = 1000
 _RECORD_DT = np.dtype([("t", "<u4"), ("w", "<f4"), ("x", "<f4"),
                        ("y", "<f4"), ("z", "<f4")])
 
@@ -133,16 +136,41 @@ def load_log(path: str, stats=None):
     finite = np.isfinite(q).all(axis=1)
     nonzero = np.linalg.norm(q, axis=1) > 1e-6
     valid = finite & nonzero & (arr["t"] != _ERASED_TS)
-    # Keep only strictly-increasing timestamps (drops backward jumps / dupes).
+    # Clock restarts: a node that rebooted (e.g. its battery died and it was
+    # recharged before the log was offloaded) restarts millis() at 0, so its
+    # timestamps jump far backwards and a second, independent clock begins.
+    # The monotonic filter below would silently drop everything after such a
+    # jump. Split at restarts instead, keep the clock segment with the most
+    # samples, and say so loudly: the pieces cannot share one timeline.
+    vidx = np.flatnonzero(valid)
     tv = t[valid]
+    other_clock = 0
+    resets = np.flatnonzero(np.diff(tv) < -CLOCK_RESET_MS) + 1 if len(tv) else []
+    if len(resets):
+        bounds = np.concatenate(([0], resets, [len(tv)]))
+        sizes = np.diff(bounds)
+        k = int(np.argmax(sizes))
+        print(f"[warn] {path}: the node's clock restarted {len(resets)} time(s) "
+              f"(a reboot — battery died?). Clock segments hold "
+              f"{', '.join(str(int(n)) for n in sizes)} samples; keeping segment "
+              f"{k + 1} ({int(sizes[k])} samples). The others are on a different "
+              f"clock and are NOT analyzed — offload at every charge to avoid "
+              f"this, or split the log.")
+        other_clock = int(len(tv) - sizes[k])
+        vidx = vidx[bounds[k]:bounds[k + 1]]
+        tv = tv[bounds[k]:bounds[k + 1]]
+        if stats is not None:
+            stats["clock_restarts"] = int(len(resets))
+            stats["clock_segment_samples"] = [int(n) for n in sizes]
+    # Keep only strictly-increasing timestamps (drops backward jumps / dupes).
     if len(tv):
         rising = np.concatenate(([True], np.maximum.accumulate(tv)[1:]
                                  > np.maximum.accumulate(tv)[:-1]))
-        idx = np.flatnonzero(valid)[rising]
+        idx = vidx[rising]
     else:
         idx = np.array([], dtype=np.int64)
 
-    dropped = n - len(idx)
+    dropped = n - len(idx) - other_clock      # clock-restart pieces reported above
     if stats is not None:
         stats.update(n_records=int(n), n_valid=int(len(idx)))
     if dropped:
@@ -645,6 +673,7 @@ def align_and_emit(paths, out_csv, fs=None, offsets=None, sync_method="vector"):
             nodes.append({"column": f"n{i}", "log": os.path.basename(p), **sy,
                           "n_records": st.get("n_records"),
                           "n_valid": st.get("n_valid"),
+                          "clock_restarts": st.get("clock_restarts", 0),
                           **gap_stats(tm, lo, hi)})
         qual = {"schema_version": "1.0", "confidence_min": CONFIDENCE_MIN,
                 "overlap_ms": round(float(hi - lo), 1),
@@ -808,6 +837,25 @@ def selftest() -> int:
           f"sync error {abs(es['offset_ms'] + 2500.0):.0f} ms "
           f"{'OK' if vec_ok and ev['offset_reliable'] else 'FAIL'}")
 
+    # Clock restart: a log whose timestamps restart at ~0 midway (a reboot)
+    # must not silently lose the later part — split, keep the larger clock
+    # segment, and count the restart.
+    import tempfile
+    tmpd = tempfile.mkdtemp(prefix="hulc_reset_")
+    pth = os.path.join(tmpd, "reset.bin")
+    t_before = np.arange(50000, 60000, 100)             # 100 samples
+    t_after = np.arange(200, 25200, 100)                # 250 samples, new clock
+    with open(pth, "wb") as f:
+        for tt_ in np.concatenate([t_before, t_after]):
+            f.write(RECORD.pack(int(tt_), 1.0, 0.0, 0.0, 0.0))
+    st_r = {}
+    tr_, _ = load_log(pth, st_r)
+    reset_ok = (st_r.get("clock_restarts") == 1 and len(tr_) == 250
+                and tr_[0] == 200)
+    print(f"[selftest] clock restart mid-log: kept {len(tr_)} samples from the "
+          f"larger clock segment, restarts={st_r.get('clock_restarts')} "
+          f"{'OK' if reset_ok else 'FAIL'}")
+
     # Deliverable: recovered offset matches truth AND every aligned sample lands
     # within the design target (25-50 ms); AND shared motion reads reliable while
     # independent motion is correctly flagged unreliable.
@@ -823,10 +871,10 @@ def selftest() -> int:
           f"{'OK' if gaps_ok else 'FAIL'}")
     ok = (off_err < tol_ms and mean_err < tol_ms
           and est["offset_reliable"] and not est_ind["offset_reliable"]
-          and gaps_ok and vec_ok and ev["offset_reliable"])
+          and gaps_ok and vec_ok and ev["offset_reliable"] and reset_ok)
     print(f"[selftest] {'PASS' if ok else 'FAIL'} "
           f"(alignment < {tol_ms:.0f} ms; confidence gate correct; vector sync on "
-          f"a torso-style gesture; gap summary)")
+          f"a torso-style gesture; gap summary; clock-restart split)")
     return 0 if ok else 1
 
 

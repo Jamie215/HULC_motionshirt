@@ -155,6 +155,13 @@ NEUTRAL_MAX_RAD_S = 0.10
 # The elbow must flex at least this far (95th percentile) for its hinge axis to
 # be observable, and the best facing's varus/valgus RMS must be at most this
 # fraction of the median over all facings (a clear minimum, not a flat cost).
+# ---- closing hold (the end of the protocol) --------------------------------
+# The last still window at least CLOSING_MIN_GAP_MS after the opening hold whose
+# pose matches it within CLOSING_POSE_DEG (each node's gravity direction and each
+# adjacent pair's relative rotation) closes the analysis window.
+CLOSING_MIN_GAP_MS = 5000.0
+CLOSING_POSE_DEG = 10.0
+
 HINGE_MIN_FLEX_DEG = 30.0
 HINGE_MAX_COST_RATIO = 0.75
 
@@ -393,6 +400,89 @@ def analysis_start_ms(calibration, t_ms=None, seg_quats=None):
         if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
             return None
     return t0
+
+
+def _pose_deviation(t_ms, seg_quats, segments, t0, t1):
+    """How far the pose in [t0, t1] is from the calibration's neutral pose.
+
+    Heading-independent, like `verify`: per segment, the angle between where
+    gravity points in the SENSOR frame now vs at neutral; per adjacent pair, the
+    angle of their relative rotation now vs at neutral. Returns
+    (max_segment_deg, max_pair_deg), or None if the window holds < 2 samples."""
+    m = window_mask(t_ms, t0, t1)
+    if m.sum() < 2:
+        return None
+    now = {seg: quat_average(q[m]) for seg, q in seg_quats.items()}
+    seg_dev = 0.0
+    for seg, qn in now.items():
+        ref = segments.get(seg, {}).get("neutral_mean_quat")
+        if ref is None:
+            continue
+        g_ref = qrotate(qconj(np.asarray(ref, float)), WORLD_UP)
+        g_now = qrotate(qconj(qn), WORLD_UP)
+        c = np.clip(np.dot(g_ref, g_now) / (np.linalg.norm(g_ref) * np.linalg.norm(g_now)),
+                    -1.0, 1.0)
+        seg_dev = max(seg_dev, float(np.degrees(np.arccos(c))))
+    pair_dev = 0.0
+    for prox, dist in _adjacent_pairs(now).values():
+        ra, rb = segments.get(prox), segments.get(dist)
+        if not ra or not rb:
+            continue
+        rel_ref = qmul(qconj(np.asarray(ra["neutral_mean_quat"], float)),
+                       np.asarray(rb["neutral_mean_quat"], float))
+        rel_now = qmul(qconj(now[prox]), now[dist])
+        pair_dev = max(pair_dev, float(np.degrees(angle_between_quats(rel_ref, rel_now))))
+    return seg_dev, pair_dev
+
+
+def find_closing_hold(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS):
+    """The protocol's CLOSING hold: the last still window, at least
+    CLOSING_MIN_GAP_MS after the opening hold, in the same pose as it.
+
+    It marks where the recording stops being protocol: after it the nodes are
+    usually taken off and carried to the charger, and that handling motion is
+    logged like any other. Rests in other poses (elbow bent, arm raised) fail
+    the pose test; a mid-session N-pose rest passes, so the LAST match wins.
+    Returns a dict (t_window_ms, stillness, deviations) or None."""
+    if len(t_ms) < 3 or t_ms[-1] - after_ms < win_ms + CLOSING_MIN_GAP_MS:
+        return None
+    starts, mean = _window_means(t_ms, seg_quats, win_ms)
+    ok = (mean <= NEUTRAL_MAX_RAD_S) & (starts >= after_ms + CLOSING_MIN_GAP_MS)
+    if not ok.any():
+        return None
+    # candidate still stretches, latest first; test each stretch's quietest window
+    idx = np.flatnonzero(ok)
+    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+    for run in reversed(runs):
+        k = run[int(np.argmin(mean[run]))]
+        t0 = float(starts[k]); t1 = t0 + win_ms
+        dev = _pose_deviation(t_ms, seg_quats, segments, t0, t1)
+        if dev is None:
+            continue
+        seg_dev, pair_dev = dev
+        if seg_dev <= CLOSING_POSE_DEG and pair_dev <= CLOSING_POSE_DEG:
+            return {"t_window_ms": [round(t0, 1), round(t1, 1)],
+                    "stillness_rad_s": round(float(mean[k]), 4),
+                    "segment_gravity_dev_deg": round(seg_dev, 2),
+                    "pair_rel_dev_deg": round(pair_dev, 2)}
+    return None
+
+
+def analysis_end_ms(calibration, t_ms=None, seg_quats=None):
+    """Where analysis should end: the end of the closing hold, or None (keep to
+    the end of the log). Same ownership test as analysis_start_ms: the window
+    must lie in THIS recording and be still in its data."""
+    cw = (calibration or {}).get("closing", {}).get("t_window_ms")
+    if not cw or len(cw) != 2:
+        return None
+    t0, t1 = float(cw[0]), float(cw[1])
+    if t_ms is not None and seg_quats is not None:
+        if t0 < t_ms[0] or t1 > t_ms[-1]:
+            return None
+        s = window_stillness(t_ms, seg_quats, t0, t1)
+        if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
+            return None
+    return t1
 
 
 def window_stillness(t_ms, seg_quats, t0, t1):
@@ -679,6 +769,7 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
     stillness = window_stillness(t_ms, seg_quats, t0, t1)
     segments, pairs = solve_calibration(t_ms, seg_quats, seg_meta, t0, t1, targets)
     still_ok = bool(stillness <= STILL_MAX_RAD_S)
+    closing = find_closing_hold(t_ms, seg_quats, segments, t1)
     heading = compute_heading(segments, still_ok, facing_deg)
     if heading["source"] == "none":
         # no torso, no stated facing: read it off the elbow's hinge motion
@@ -702,6 +793,13 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
             "segment_gravity_deg": DEFAULT_SEG_GRAVITY_DEG,
             "pair_angle_deg": DEFAULT_PAIR_ANGLE_DEG,
         },
+        # end of the protocol: analysis stops here (see find_closing_hold)
+        "closing": (closing if closing else
+                    {"t_window_ms": None,
+                     "note": "no closing hold found (a still stretch in the "
+                             "neutral pose after the task) — analysis runs to "
+                             "the end of the log, which may include taking the "
+                             "nodes off"}),
         "heading": heading,
         "anatomical_frame": build_anatomical_frame(heading),
         "segments": segments,
@@ -815,6 +913,14 @@ def print_calibrate_report(cal):
     if not n["still_ok"]:
         print("  ! the pose window was not still — offsets may be biased; "
               "re-capture a quiet ~2 s neutral pose.")
+    c = cal.get("closing") or {}
+    if c.get("t_window_ms"):
+        print(f"  closing hold:   {c['t_window_ms'][0]:.0f}–{c['t_window_ms'][1]:.0f} ms "
+              f"(pose within {max(c['segment_gravity_dev_deg'], c['pair_rel_dev_deg']):.1f}° "
+              f"of neutral) — analysis ends here")
+    else:
+        print("  ! no closing hold found — analysis runs to the end of the log "
+              "(may include taking the nodes off); end each take with the N-pose")
     print(f"\nSEGMENT mounting offsets ({len(cal['segments'])})")
     for seg, s in cal["segments"].items():
         flag = "" if s["pose_residual_deg"] < 3.0 else "  ! noisy pose"
@@ -1177,8 +1283,30 @@ def selftest():
           f"no-flexion session confident={hinge_flat['confident']} (want False) "
           f"{'OK' if hinge_ok else 'FAIL'}")
 
+    # (9) Closing hold: the session ends with a still N-pose (27-30 s) — found,
+    #     and it bounds the analysis. If the last still stretch is in another
+    #     pose (the forearm node turned 80°, as when lying on the charger), it is
+    #     never taken: the closing hold falls back to the last still N-pose
+    #     BEFORE it (the arm settles in neutral at 25-27 s after the curls).
+    closing = find_closing_hold(t_e, elbow_q, segs_e, n1)
+    moved = {sg: q.copy() for sg, q in elbow_q.items()}
+    moved["forearm_r"][rest] = qmul(moved["forearm_r"][rest],
+                                    _axis_angle([1, 0, 0], 80.0))
+    closing_moved = find_closing_hold(t_e, moved, segs_e, n1)
+    end_ok = (closing is not None and closing["t_window_ms"][0] >= 25000
+              and (closing_moved is None
+                   or closing_moved["t_window_ms"][1] <= 27000)
+              and analysis_end_ms({"closing": closing}, t_e, elbow_q)
+              == closing["t_window_ms"][1])
+    print(f"[selftest] closing hold: found "
+          f"{closing['t_window_ms'] if closing else None} (want within the 27–30 s "
+          f"rest), other-pose ending -> "
+          f"{closing_moved['t_window_ms'] if closing_moved else None} (want "
+          f"before 27 s) "
+          f"{'OK' if end_ok else 'FAIL'}")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
-          and window_ok and hinge_ok
+          and window_ok and hinge_ok and end_ok
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]
@@ -1186,7 +1314,7 @@ def selftest():
           and heading_ok and guards_ok and frame_ok)
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} "
           f"(offset recovery, heading-independent reuse, slip detection, "
-          f"still-window search, neutral-hold finder, facing recovery + guards "
+          f"still-window search, neutral + closing hold finders, facing recovery + guards "
           f"(torso and elbow hinge), anatomical frame)")
     return 0 if ok else 1
 
