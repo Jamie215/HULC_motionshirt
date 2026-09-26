@@ -238,7 +238,7 @@ Every metric also declares its **quality inputs** — the trust gates a UI must
 surface alongside the value, never hide:
 
 - `dropout` — gaps in the aligned stream (a gap is not stillness; the firmware's
-  0.2 Hz STATIC_POSTURE heartbeat lets `stillness_confirmed` distinguish them).
+  ~1 Hz STATIC_POSTURE heartbeat lets `stillness_confirmed` distinguish them).
 - `sensor_cal` — the BNO's own calibration status.
 - `sync_confidence` — the Pearson `r` from `reconcile_nodes.py` (joint metrics
   combine two nodes, so a weak alignment weakens every joint number).

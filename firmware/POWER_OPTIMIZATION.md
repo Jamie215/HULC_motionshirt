@@ -82,7 +82,8 @@ machine's logic; each is commented at its site.
    hold). **The Classifier is untouched — it keeps running at
    `ACTIVE_STABILITY_MS` (500 ms) in both RUNNING states, so it (not the RV)
    still drives every transition and motion detection out of STATIC is
-   unchanged.** No change to the recorded data format or the 0.2 Hz log rate.
+   unchanged.** No change to the recorded data format. (The STATIC log rate
+   was 0.2 Hz at the time; item 9 raised it to match this ~1 Hz RV.)
 
    Structural notes (this was the "needs careful validation" backlog item):
    - The old `bnoInRunningMode` bool couldn't tell an ACTIVE↔STATIC switch (rate
@@ -136,6 +137,22 @@ machine's logic; each is commented at its site.
    ~0.2 mA idle trim, with the ~6.7 s self-reset cadence and slow-motion
    sensitivity both unchanged. `handleIdle()` logs ms-since-last-reset as a field
    diagnostic of that cadence.
+
+9. **STATIC logs every RV report (~1 Hz, was 0.2 Hz).**
+   `STATIC_SAMPLE_INTERVAL_MS` 5000 → 1000, with a 250 ms slack
+   (`STATIC_SAMPLE_SLACK_MS`) so a report arriving a few ms early is not
+   skipped. Motivation is data quality, not power: a torso node spends most of
+   an arm session in STATIC (the trunk is still while the arm works), and every
+   shoulder angle is measured against it, so 5 s between torso samples lost the
+   slow trunk drift in between. `tools/timing_bench.py` (6 seeds, firmware
+   schedule model) on torso + upper arm: shoulder axial rotation 6.3° → 1.9°
+   RMS, elevation 5.1° → 2.5°, plane of elevation 9.5° → 5.9°; arm-only
+   montages unchanged. **Cost:** the RV already runs at ~1 Hz in STATIC (Tier
+   B), so no extra BNO work or nRF wakes — only 4 more 20-byte flash writes per
+   5 s while STATIC: +16 B/s in STATIC, ~+14% of a torso node's log and ~+3.5%
+   of a torso + arm session. Write energy is expected to be a small fraction of
+   a percent of the ~9 mA STATIC draw (page program of a few ms at ~10–15 mA,
+   datasheet-typical) — **not yet bench-measured.**
 
 ## Backlog — worth exploring
 

@@ -10,9 +10,13 @@ axes; each node then samples it the way the firmware does:
   * a sync gesture (trunk twist, arm held) right after the neutral hold
   * its own clock: random offset (±3 s) and drift (±30 ppm), 1 ms timestamps
   * ~8.3 Hz (120 ms ± 4 ms jitter), independent sample phase per node
-  * STATIC mode: after 2 s still, one sample every 5 s until motion resumes
-    (woken ~200 ms after it does)
-  * strap/sensor error: a slow wobble (RMS set per run) + 0.1° jitter
+  * STATIC mode as in firmware.ino: after 10 s without motion, one sample per
+    STATIC interval (1 s since 2026-09-26, 5 s before; --static-interval)
+    until motion resumes
+    (woken within 0.5 s)
+  * strap/sensor error: a slow wobble that scales with how fast the segment
+    moves (soft tissue; RMS at full motion set per run) + 0.5° slow drift +
+    0.1° jitter
 
 The logs are written as real .bin files, aligned by reconcile_nodes.py under
 each variant, calibrated (auto neutral window; facing from the torso node or
@@ -33,6 +37,10 @@ Findings that shaped reconcile_nodes.py (2026-09-26, 4 seeds, 3° wobble):
     temporal smoothing of the joint angles, changed nothing measurable: at
     ~8 Hz the remaining error is SLOW (strap/soft-tissue wobble, calibration,
     STATIC-mode gaps), not frame-to-frame jitter (dropped).
+  * the torso node spends most of an arm session in STATIC; at the old 5 s
+    STATIC interval its slow drift was lost. 1 s (the rate the RV already runs
+    at in STATIC): torso + upper arm shoulder axial rotation 6.3 -> 1.9° RMS,
+    elevation 5.1 -> 2.5°, plane of elevation 9.5 -> 5.9°, for +3.5% samples.
 
 Usage:  python tools/timing_bench.py [--seeds 3] [--wobble 3] [--out DIR]
 """
@@ -64,11 +72,14 @@ FINE_HZ = 240.0
 DUR_S = 60.0
 IDENT = np.array([1.0, 0.0, 0.0, 0.0])
 REC = struct.Struct("<Iffff")
-# firmware schedule model: below STILL_RAD_S for 2 s -> STATIC (one sample per
-# 5 s); above WAKE_RAD_S -> ACTIVE again ~200 ms later. Set so the upper-arm
-# node spends a similar share of a session in STATIC as the real capture (~15%).
-STILL_RAD_S = 0.10
-WAKE_RAD_S = 0.15
+# firmware schedule model (firmware.ino): no MOTION for NOT_MOTION_TO_STATIC_MS
+# (10 s) -> STATIC, logging one sample per STATIC_SAMPLE_INTERVAL_MS; MOTION
+# returns to ACTIVE within one classifier report (500 ms). The classifier's
+# MOTION threshold is not published: STILL/WAKE_RAD_S stand in for it.
+STILL_RAD_S = 0.20
+WAKE_RAD_S = 0.30
+STATIC_ENTRY_S = 10.0
+STATIC_INTERVAL_S = 1.0          # firmware STATIC_SAMPLE_INTERVAL_MS (was 5 s)
 
 
 def axq(axis, deg):
@@ -139,19 +150,22 @@ def speed(q, t):
 # ---------------------------------------------------------------------------
 # Node sampling (the firmware's schedule) and .bin logs
 # ---------------------------------------------------------------------------
-def sample_times(t, spd, rng):
-    """True times at which one node logs a sample (ACTIVE ~8.3 Hz, STATIC 5 s)."""
+def sample_times(t, spd, rng, static_interval_s=None):
+    """True times at which one node logs a sample, following firmware.ino:
+    ACTIVE logs every ~120 ms; after STATIC_ENTRY_S with no MOTION from the
+    stability classifier it drops to STATIC (one sample per STATIC interval);
+    MOTION wakes it back to ACTIVE within one classifier report (<= 0.5 s)."""
+    interval = STATIC_INTERVAL_S if static_interval_s is None else static_interval_s
     out, now, still_since, static = [], float(rng.uniform(0, 0.12)), None, False
     end = t[-1]
     while now < end:
         k = min(int(now * FINE_HZ), len(spd) - 1)
         moving = spd[k] > STILL_RAD_S
         if static:
-            # wake ~200 ms after motion starts, else the next 5 s tick
-            nxt = now + 5.0
+            nxt = now + interval
             j = np.nonzero(spd[k:min(len(spd), int(nxt * FINE_HZ))] > WAKE_RAD_S)[0]
             if j.size:
-                now = t[k + j[0]] + 0.2
+                now = t[k + j[0]] + rng.uniform(0.0, 0.5)
                 static, still_since = False, None
                 continue
             out.append(now); now = nxt
@@ -159,7 +173,7 @@ def sample_times(t, spd, rng):
         out.append(now)
         if not moving:
             still_since = now if still_since is None else still_since
-            if now - still_since > 2.0:
+            if now - still_since > STATIC_ENTRY_S:
                 static = True
         else:
             still_since = None
@@ -174,20 +188,34 @@ def write_node_log(path, t_true, q_sensor, off_ms, drift_ppm):
             f.write(REC.pack(int(c), *[float(v) for v in q]))
 
 
-def slow_wobble(t, rms_deg, rng):
-    """Smooth random rotation (~rms_deg RMS, 0.15–0.8 Hz): strap/soft-tissue
-    wobble plus slow fusion error."""
+def slow_wobble(t, rms_deg, rng, envelope=None):
+    """Smooth random rotation (~rms_deg RMS, 0.15–0.8 Hz). With `envelope`
+    (0..1 per sample) its size follows it: soft tissue and straps shift when
+    the segment moves, not while it is held still."""
     v = np.zeros((len(t), 3))
     for _ in range(3):
         f = rng.uniform(0.15, 0.8)
         v += np.outer(np.sin(2 * np.pi * f * t + rng.uniform(0, 6.3)),
                       rng.normal(0, np.radians(rms_deg) / np.sqrt(1.5), 3))
+    if envelope is not None:
+        v = v * np.asarray(envelope)[:, None]
     return rotvec_q(v)
+
+
+def motion_envelope(t, spd, ts, full_rad_s=1.5, smooth_s=0.5):
+    """0..1 motion level at times ts: the segment's angular speed relative to
+    full_rad_s, smoothed over smooth_s so the artifact builds and decays."""
+    k = max(1, int(smooth_s * FINE_HZ))
+    lvl = np.convolve(np.clip(spd / full_rad_s, 0, 1), np.ones(k) / k, mode="same")
+    return lvl[np.clip(np.round(ts * FINE_HZ).astype(int), 0, len(t) - 1)]
 
 
 # ---------------------------------------------------------------------------
 # One montage x one seed: logs -> variants -> errors
 # ---------------------------------------------------------------------------
+SEG_KEY = {"torso": 1, "upper_arm_r": 2, "forearm_r": 3}
+DRIFT_DEG = 0.5            # slow fusion drift present even when still
+
 VARIANTS = {
     "speed": dict(sync_method="speed"),      # the original sync cue
     "vector": dict(sync_method="vector"),    # the current default
@@ -215,17 +243,31 @@ def run_case(segs, seed, wobble, outdir, variants):
     os.makedirs(d, exist_ok=True)
     clocks, paths = [], []
     for i, seg in enumerate(segs):
+        # independent random streams per segment and purpose, so changing one
+        # setting (e.g. the STATIC interval, which changes how many samples are
+        # drawn) leaves every other random draw — mountings, wobble, clocks — as is
+        key = [seed, SEG_KEY[seg]]
+        r_mount, r_sched, r_wob, r_jit, r_clk = (np.random.default_rng(key + [k])
+                                                 for k in range(5))
         q_world = qnorm(qmul(q_wa, truth[seg]))        # bone = anatomical at neutral
         if seg == "torso":                              # sternum: sensor +z forward
-            mount = qmul(axq([0, 1, 0], 90)[0], axq(rng.normal(size=3), 5)[0])
+            mount = qmul(axq([0, 1, 0], 90)[0], axq(r_mount.normal(size=3), 5)[0])
         else:
-            mount = qnorm(rng.normal(size=4))
-        ts = sample_times(t, speed(truth[seg], t), rng)
+            mount = qnorm(r_mount.normal(size=4))
+        ts = sample_times(t, speed(truth[seg], t), r_sched)
+        n_samples = getattr(run_case, "n_samples", {})
+        n_samples[seg] = n_samples.get(seg, 0) + len(ts)
+        run_case.n_samples = n_samples
         idx = np.clip(np.round(ts * FINE_HZ).astype(int), 0, len(t) - 1)
-        qs = qmul(qmul(q_world[idx], mount), slow_wobble(ts, wobble, rng))
-        qs = qnorm(qmul(qs, rotvec_q(rng.normal(0, np.radians(0.1) / np.sqrt(3),
-                                                (len(ts), 3)))))
-        off, dr = (0.0, 0.0) if i == 0 else (rng.uniform(-3000, 3000), rng.uniform(-30, 30))
+        # soft-tissue / strap wobble that follows the motion, plus a small
+        # constant slow drift (fusion error)
+        env = motion_envelope(t, speed(truth[seg], t), ts)
+        qs = qmul(qmul(q_world[idx], mount), slow_wobble(ts, wobble, r_wob, env))
+        qs = qmul(qs, slow_wobble(ts, DRIFT_DEG, r_wob))
+        qs = qnorm(qmul(qs, rotvec_q(r_jit.normal(0, np.radians(0.1) / np.sqrt(3),
+                                                  (len(ts), 3)))))
+        off, dr = ((0.0, 0.0) if i == 0 else
+                   (r_clk.uniform(-3000, 3000), r_clk.uniform(-30, 30)))
         clocks.append((off, dr))
         p = os.path.join(d, f"N{i}.bin")
         write_node_log(p, ts, qs, off, dr)
@@ -285,7 +327,11 @@ def main():
                     help="slow strap/sensor error per node, deg RMS")
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "hulc_timing"))
     ap.add_argument("--variants", nargs="*", default=list(VARIANTS))
+    ap.add_argument("--per-seed", action="store_true", help="print every seed")
+    ap.add_argument("--static-interval", type=float, default=STATIC_INTERVAL_S,
+                    help="firmware STATIC_SAMPLE_INTERVAL_MS to model, seconds")
     args = ap.parse_args()
+    globals()["STATIC_INTERVAL_S"] = args.static_interval
     variants = {k: VARIANTS[k] for k in args.variants}
     montages = [["upper_arm_r", "forearm_r"], ["torso", "upper_arm_r"],
                 ["torso", "upper_arm_r", "forearm_r"]]
@@ -300,10 +346,19 @@ def main():
               f"mean over seeds)")
         print("  " + f"{'variant':<10}" + "".join(f"{k.split('.')[-1] + '(' + k.split('_')[0] + ')':>18}" for k in dofs)
               + f"{'sync err ms':>14}")
+        if args.per_seed:
+            for si, r in enumerate(runs):
+                for v in variants:
+                    print(f"    seed {si} {v:<7} " + " ".join(
+                        f"{k.split('.')[-1]}={r[v]['errs'].get(k, np.nan):.1f}" for k in dofs)
+                        + f"  sync={np.mean(r[v]['sync_err_ms']):.0f}ms facing="
+                        f"{r[v]['facing_src']}/{r[v]['facing_err_deg']}")
         for v in variants:
             row = [np.mean([r[v]["errs"].get(k, np.nan) for r in runs]) for k in dofs]
             se = np.mean([np.mean(r[v]["sync_err_ms"]) for r in runs])
             print("  " + f"{v:<10}" + "".join(f"{x:18.2f}" for x in row) + f"{se:14.1f}")
+    print(f"\nlogged samples per node (all seeds): "
+          f"{getattr(run_case, 'n_samples', {})}")
     with open(os.path.join(args.out, "timing_results.json"), "w") as f:
         json.dump(table, f, indent=1)
 
