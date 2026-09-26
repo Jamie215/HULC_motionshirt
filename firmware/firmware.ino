@@ -311,6 +311,10 @@
 // the spacing to ~2 s): a sample is due once the interval minus this slack
 // has passed. Kept well under the interval so it never logs two per period.
 #define STATIC_SAMPLE_SLACK_MS      250
+// ACTIVE: a report may take its slot up to period/ACTIVE_SAMPLE_SLACK_DIV early
+// (25 ms at 10 Hz). ACTIVE also schedules slots (see handleActiveRecording) so
+// the average rate is exactly activeHz, not just "at least one period apart".
+#define ACTIVE_SAMPLE_SLACK_DIV     4
 // RV report interval, matched to the ACTIVE log period (1000/DEFAULT_ACTIVE_HZ
 // = 100ms) so the BNO doesn't fuse and ship samples we'd only discard. Tier A;
 // rationale and the STATIC-specific follow-up are in firmware/POWER_OPTIMIZATION.md.
@@ -524,7 +528,8 @@ alignas(4) uint8_t pktBuf[20];     // Shared record packing buffer
 // ── Timers ──
 uint32_t     lastMotionTime      = 0;
 uint32_t     onTableStartTime    = 0;
-uint32_t     lastActiveSample    = 0;
+uint32_t     lastActiveSample    = 0;   // start of the current ACTIVE sample
+                                        // slot (0 = resync on the next report)
 uint32_t     lastStaticSample    = 0;
 uint8_t      lastLoggedStability = 255;
 
@@ -1713,13 +1718,26 @@ void handleActiveRecording() {
     uint32_t now = millis();
 
     if (id == FUSION_REPORT_ID) {
-      bool timeToSample = (now - lastActiveSample >= (1000u / activeHz));
+      // Scheduled slots, not "time since the last write": each write advances
+      // the slot by exactly one period, so the logged rate averages activeHz
+      // however the BNO's report times fall. With a plain "now - last >=
+      // period" gate, reports at a cadence that doesn't divide the period (a
+      // ~60 ms stream vs 100 ms gives 120 ms spacing, 8.3 Hz) or that land a
+      // ms early (skipped -> 200 ms gap) both log below activeHz. The slack
+      // lets a slightly early report take its slot.
+      // Signed: after an early write the next slot can lie a few ms ahead.
+      int32_t period = 1000 / (int32_t)activeHz;
+      int32_t sinceSlot = (int32_t)(now - lastActiveSample);
+      bool timeToSample = (sinceSlot + period / ACTIVE_SAMPLE_SLACK_DIV >= period);
       if (timeToSample) {
         writeQuaternionSample(
           fusionQuatI(), fusionQuatJ(),
           fusionQuatK(), fusionQuatReal()
         );
-        lastActiveSample = now;
+        lastActiveSample += (uint32_t)period;
+        // fell behind (first sample, a pause in reports, a rate change):
+        // restart the schedule at this sample instead of bursting to catch up
+        if ((int32_t)(now - lastActiveSample) >= period) lastActiveSample = now;
       }
     }
 

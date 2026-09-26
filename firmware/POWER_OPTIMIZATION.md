@@ -154,6 +154,26 @@ machine's logic; each is commented at its site.
    a percent of the ~9 mA STATIC draw (page program of a few ms at ~10–15 mA,
    datasheet-typical) — **not yet bench-measured.**
 
+10. **ACTIVE logs at exactly `activeHz` (scheduled slots + slack).** The old
+   gate, `now - lastActiveSample >= 1000/activeHz` with `lastActiveSample =
+   now`, logs *below* the configured rate whenever the RV report times don't
+   line up with the period: a report landing a few ms early is skipped (the
+   gap doubles), and a report stream whose cadence doesn't divide the period
+   keeps only a subset. Simulated against the old and new gate at 10 Hz:
+   100 ms ± 3 ms jitter → old **6.9 Hz**; a ~60 ms stream → old **8.3 Hz** (120
+   ms spacing — exactly what a real capture showed, most likely from the older
+   65 ms RV setting of item 3); 65 ms → 7.7 Hz. The new gate advances a
+   schedule by exactly one period per write, lets a report take its slot up to
+   period/4 early (`ACTIVE_SAMPLE_SLACK_DIV`), and restarts the schedule (no
+   catch-up burst) after falling a period behind — 10.00 Hz in every case, the
+   watermark throttle (10→5→2 Hz) and the `millis()` rollover included.
+   **Storage/battery:** this brings ACTIVE up to the rate it was designed for,
+   so it logs more than recent firmware actually did — up to ~+20% (from 8.3
+   Hz) or ~+44% (from 6.9 Hz) of ACTIVE records, and a matching share of flash
+   writes. If the storage budget was sized on the observed rate, lower
+   `DEFAULT_ACTIVE_HZ` instead of keeping the lossy gate. **Not yet
+   bench-measured on hardware.**
+
 ## Backlog — worth exploring
 
 Ordered roughly by payoff. Each needs bench time or a design decision, so they
