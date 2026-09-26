@@ -25,6 +25,9 @@ update this SOP too.
 | **Closing hold** | A second still pose, used to check for strap slip (`calibrate_segments.py verify`) | Slip goes undetected |
 | **Rest-down** | Nodes drop to IDLE so they can be offloaded | Offload refused while a node is recording |
 
+A take runs steps 0–6 of section 3. A session can hold several takes, and nodes
+may be removed between them (e.g. to charge) — see section 3b.
+
 ---
 
 ## 2. Before the session
@@ -70,7 +73,7 @@ aim for; **max** = beyond this something changes (e.g. the nodes' logging rate).
 | 4 | **Facing (no torso node only)** | 3 reps | Upper arm hanging still, 3 slow elbow flexions from straight to ≥ 90° and back (~2 s each), palm facing the thigh. | Facing comes from the elbow hinge: it needs flexion ≥ 30° (95th percentile, `HINGE_MIN_FLEX_DEG`) and a clear minimum (`HINGE_MAX_COST_RATIO`). Elbow-task curls usually cover it; doing it here makes it reliable. |
 | 5 | **Task** | — | The movement of interest. Rules below. | — |
 | 6 | **Closing hold** | 3 / 5 / 8 s | Same N-pose as step 2. | A second still pose for `verify` (strap-slip check). Recommended. |
-| 7 | **Rest-down** (before offloading only) | 10 / — / — s | Take the nodes off, lay them flat on a table ≥ 10 s (or stay still ≥ 60 s). Between takes with the same straps, skip this: start the next take at step 0. | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE) or 60 s without motion (`NOT_MOTION_TO_IDLE_MS`). Offload needs IDLE. |
+| 7 | **Rest-down** (before offloading) | 10 / — / — s | Take the nodes off, lay them flat on a table ≥ 10 s (or stay still ≥ 60 s). Not needed between takes. | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE) or 60 s without motion (`NOT_MOTION_TO_IDLE_MS`). Offload needs IDLE. |
 
 A typical take is **~45 s of protocol plus the task**.
 
@@ -108,6 +111,34 @@ A typical take is **~45 s of protocol plus the task**.
 - **Straps:** if a strap is adjusted or slips, stop and re-do steps 2–3 with
   the new mounting (a new neutral hold).
 
+### 3b. Between takes — removing nodes (e.g. to charge)
+
+Nodes can be taken off between takes, e.g. to charge them. What matters is
+what happens when they go back on:
+
+- **A re-mounted node sits at a slightly different angle** on the segment, so
+  its old calibration no longer applies. Start the next take from **step 0**:
+  warm-up, neutral hold, sync gesture. Every take in this SOP already begins
+  that way, so no extra step is needed — just never skip the hold after
+  re-mounting.
+- **Put the node back the same way** (same spot, same orientation, same
+  label/segment): it keeps the montage valid, and `verify` can then confirm the
+  old calibration still holds instead of needing a fresh one.
+- **Never swap nodes between segments** without updating the montage — the
+  montage binds each node ID to a segment.
+- **Analysis — one mounting per analysis.** A node keeps appending to the same
+  log until it is offloaded, and the pipeline auto-detects the **first** still
+  hold in the log. If nodes were re-mounted between takes that share a log:
+  - simplest: **offload** before re-mounting, so each log is one mounting; or
+  - analyze each later take with its own hold: find the hold's time in the
+    log (the still stretch at the start of that take) and pass it with
+    `analyze_session.py run … --window t0,t1`. Analysis starts at that hold,
+    so the earlier takes are left out.
+  Without re-mounting (same straps, node never removed), takes in one log can
+  share the first hold's calibration.
+- While a node is off the body and charging it may keep logging handling
+  motion; that data falls before the next take's hold and is dropped.
+
 ---
 
 ## 4. Timeline templates (read-aloud)
@@ -122,7 +153,7 @@ A typical take is **~45 s of protocol plus the task**.
 | 0:29 | "Arm by your side, bend your elbow up slowly and down — three times." (6 s) |
 | 0:35 | Task, e.g. "Five slow curls" … rest 6 s … "five turns of the palm, up and down" … |
 | ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s) |
-| ~1:50 | Last take: remove the nodes, lay them flat on the table for 10 s. |
+| ~1:50 | Before offloading: remove the nodes, lay them flat on the table for 10 s. |
 
 **Shoulder (torso + upper arm), ~2 min**
 
@@ -133,7 +164,7 @@ A typical take is **~45 s of protocol plus the task**.
 | 0:23 | "Hand on your hip. Twist your upper body left and right, smoothly — four times." (6 s) |
 | 0:29 | Task, e.g. "Raise your arm forward as high as is comfortable, and down — five times" … rest 6 s … "now out to the side, five times" … |
 | ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s) |
-| ~1:50 | Last take: remove the nodes, lay them flat on the table for 10 s. |
+| ~1:50 | Before offloading: remove the nodes, lay them flat on the table for 10 s. |
 
 ---
 
@@ -165,4 +196,5 @@ are all printed by `analyze_session.py` or found in its outputs.
 | Fast, snappy task reps | Aliasing at 10 Hz; large fit residuals | ≤ 1 rep/s, smooth |
 | Long still pauses (≥ 60 s) mid-take | Nodes go IDLE and stop logging | Keep rests 5–8 s, or re-do steps 0–3 after a long break |
 | Working next to a metal desk / laptop | Nodes disagree on north, unflagged | Section 2: place |
-| Re-strapping without a new hold | Old mounting applied to the new strap position | Re-do steps 2–3 after any strap change |
+| Re-mounting a node (after charging or a strap change) without a new hold | The old mounting is applied to the new position | Start the next take from step 0 — see section 3b |
+| Several takes in one log, nodes re-mounted in between, analyzed as one | Every take is calibrated on the FIRST take's hold | Analyze each mounting with its own hold — see section 3b |

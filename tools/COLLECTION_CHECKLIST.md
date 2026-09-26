@@ -181,7 +181,12 @@ is in **[`COLLECTION_SOP.md`](COLLECTION_SOP.md)**. In short:
 4. [ ] **Closing hold, ~5 s** in the same N-pose (for the strap-slip check).
 5. [ ] **Rest-down, before offloading** — take the nodes off and lay them flat
        for ≥ 10 s (or stay still ≥ 60 s) so they drop to `IDLE`, which offload
-       needs. Between takes with the same straps, skip it.
+       needs.
+
+Nodes may be taken off between takes (e.g. to charge). After re-mounting,
+start the next take from the warm-up and neutral hold, and analyze each
+mounting with its own hold (offload in between, or `--window`) — see
+[`COLLECTION_SOP.md`](COLLECTION_SOP.md) §3b.
 
 > Why the sync gesture: pure elbow flexion moves the forearm a lot but the upper
 > arm barely at all, so on its own it gives weak clock alignment. A whole-arm
@@ -272,8 +277,9 @@ python tools/multinode_test.py check --count 2 --duration 30
 
 ## Optional: re-don verification
 
-Taking the shirt off and back on breaks the mounting offset (a charge cycle does
-not). To confirm the cached calibration still holds after a re-don, record a
+Taking the shirt off and back on — or taking a node out and putting it back,
+e.g. to charge it — can change the mounting offset (a charge cycle with the node
+left in place does not). To confirm the cached calibration still holds after a re-don, record a
 fresh short still hold, offload it (step 4) into `./redon`, reconcile that
 capture to a CSV, then verify against the cached calibration:
 
