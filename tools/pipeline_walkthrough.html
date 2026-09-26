@@ -249,8 +249,9 @@
           <span class="tool">HULC-IMU-XXXX</span>. The onboard stability
           classifier drives the state machine — IDLE → STATIC_POSTURE →
           ACTIVE_RECORDING — and quaternions are written to flash at ~10&nbsp;Hz,
-          with a 0.2&nbsp;Hz heartbeat while still so stillness is recorded, not
-          left as a gap.</p>
+          with a ~1&nbsp;Hz heartbeat while still so stillness is recorded, not
+          left as a gap. A session is a series of <b>blocks</b>, each ending when
+          the nodes come off to charge (they go IDLE and stop logging).</p>
         <div class="shape">
           <div class="lbl">On-flash record · 20 bytes, little-endian</div>
           <pre><span class="k">uint32</span> timestamp_ms  <span class="k">float</span> qw  <span class="k">float</span> qx  <span class="k">float</span> qy  <span class="k">float</span> qz</pre>
@@ -268,7 +269,8 @@
       <div class="card">
         <h3>Offload <span class="badge built">Built</span></h3>
         <p><b>Bulk-transfer each node's log to a central over BLE</b> after the
-          session — no live streaming. A well-behaved central (phone / BlueZ)
+          block, while the nodes charge — no live streaming. Each block goes into
+          its own folder. A well-behaved central (phone / BlueZ)
           honors a fast connection interval and pulls ~20&nbsp;KB/s, so a full
           flash comes off in minutes. Each node's log lands in its own file.</p>
         <div class="shape">
@@ -288,12 +290,14 @@
       <div class="card">
         <h3>Reconcile &amp; time-align <span class="badge built">Built</span></h3>
         <p><b>Put every node on one timeline.</b>
-          <span class="tool">reconcile_nodes.py</span> reduces each node to its
-          mounting-invariant <b>angular speed</b>, cross-correlates the streams to
-          recover the clock offset (and optional drift), and resamples all
-          quaternions onto a shared grid. A Pearson <b>r</b> confidence (≥&nbsp;0.40)
-          flags pairs that shared too little motion — the case a start-of-session
-          sync gesture exists to cover.</p>
+          <span class="tool">reconcile_nodes.py</span> turns each node into its
+          mounting-invariant <b>world-frame angular-velocity vector</b>,
+          cross-correlates the streams to recover the clock offset (and optional
+          drift), and resamples all quaternions onto a shared grid. The offset is
+          trusted when its correlation peak is <b>distinct</b> (≥&nbsp;1.25× any
+          alignment 0.5&nbsp;s away) — one shared sync gesture is enough — and
+          otherwise falls back to angular-speed correlation with a Pearson
+          confidence. A node whose clock restarted mid-log is flagged.</p>
         <div class="shape">
           <div class="lbl">aligned.csv · one shared clock, per-node columns</div>
           <pre><span class="k">t_common_ms</span>, n0_qw,n0_qx,n0_qy,n0_qz, n1_qw,n1_qx,n1_qy,n1_qz, <span class="c">…</span></pre>
@@ -337,17 +341,21 @@
           <span class="tool">calibrate_segments.py</span> uses the mag-referenced
           Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
-          <b>neutral / N-pose</b> solves that offset and sets the anatomical zero;
-          the subject's facing (from the torso node) turns the world axes into
-          anatomical ones (forward / up / right) for the joint decomposition.
-          Validity is <b>per-don</b> — re-wearing shifts the straps — so the
+          <b>neutral / N-pose</b> hold (found automatically: the first still
+          stretch) solves that offset and sets the anatomical zero;
+          the subject's facing (from the torso node, else the elbow's hinge axis)
+          turns the world axes into anatomical ones (forward / up / right) for
+          the joint decomposition. A matching <b>closing hold</b> marks the end
+          of the protocol. Validity is <b>per-mounting</b> — re-mounting shifts
+          the straps — so the
           result is <b>cached and verified</b>: reuse it if a quick still-pose
           check passes, re-pose only when it drifts. Without it, every angle
           is flagged <b>relative-only</b>. This gates ROM.</p>
         <div class="shape">
           <div class="lbl">emits · calibration.json (per segment)</div>
           <pre><span class="c"># sensor→segment offset + a staleness check for the next don</span>
-upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency_baseline</pre>
+upper_arm_r → q_mount_offset,  neutral @ t_common_ms [36720,38720],  consistency_baseline
+closing hold @ [412300,414300]  (slip 2.1°),  facing −45° (elbow hinge)</pre>
         </div>
       </div>
     </div>
@@ -364,13 +372,15 @@ upper_arm_r → q_mount_offset,  neutral @ t_common_ms [1000,4000],  consistency
         <p><b>Functions over the aligned + calibrated stream.</b>
           <span class="tool">metrics.py</span> computes every metric the resolver
           declared for the montage: per-DOF joint <b>angle series</b> and
-          <b>ROM</b>, joint <b>velocity</b> and <b>rep count</b>, segment
+          <b>ROM</b>, joint <b>velocity</b> and <b>rep bouts</b>, segment
           <b>travel</b>, <b>elevation</b>, movement <b>smoothness</b> (SPARC) and
           <b>posture dwell</b>, plus the derived tier — L/R <b>symmetry</b>,
           <b>activity asymmetry</b> (which arm is used more), inter-joint
           <b>coordination</b>, trunk <b>compensation</b>. Each value carries the
           same honesty flag as the resolver: a joint without both nodes calibrated
-          reads <b>relative-only</b>, a blocked joint names its missing node.</p>
+          reads <b>relative-only</b>, a blocked joint names its missing node, and a
+          physically implausible series is flagged. Only the protocol is analysed:
+          opening hold → closing hold.</p>
         <div class="shape">
           <div class="lbl">emits · metrics.json (per joint / segment / derived)</div>
           <pre>elbow_r → flex_ext ROM 6.2…96.4° (range 90°),  peak 309°/s,  <span class="k">"clinical"</span>:true</pre>
@@ -433,8 +443,9 @@ torso → <span class="no">absent</span></pre>
         </div>
       </div>
     </div>
-    <p style="margin-top:16px">The reconcile step returns a <b>low-confidence</b>
-      offset here — the two arms share almost no motion to lock onto — so no joint
+    <p style="margin-top:16px">Without a sync gesture the reconcile step returns a
+      <b>low-confidence</b> offset here — the two arms share almost no motion to
+      lock onto (the SOP's both-arms gesture fixes that) — so no joint
       angle would be trustworthy even with a torso node. But <b>activity
       asymmetry</b> is a session aggregate that doesn't need the sides time-aligned,
       so "the left arm is used far more than the right" survives as the one solid,

@@ -56,8 +56,12 @@ Aligning the nodes' timestamps has two mechanisms, used together:
   twist, both arms up) anchors all nodes to one instant; the offset holds for
   the session (drift negligible over minutes). This needs no correlated activity.
 - **Refinement — motion cross-correlation** (`reconcile_nodes.py`). When the
-  nodes *do* share motion, cross-correlating their angular speed tightens the
-  offset with no BLE dependency.
+  nodes *do* share motion, cross-correlating their world-frame angular-velocity
+  vectors (angular speed as fallback) tightens the offset with no BLE
+  dependency. In practice this is the production path: the SOP's sync gesture
+  provides the shared motion, and a single distinct correlation peak is
+  enough even when the nodes otherwise move independently (see
+  `MULTINODE_SYNC_MATH.md` §2.1).
 
 **Limitation of cross-correlation (important):** it needs shared motion to lock
 onto. Two nodes on *independently* moving limbs (one arm swings, the other is
@@ -136,8 +140,9 @@ can heavily cost the flexibility in design, battery life and flash storage.
    iPhone honored the fast interval; use a mobile/BlueZ central going forward.
 2. ~~**Offline reconciliation**~~ — **DONE (host prototype).**
    `tools/reconcile_nodes.py` aligns two offloaded logs by cross-correlating the
-   motion itself (angular speed, mounting-invariant), so it recovers the clock
-   offset from the data and is **immune to BLE latency**. Drift is off by default
+   motion itself (originally angular speed; now world-frame angular-velocity
+   vectors with speed as fallback — both mounting-invariant), so it recovers
+   the clock offset from the data and is **immune to BLE latency**. Drift is off by default
    (negligible over minute-scale records; opt-in for long ones). A synthetic
    `--selftest` validates the math with no hardware: recovers a known offset to
    ~15–18 ms, inside the 25–50 ms target. Next: run it on real offloaded logs

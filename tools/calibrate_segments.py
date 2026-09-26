@@ -28,8 +28,9 @@ sensor reading recovers the offset for each node.
 
 Cache-and-verify (the "feels like skipping" path)
 -------------------------------------------------
-The offset is a property of THIS wear — a power cycle for charging does NOT break
-it, re-donning does. So it is cacheable. Alongside each offset we cache a
+The offset is a property of THIS mounting — a power cycle does NOT break it,
+taking a node off (e.g. to charge it between blocks) and re-mounting it does.
+Within one mounting it is cacheable. Alongside each offset we cache a
 HEADING-INDEPENDENT consistency baseline so the next don can decide reuse vs.
 re-pose without a fresh deliberate pose every time:
 
@@ -45,6 +46,23 @@ compares to the baseline: all deviations small -> REUSE silently; any over
 threshold -> prompt for a fresh ~2 s pose. The same check run on a later still
 window within one session catches intra-session slippage.
 
+Which window is the neutral hold
+--------------------------------
+`choose_neutral_window`: an explicit `--window` wins; otherwise the montage's
+`calibration.t_window_ms` is used only if the data there is actually still
+(<= STILL_MAX_RAD_S) — a placeholder or mistimed window is ignored — and
+otherwise `find_neutral_window` takes the FIRST still stretch of the recording
+(mean angular speed <= NEUTRAL_MAX_RAD_S) and the quietest window inside it.
+
+The closing hold — the `closing` block
+--------------------------------------
+The protocol ends with a second neutral hold before the nodes come off.
+`find_closing_hold` finds the LAST still window at least CLOSING_MIN_GAP_MS after
+the opening hold whose pose matches neutral (every segment's gravity direction
+and every pair's relative rotation within CLOSING_POSE_DEG). It is recorded
+with its deviations (a free end-of-block slip check) and ends metrics'
+analysis window; none found -> the note says so and nothing is cut.
+
 Heading (facing) recovery — the `heading` block
 -----------------------------------------------
 The shared world frame gives absolute orientation but not how the subject's
@@ -55,8 +73,11 @@ out of the chest), and self-checks it — the axis must land ~horizontal at the
 upright neutral pose, and the pose must be still — marking the result
 low-confidence rather than confidently wrong. No torso -> not recovered. The
 skeleton viewer applies a confident heading as a fixed yaw; nothing here asks the subject
-to do or remember anything extra. A montage without a torso node can supply the
-facing by hand (`--facing-deg`).
+to do or remember anything extra. Without a torso node the facing comes from
+the elbow when the recording has enough elbow flexion
+(`estimate_facing_from_elbow`: the facing that makes the upper-arm → forearm
+motion a pure hinge, i.e. minimises varus/valgus; the sign of flexion resolves
+the 180° ambiguity), or is given by hand (`--facing-deg`).
 
 Anatomical axes — the `anatomical_frame` block
 ----------------------------------------------
@@ -78,7 +99,8 @@ metrics reports the joints RELATIVE-only.
 
 Usage
 -----
-    # solve offsets + baseline from the neutral-pose window in a montage:
+    # solve offsets + baseline from the neutral hold (auto-located when the
+    # montage window isn't still), plus facing and the closing hold:
     python tools/calibrate_segments.py calibrate aligned.csv montage.json \
         --out calibration.json
 

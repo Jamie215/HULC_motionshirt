@@ -9,7 +9,8 @@ actually wants. It computes every metric tier the resolver (motion_capabilities)
 declares for the montage, so what appears is exactly what the placement supports:
 
   * joint   — per-DOF angle series → range of motion (min/max/range/median),
-              angular velocity (peak/mean/RMS), and repetition count.
+              angular velocity (peak/mean/RMS), repetitions grouped into
+              bouts (phases), and a plausibility check per DOF.
   * segment — angular speed, angular travel + active-time fraction, elevation
               from vertical, movement smoothness (SPARC), and a time-in-posture
               (posture-dwell) histogram once the segment is calibrated.
@@ -55,6 +56,12 @@ Honesty (the same contract the resolver prints)
   its labels need not match the anatomy). Same wording as the resolver.
 * Wrap-around is unwrapped before ROM so a sweep through ±180° doesn't fake a
   360° range.
+* Physically implausible series (a range over a full turn, huge sample jumps,
+  or — with anatomical axes — time outside the DOF's physiological limits) are
+  flagged with a `plausibility_warning`, not reported as if clean.
+* Only the protocol is analysed: the stream is trimmed to the opening neutral
+  hold → closing hold located by stage 5 (trim_to_analysis), each end only when
+  it is this recording's own still hold. `--keep-pre-neutral` disables it.
 
 Usage
 -----
@@ -900,8 +907,9 @@ def trim_to_analysis(t_ms, seg_quats, calibration):
 def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
     """Build the full metrics report from a loaded aligned stream + calibration.
 
-    With `trim` (default) the analysis starts at the neutral hold, so setup
-    motion before the protocol never enters the ROM / rep / activity numbers."""
+    With `trim` (default) the analysis runs from the opening neutral hold to
+    the closing hold, so setup before the protocol and taking the nodes off
+    after it never enter the ROM / rep / activity numbers."""
     t_full0, t_full1 = float(t_ms[0]), float(t_ms[-1])
     start = None
     has_closing = bool((calibration or {}).get("closing", {}).get("t_window_ms"))
@@ -1554,7 +1562,8 @@ def main():
                     help="also print the report as JSON to stdout")
     pc.add_argument("--keep-pre-neutral", action="store_true",
                     help="analyze the whole record, including the setup before "
-                         "the neutral hold (default: start at the neutral hold)")
+                         "the neutral hold and the tail after the closing hold "
+                         "(default: opening hold -> closing hold)")
     pc.set_defaults(func=cmd_compute)
 
     ps = sub.add_parser("selftest", help="validate the math (no hardware)")

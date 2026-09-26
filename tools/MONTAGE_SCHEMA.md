@@ -79,7 +79,7 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
 | `session.aligned_csv` | The reconcile output this montage annotates. |
 | `calibration.neutral_pose` | The static zeroing pose captured at session start (e.g. `N-pose`). |
 | `calibration.captured` | Whether that pose was actually recorded this session. |
-| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. |
+| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the first still stretch. `--window` overrides both. The closing hold is always found automatically and lands in `calibration.json`'s `closing` block, not here. |
 | `calibration.functional` | Optional functional-calibration movements captured (e.g. a known elbow flexion to fix a joint axis). |
 | `nodes[].node_id` | The board's advertised id (`HULC-IMU-XXXX`), for traceability. |
 | `nodes[].column` | **The bridge to reconcile output** — the per-node prefix in the aligned CSV header (`n0`, `n1`, …). |
@@ -186,7 +186,8 @@ resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
 
 The pose zeroes each segment, but its axes stay on the world compass. To tie
 joint axes to the body (X anterior, Y superior, Z right), calibration also needs
-the subject's **facing** — recovered from the torso node, or stated with
+the subject's **facing** — recovered from the torso node, else from the elbow
+hinge axis (when the recording has enough elbow flexion), or stated with
 `--facing-deg` — and records the result as `anatomical_frame` in
 `calibration.json`. Joint angles are clinical only when it is present.
 
@@ -197,10 +198,10 @@ When either is false the resolver still lists the metric but attaches a
 clinical number. Uncalibrated segments propagate: an uncalibrated `forearm_r`
 flags both `elbow_r` and `wrist_r`.
 
-**Validity is per-don, and cached-with-verify** — the mounting offset is a
-property of *this* wear, so it must be refreshed each time the garment is put
-back on (re-donning shifts the straps; a power cycle for charging alone does
-**not** invalidate it). It is cacheable: reuse the last calibration if a quick
+**Validity is per-mounting, and cached-with-verify** — the mounting offset is a
+property of *this* mounting, so it must be refreshed each time a node is put
+back on (re-mounting shifts the straps — including taking nodes off to charge
+between blocks; a power cycle alone does **not** invalidate it). It is cacheable: reuse the last calibration if a quick
 still-pose consistency check passes, re-pose only when it drifts. This is
 distinct from the **time offset**, a different quantity with a different
 lifetime — see `SETUP_AND_CALIBRATION_PLAN.md` §3.

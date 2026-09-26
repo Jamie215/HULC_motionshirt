@@ -45,6 +45,12 @@ recorded motion itself**, independent of BLE latency.
 
 ---
 
+> **Current default: the vector feature (§2.1).** Sections 2–4 describe the
+> original angular-*speed* aligner, which is still the fallback
+> (`--sync speed`). The default, `--sync vector`, correlates the full
+> world-frame angular-velocity **vector** instead; §2.1 gives its math and
+> acceptance rule. The offset/drift machinery (§3.1, §3.2, §5, §6) is shared.
+
 ## 2. The motion feature: angular speed (mounting-invariant)
 
 Each node logs unit quaternions $q_i$ (orientation). Raw quaternions are **not**
@@ -70,6 +76,42 @@ shorter arc, since $q$ and $-q$ are the same rotation). Angular speed is
 identical regardless of how each sensor is bolted on. Two sensors on the same
 moving segment therefore produce *correlated* angular-speed signals even though
 their raw quaternions differ. (Implementation: `angular_speed()`.)
+
+### 2.1 The default feature: world-frame angular-velocity vectors
+
+Every node's Rotation Vector lives in the **same** world frame (gravity +
+magnetic north), so the angular velocity can be expressed in that shared frame
+rather than reduced to a magnitude. With $q_{i+1} = \Delta q_i \otimes q_i$,
+
+```math
+\Delta q_i = q_{i+1} \otimes q_i^{*}, \qquad
+\boldsymbol\omega_i = \hat{\mathbf u}(\Delta q_i)\,\frac{2\arccos\lvert\Delta q_{i,w}\rvert}{\Delta t_i} \quad (3')
+```
+
+puts the increment in the world frame. A rigid segment has one world angular
+velocity whatever its mounting, so two nodes that move together show the same
+vector, **direction included** (`world_angular_velocity`). Each component is
+resampled to the uniform grid and the three cross-correlations are summed, i.e.
+the correlation of the vector signals is $\sum_k \boldsymbol\omega_A(k)\cdot\boldsymbol\omega_B(k+\ell)$.
+The lag is the arg-max with the same parabolic refinement (§3.2).
+
+**Acceptance.** Nodes on different segments (torso vs. arm) mostly move on their
+own, so the overall normalised correlation $c$ (sum of dot products over the
+overlap, divided by the two signals' norms) is low even when one shared sync
+gesture pins the lag exactly. What matters is whether the best peak is
+**distinct**:
+
+```math
+\rho = \frac{C(\hat\ell)}{\max_{\lvert \ell - \hat\ell\rvert > 0.5\,\text{s}} C(\ell)} \ \ge\ 1.25
+\quad\text{and}\quad c \ge 0.10 \quad (9')
+```
+
+(`VECTOR_PEAK_RATIO_MIN`, `VECTOR_PEAK_EXCLUDE_S`, `VECTOR_CONFIDENCE_MIN`).
+If either fails the aligner falls back to the speed method of §§2–4. The chosen
+method and $\rho$ are written to `aligned.quality.json` as `sync_method` and
+`sync_peak_ratio`. On synthetic torso + upper-arm sessions (`timing_bench.py`),
+vector sync reaches the accuracy of a perfect-clock oracle where speed sync
+failed.
 
 ---
 
@@ -198,6 +240,14 @@ $\varepsilon_{\min}$ below):
 Otherwise $\text{drift}=0$. Reported as `drift_ppm` $= m\times 10^6$.
 (Implementation: `_windowed_lags()`, `_lsq_slope()`.)
 
+Two guards keep the windowed lags honest (`_aligned_overlap`, `_windowed_lags`):
+the windows are laid over the two nodes' **common** time span after applying
+the global offset (so window $j$ of A and of B cover the same real time), and a
+window is kept only if the two signals share motion in it (correlation
+$\ge r_{\min}$). In a window where one node sits still, the "best" lag is
+arbitrary; before this guard a trend fitted through such windows read a false
+$+15.9$ s on a real capture. Fewer than 3 usable windows ⇒ no drift.
+
 ---
 
 ## 6. Applying the mapping and emitting aligned streams
@@ -245,9 +295,14 @@ synthetic data; it is **not** a validation against hardware ground truth (§9).
   as a fitted curve instead of a single global line.
 - **Dropouts/gaps** in the logs degrade the correlation and inflate the residual
   (observed on real captures with intermittent recording).
-- **Feature is a magnitude** — angular speed discards the rotation axis; two
-  motions with identical speed profiles but different axes are indistinguishable
-  to the aligner (rare in practice; the confidence check still applies).
+- **Clock restarts.** A node that reboots mid-log (battery died) restarts
+  `millis()` at 0, so one log holds two unrelated clocks. The loader splits at
+  any backward jump over `CLOCK_RESET_MS` (1 s), keeps the largest segment,
+  warns, and records `clock_restarts` in the quality JSON; the other pieces
+  are not analysed. Offloading at every charge (one block per log) avoids it.
+- **Speed fallback is a magnitude** — angular speed discards the rotation axis;
+  two motions with identical speed profiles but different axes are
+  indistinguishable to it. The default vector feature (§2.1) keeps the axis.
 
 ---
 
