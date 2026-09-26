@@ -160,10 +160,12 @@ python tools/multinode_test.py erase --count 2
 
 ## 3. Record the movement — laptop disconnected
 
-Nothing is connected. Run this **4-beat protocol**. It satisfies two separate
-needs in one take: a *still* hold for calibration, and *shared* motion (both
-segments moving together) so reconcile can lock the clock from the motion alone.
+Nothing is connected. The full procedure — warm-up, exact pose, the sync
+gesture per montage, task pacing, rests, timings and the accept/redo checks —
+is in **[`COLLECTION_SOP.md`](COLLECTION_SOP.md)**. In short:
 
+0. [ ] **Warm-up, ~15 s** — slow arm circles / trunk turns, so every node is
+       awake (nodes log nothing while IDLE) and the heading has settled.
 1. [ ] **Neutral hold, ~5 s** — stand in the N-pose (arms straight at the
        sides, **palms facing the thighs**), still. This is the
        calibration window.
@@ -175,8 +177,11 @@ segments moving together) so reconcile can lock the clock from the motion alone.
          body left–right) with the arm held against the side — an arm swing
          leaves the torso still, so it cannot sync it.
 3. [ ] **The movement of interest** — e.g. slow elbow flexion/extension reps
-       through the target range.
-4. [ ] **Still, ~2 s** — so the nodes settle back to `IDLE`.
+       through the target range, ≤ ~1 rep/s, 5–8 s rests between sets.
+4. [ ] **Closing hold, ~5 s** in the same N-pose (for the strap-slip check).
+5. [ ] **Rest-down, before offloading** — take the nodes off and lay them flat
+       for ≥ 10 s (or stay still ≥ 60 s) so they drop to `IDLE`, which offload
+       needs. Between takes with the same straps, skip it.
 
 > Why the sync gesture: pure elbow flexion moves the forearm a lot but the upper
 > arm barely at all, so on its own it gives weak clock alignment. A whole-arm

@@ -156,6 +156,9 @@ python tools/multinode_test.py selftest
 
 ### Pipeline docs
 
+- [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the recording procedure:
+  warm-up, neutral hold, sync gesture per montage, task pacing, timings (each
+  tied to the firmware / pipeline setting behind it) and accept/redo checks.
 - [`COLLECTION_CHECKLIST.md`](tools/COLLECTION_CHECKLIST.md) — the end-to-end
   run-sheet for a session, including the minimal-connect BLE workflow and
   sensor-placement guidance.
