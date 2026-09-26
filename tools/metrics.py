@@ -877,8 +877,11 @@ def trim_to_analysis(t_ms, seg_quats, calibration):
     """Drop the samples before the neutral hold (setup, not protocol).
 
     Returns (t_ms, seg_quats, start_ms or None). Leaves the stream untouched
-    when there is no calibration window, or nothing (or too little) to keep."""
-    t0 = analysis_start_ms(calibration)
+    when there is no calibration window, when the window is not this
+    recording's own still neutral hold (a reused calibration), or when too
+    little would be left. `seg_quats` must be the RAW stream (the stillness
+    check is mounting-invariant, so raw or calibrated both work)."""
+    t0 = analysis_start_ms(calibration, t_ms, seg_quats)
     if t0 is None or t0 <= t_ms[0]:
         return t_ms, seg_quats, None
     keep = t_ms >= t0
@@ -1280,7 +1283,21 @@ def selftest():
                                fdof, True)
     plaus_ok = (clean["ok"] and not turn["ok"] and turn["jumps"] == 0
                 and not hyper["ok"] and hyper["outside_limits_frac"] > 0.5)
-    ok = ok and bouts_ok and plaus_ok
+    #   trim guard: a calibration whose neutral window lands on MOTION in this
+    #   recording (reused from another session) must not trim it; this
+    #   recording's own still hold does.
+    from calibrate_segments import analysis_start_ms as _start
+    tt = np.arange(0, 20000, 50.0)
+    wig = np.where(tt < 8000, 0.0, 0.8 * np.sin(2 * np.pi * tt / 1500.0))
+    qq = {"forearm_r": np.stack([_q_axis([0, 0, 1], a) for a in wig])}
+    own = _start({"neutral": {"t_window_ms": [4000, 6000]}}, tt, qq)
+    foreign = _start({"neutral": {"t_window_ms": [12000, 14000]}}, tt, qq)
+    outside = _start({"neutral": {"t_window_ms": [30000, 32000]}}, tt, qq)
+    trim_ok = own == 4000.0 and foreign is None and outside is None
+    print(f"[selftest] trim only on this recording's own still hold: own "
+          f"{own}, reused-on-motion {foreign}, outside {outside} "
+          f"{'OK' if trim_ok else 'FAIL'}")
+    ok = ok and bouts_ok and plaus_ok and trim_ok
     print(f"[selftest] rep bouts {[b['reps'] for b in bouts]} (want [4, 3]) "
           f"{'OK' if bouts_ok else 'FAIL'}; plausibility flags clean/turn/"
           f"hyperextension {clean['ok']}/{turn['ok']}/{hyper['ok']} "

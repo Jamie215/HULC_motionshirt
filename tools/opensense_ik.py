@@ -110,6 +110,7 @@ except ImportError:  # pragma: no cover
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calibrate_segments import (  # noqa: E402
     load_aligned, load_montage, qmul, qconj, qnorm, quat_average,
+    analysis_start_ms,
 )
 from metrics import (  # noqa: E402
     compute_metrics, print_report, resolve_anatomical_frame, trim_to_analysis,
@@ -415,6 +416,12 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
     nw = calibration.get("neutral", {}).get("t_window_ms")
     if not nw:
         raise SystemExit("[opensense] calibration.json has no neutral window")
+    t_chk, q_chk, _ = load_aligned(aligned_csv, montage)
+    if analysis_start_ms(calibration, t_chk, q_chk) is None:
+        raise SystemExit("[opensense] the calibration's neutral window is not a "
+                         "still hold in THIS recording (a calibration reused from "
+                         "another session?). IMUPlacer needs this session's own "
+                         "neutral hold: re-run calibrate_segments.py on it.")
     os.makedirs(outdir, exist_ok=True)
 
     profile_name = profile_name or detect_profile(model_path)

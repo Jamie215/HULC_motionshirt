@@ -1726,18 +1726,24 @@ void handleActiveRecording() {
       // ms early (skipped -> 200 ms gap) both log below activeHz. The slack
       // lets a slightly early report take its slot.
       // Signed: after an early write the next slot can lie a few ms ahead.
+      // lastActiveSample == 0 is the "resync" marker the transitions set; it
+      // is handled explicitly, because once millis() passes 2^31 (~24.8 days)
+      // a signed now - 0 reads negative and would never be due.
       int32_t period = 1000 / (int32_t)activeHz;
+      bool resync = (lastActiveSample == 0);
       int32_t sinceSlot = (int32_t)(now - lastActiveSample);
-      bool timeToSample = (sinceSlot + period / ACTIVE_SAMPLE_SLACK_DIV >= period);
+      bool timeToSample = resync ||
+                          (sinceSlot + period / ACTIVE_SAMPLE_SLACK_DIV >= period);
       if (timeToSample) {
         writeQuaternionSample(
           fusionQuatI(), fusionQuatJ(),
           fusionQuatK(), fusionQuatReal()
         );
         lastActiveSample += (uint32_t)period;
-        // fell behind (first sample, a pause in reports, a rate change):
+        // first sample, or fell behind (a pause in reports, a rate change):
         // restart the schedule at this sample instead of bursting to catch up
-        if ((int32_t)(now - lastActiveSample) >= period) lastActiveSample = now;
+        if (resync || (int32_t)(now - lastActiveSample) >= period)
+          lastActiveSample = now;
       }
     }
 

@@ -92,10 +92,11 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 ## Analysis pipeline (`tools/`)
 
-The pipeline is pure-Python and mostly **standard library** — no NumPy. The one
-exception is `bleak`, needed only for the live BLE actions in
-`multinode_test.py` (`pip install bleak`); everything offline, including every
-`selftest`, runs with a bare Python 3 install.
+The pipeline is pure Python on top of **NumPy** (`pip install numpy`), which
+every offline tool and `selftest` needs. Two optional extras: `bleak`, only for
+the live BLE actions in `multinode_test.py` (`pip install bleak`), and OpenSim,
+only for the optional OpenSense path and its comparison harness
+(`pip install opensim`, see `tools/opensense_ik.py`).
 
 Each node records the ORIENTATION of the SEGMENT it is strapped to. A clinical
 **joint angle** is the *relative* orientation of two adjacent segments, so what
@@ -164,6 +165,10 @@ python tools/multinode_test.py selftest
   design of stages 5–7 (calibration, metrics, visual).
 - [`pipeline_walkthrough.html`](tools/pipeline_walkthrough.html) — the whole
   pipeline at a glance.
+- `timing_bench.py` — synthetic sessions pushed through the real reconcile
+  step (own clocks, firmware sampling schedule, STATIC gaps, strap wobble) to
+  measure what sync and sampling cost; it motivated the vector clock sync and
+  the 1 Hz STATIC logging.
 - [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) — default chain vs
   OpenSense (two models) on synthetic ground truth and a real capture, with a
   draft methods paragraph; [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)

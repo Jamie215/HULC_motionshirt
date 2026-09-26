@@ -371,13 +371,28 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
     return t0, t1, f"{note}auto-detected {how} {t0:.0f}–{t1:.0f} ms"
 
 
-def analysis_start_ms(calibration):
+def analysis_start_ms(calibration, t_ms=None, seg_quats=None):
     """Where analysis should begin: the start of the neutral hold, or None.
 
     Everything before the neutral pose is setup (strapping on, fidgeting) and is
-    not part of the protocol, so metrics and the viewer drop it by default."""
+    not part of the protocol, so metrics and the viewer drop it by default.
+
+    With the stream (t_ms, seg_quats), the window must also belong to THIS
+    recording: inside its time span and still in its data. A calibration reused
+    from an earlier session (verify -> reuse) carries that session's window
+    times, which say nothing about where this recording's protocol starts —
+    trimming on them would silently drop real data, so None is returned."""
     nw = (calibration or {}).get("neutral", {}).get("t_window_ms")
-    return float(nw[0]) if nw and len(nw) == 2 else None
+    if not nw or len(nw) != 2:
+        return None
+    t0, t1 = float(nw[0]), float(nw[1])
+    if t_ms is not None and seg_quats is not None:
+        if t0 < t_ms[0] or t1 > t_ms[-1]:
+            return None
+        s = window_stillness(t_ms, seg_quats, t0, t1)
+        if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
+            return None
+    return t0
 
 
 def window_stillness(t_ms, seg_quats, t0, t1):

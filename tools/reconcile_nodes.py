@@ -399,7 +399,9 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
     drift_resolved = False
     diag = {}
     if estimate_drift:
-        win = _windowed_lags(uA, uB, fs, k=8, frac=window_frac)
+        # B's speed grid origin, mapped onto A's clock by the global offset
+        win = _windowed_lags(A0, uA, B0 + offset_ms, uB, fs, k=8,
+                             frac=window_frac)
         if win is not None:
             wt, wl = win                                # window-centre ms, lag ms
             slope, se = _lsq_slope(wt, wl)              # ms/ms, SE
@@ -419,18 +421,39 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
             "peak_distinctness": distinct, "diag": diag}
 
 
-def _windowed_lags(uA, uB, fs, k=6, frac=0.3):
-    """Lag (ms) measured in k overlapping windows; returns (centre_ms, lag_ms)."""
-    n = min(len(uA), len(uB))
+def _aligned_overlap(A0, uA, B0_on_a, uB, fs):
+    """The two uniform signals cropped to their common time span, so index i
+    is the same instant (on A's clock) in both. B0_on_a = B's grid origin
+    expressed on A's clock."""
+    shift = int(round((B0_on_a - A0) * fs / 1000.0))
+    a, b = (uA[shift:], uB) if shift >= 0 else (uA, uB[-shift:])
+    m = min(len(a), len(b))
+    return a[:m], b[:m]
+
+
+def _windowed_lags(A0, uA, B0_on_a, uB, fs, k=6, frac=0.3):
+    """Residual lag (ms) of B vs A in k overlapping windows over their COMMON
+    time span; returns (centre_ms, lag_ms).
+
+    Only windows where the two signals actually share motion (correlation at
+    the best lag >= CONFIDENCE_MIN) are kept: in a window where one node is
+    still, the "best" lag is arbitrary and a trend fitted through it is noise
+    (it read +15.9 s on a real capture). None when fewer than 3 windows count."""
+    uA, uB = _aligned_overlap(A0, uA, B0_on_a, uB, fs)
+    n = len(uA)
     w = int(n * frac)
     if w < 8 or n - w < 1:
         return None
     starts = np.linspace(0, n - w, k).astype(int)
     t, lag = [], []
     for s in starts:
-        L = best_lag_seconds(uA[s:s + w], uB[s:s + w], fs) * 1000.0
+        L, conf = lag_and_confidence(uA[s:s + w], uB[s:s + w], fs)
+        if conf < CONFIDENCE_MIN:
+            continue
         t.append((s + w / 2.0) / fs * 1000.0)
-        lag.append(L)
+        lag.append(L * 1000.0)
+    if len(t) < 3:
+        return None
     return np.array(t), np.array(lag)
 
 
@@ -463,7 +486,7 @@ def residual_alignment_ms(tA, qA, tB_on_a, qB, fs=100.0):
     B0, _, uB = resample_uniform(tsB, spB, fs)
     systematic = (A0 - B0) + best_lag_seconds(uA, uB, fs) * 1000.0
     trend = 0.0
-    win = _windowed_lags(uA, uB, fs, k=6, frac=0.30)
+    win = _windowed_lags(A0, uA, B0, uB, fs, k=6, frac=0.30)
     if win is not None:
         wt, wl = win
         slope, _ = _lsq_slope(wt, wl)
