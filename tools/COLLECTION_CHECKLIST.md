@@ -167,17 +167,26 @@ segments moving together) so reconcile can lock the clock from the motion alone.
 1. [ ] **Neutral hold, ~5 s** — stand in the N-pose (arms straight at the
        sides, **palms facing the thighs**), still. This is the
        calibration window.
-2. [ ] **Sync gesture, ~5 s** — 3–5 big **whole-arm** swings (elbow locked, move
-       from the shoulder) so **both** nodes move together. This is what gives
-       reconcile a strong, correlated signal to align on.
+2. [ ] **Sync gesture, ~5 s** — a movement that turns **every** node together,
+       so reconcile has a shared motion to align the clocks on:
+       - arm-only montage (upper arm + forearm): 3–5 big **whole-arm** swings,
+         elbow locked, moving from the shoulder;
+       - montage with a **torso** node: 3–4 **trunk twists** (turn the upper
+         body left–right) with the arm held against the side — an arm swing
+         leaves the torso still, so it cannot sync it.
 3. [ ] **The movement of interest** — e.g. slow elbow flexion/extension reps
        through the target range.
 4. [ ] **Still, ~2 s** — so the nodes settle back to `IDLE`.
 
 > Why the sync gesture: pure elbow flexion moves the forearm a lot but the upper
 > arm barely at all, so on its own it gives weak clock alignment. A whole-arm
-> swing moves both segments together → strong correlation. Keep it **wide and
-> moderate**, not frantic — very fast motion aliases at ~10 Hz logging.
+> swing (or, with a torso node, a trunk twist) turns every segment together →
+> one strong, shared motion. reconcile matches the nodes' **world angular
+> velocity** (direction as well as speed), so a single clear shared gesture is
+> enough even if the rest of the session is the arm moving on its own. Keep it
+> **wide and moderate**, not frantic — very fast motion aliases at ~10 Hz. The
+> sync result is in `aligned.quality.json` (`sync_peak_ratio` well above 1.25
+> = one clear match).
 
 ## 4. Offload the logs
 
