@@ -22,11 +22,13 @@ update this SOP too.
 | **Sync gesture** | One strong motion shared by all nodes, so their independent clocks can be aligned (`reconcile_nodes.py`) | Offsets off by milliseconds to tens of seconds; joint angles meaningless |
 | **Facing** | Which way the subject faces: from the **torso node**, or with no torso node, from **elbow flexion** | Angles split along the wrong axes; flexion mixed with pronation |
 | **Task** | The movement of interest | — |
-| **Closing hold** | A second still pose, used to check for strap slip (`calibrate_segments.py verify`) | Slip goes undetected |
+| **Closing hold** | **Where the analysis ends** — the last still N-pose after the task. Also a second pose for the strap-slip check (`calibrate_segments.py verify`) | Taking the nodes off (logged like any motion) is analyzed as if it were movement |
 | **Rest-down** | Nodes drop to IDLE so they can be offloaded | Offload refused while a node is recording |
 
-A take runs steps 0–6 of section 3. A session can hold several takes, and nodes
-may be removed between them (e.g. to charge) — see section 3b.
+**Takes and blocks.** A *take* is steps 0–6 of section 3. A *block* is the
+takes between two offloads — normally one charge of the nodes, one mounting,
+and one capture folder. Nodes come off at the end of every block to charge, and
+the logs are offloaded while they charge (section 3b).
 
 ---
 
@@ -50,11 +52,13 @@ may be removed between them (e.g. to charge) — see section 3b.
 - [ ] **Straps.** Firm, on the flat of each segment (see the checklist,
       section 1). Soft-tissue wobble is the largest error left at 10 Hz: about
       3° RMS doubles every angle error in simulation.
-- [ ] **Session length.** Per node, at the designed 10 Hz (20 B per sample),
-      logging halves its rate after **~2.3 h of ACTIVE recording** (80%
-      watermark) and stops at ~2.6 h. **Plan ≤ 90 min of recording between
-      offloads.** Still time costs little (STATIC logs 1 sample/s).
-- [ ] **Brief the subject** with the script in section 5, and demonstrate the
+- [ ] **Block length.** A block ends when the nodes need charging, and the
+      logs are offloaded then (section 3b). Storage is rarely the limit first:
+      at the designed 10 Hz (20 B per sample) a node halves its logging rate
+      after **~2.3 h of ACTIVE recording** (80% watermark) and stops at
+      ~2.6 h; still time costs little (1 sample/s). Plan blocks by battery,
+      and never past ~90 min of recording.
+- [ ] **Brief the subject** with the script in section 4, and demonstrate the
       N-pose and the sync gesture once.
 
 ---
@@ -72,10 +76,10 @@ aim for; **max** = beyond this something changes (e.g. the nodes' logging rate).
 | 3 | **Sync gesture** | 4 / 6 / 10 s | 3–5 cycles of the montage's gesture (below), ~1–1.5 s per cycle, wide and moderate. | Clocks are aligned by matching world angular-velocity vectors; a clear shared burst makes one distinct peak (`sync_peak_ratio` ≥ 1.25). Faster than ~2 cycles/s aliases at 10 Hz. |
 | 4 | **Facing (no torso node only)** | 3 reps | Upper arm hanging still, 3 slow elbow flexions from straight to ≥ 90° and back (~2 s each), palm facing the thigh. | Facing comes from the elbow hinge: it needs flexion ≥ 30° (95th percentile, `HINGE_MIN_FLEX_DEG`) and a clear minimum (`HINGE_MAX_COST_RATIO`). Elbow-task curls usually cover it; doing it here makes it reliable. |
 | 5 | **Task** | — | The movement of interest. Rules below. | — |
-| 6 | **Closing hold** | 3 / 5 / 8 s | Same N-pose as step 2. | A second still pose for `verify` (strap-slip check). Recommended. |
-| 7 | **Rest-down** (before offloading) | 10 / — / — s | Take the nodes off, lay them flat on a table ≥ 10 s (or stay still ≥ 60 s). Not needed between takes. | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE) or 60 s without motion (`NOT_MOTION_TO_IDLE_MS`). Offload needs IDLE. |
+| 6 | **Closing hold** | **3 / 5 / 8 s** | **Same N-pose as step 2, fully still. Required.** | **The analysis ends here:** calibrate looks for the last still 2 s window, ≥ 5 s after the opening hold, whose pose matches it within 10° (`CLOSING_MIN_GAP_MS`, `CLOSING_POSE_DEG`); everything after it — taking the nodes off — is dropped. Without it the analysis runs to the end of the log. Also serves `verify` (strap slip). |
+| 7 | **Rest-down** (end of block) | 10 / — / — s | Take the nodes off and lay them flat on the charger ≥ 10 s (or stay still ≥ 60 s), then the charging checkpoint (section 3b). Not needed between takes of a block. | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE) or 60 s without motion (`NOT_MOTION_TO_IDLE_MS`). Offload needs IDLE. |
 
-A typical take is **~45 s of protocol plus the task**.
+A typical take is **~50 s of protocol plus the task**.
 
 ### The N-pose (steps 2 and 6)
 
@@ -108,36 +112,54 @@ A typical take is **~45 s of protocol plus the task**.
     rest, keep making small movements, or re-do steps 0–3 afterwards.
 - **Range:** move through the full range of interest, but avoid reaching past
   what the subject can hold steadily. Wobble grows with speed and effort.
-- **Straps:** if a strap is adjusted or slips, stop and re-do steps 2–3 with
-  the new mounting (a new neutral hold).
+- **Straps:** if a strap slips or is adjusted mid-block, the rest of the block
+  has a different mounting. End the block there (closing hold, charge/offload
+  checkpoint, section 3b) and start a new one.
 
-### 3b. Between takes — removing nodes (e.g. to charge)
+### 3b. Blocks and the charging checkpoint
 
-Nodes can be taken off between takes, e.g. to charge them. What matters is
-what happens when they go back on:
+The nodes run for a limited time and hold a limited log, so a session is a
+series of **blocks**, each ending at a charge. The charge is also when the logs
+come off the nodes:
 
-- **A re-mounted node sits at a slightly different angle** on the segment, so
-  its old calibration no longer applies. Start the next take from **step 0**:
-  warm-up, neutral hold, sync gesture. Every take in this SOP already begins
-  that way, so no extra step is needed — just never skip the hold after
-  re-mounting.
-- **Put the node back the same way** (same spot, same orientation, same
-  label/segment): it keeps the montage valid, and `verify` can then confirm the
-  old calibration still holds instead of needing a fresh one.
-- **Never swap nodes between segments** without updating the montage — the
-  montage binds each node ID to a segment.
-- **Analysis — one mounting per analysis.** A node keeps appending to the same
-  log until it is offloaded, and the pipeline auto-detects the **first** still
-  hold in the log. If nodes were re-mounted between takes that share a log:
-  - simplest: **offload** before re-mounting, so each log is one mounting; or
-  - analyze each later take with its own hold: find the hold's time in the
-    log (the still stretch at the start of that take) and pass it with
-    `analyze_session.py run … --window t0,t1`. Analysis starts at that hold,
-    so the earlier takes are left out.
-  Without re-mounting (same straps, node never removed), takes in one log can
-  share the first hold's calibration.
-- While a node is off the body and charging it may keep logging handling
-  motion; that data falls before the next take's hold and is dropped.
+1. **End the take** with the closing hold (step 6) — it marks where the
+   block's analysis ends.
+2. **Take the nodes off and put them on the charger.** Laid flat and still they
+   drop to IDLE within ~8 s (logging stops; offload needs IDLE). The motion of
+   taking them off is logged, but falls after the closing hold and is dropped.
+3. **Offload into a new folder per block** while they charge (nodes stay
+   powered from their batteries):
+   `python tools/multinode_test.py offload --count 2 --out-dir ./capture/block2`
+4. **Quick check** the block before wiping it off the nodes:
+   `python tools/reconcile_nodes.py --inspect ./capture/block2/*.bin`
+   (records, rate, no clock-restart warning) — or run the full analysis
+   (section 5).
+5. **Erase** so the next block starts clean:
+   `python tools/multinode_test.py erase --count 2`
+   (Steps 3 and 5 can be one command with `offload … --erase-after`, which wipes
+   each node only after its offload verifies complete — faster, but the block
+   is then no longer recoverable from the node.)
+6. **Re-mount** — same node on the same segment, same spot and orientation —
+   and start the next take at **step 0**.
+
+Why one block per folder:
+
+- **One block = one mounting.** A re-mounted node sits at a slightly different
+  angle, so it needs its own neutral hold; the pipeline calibrates each capture
+  folder on its first hold. Offloading and erasing at every charge keeps that
+  automatic.
+- **Takes within a block** share the block's calibration (the first take's
+  opening hold) — correct as long as the nodes were not removed in between.
+  The block is analyzed from that opening hold to the **last** closing hold.
+- **If a node must come off mid-block** without an offload (avoid this),
+  analyze the takes after it separately with that take's own hold:
+  `analyze_session.py run … --window t0,t1`.
+- **If a battery dies mid-block**, the node restarts its clock when recharged.
+  The loader detects the restart, keeps the larger clock segment and warns;
+  the other part is not analyzed. Offloading at every charge avoids it.
+- Put nodes back the same way every time: it keeps the montage valid and lets
+  `verify` confirm an old calibration. Never swap nodes between segments
+  without updating the montage.
 
 ---
 
@@ -152,8 +174,8 @@ what happens when they go back on:
 | 0:23 | "Swing your straight arm forward and back, big and smooth — five times." (6 s) |
 | 0:29 | "Arm by your side, bend your elbow up slowly and down — three times." (6 s) |
 | 0:35 | Task, e.g. "Five slow curls" … rest 6 s … "five turns of the palm, up and down" … |
-| ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s) |
-| ~1:50 | Before offloading: remove the nodes, lay them flat on the table for 10 s. |
+| ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s — the closing hold; required) |
+| ~1:50 | Next take: back to 0:00. End of block: nodes off, onto the charger (section 3b). |
 
 **Shoulder (torso + upper arm), ~2 min**
 
@@ -163,20 +185,23 @@ what happens when they go back on:
 | 0:15 | "Arms down by your sides, palms facing your legs … and **hold still**." (settle 3 s + hold 5 s) |
 | 0:23 | "Hand on your hip. Twist your upper body left and right, smoothly — four times." (6 s) |
 | 0:29 | Task, e.g. "Raise your arm forward as high as is comfortable, and down — five times" … rest 6 s … "now out to the side, five times" … |
-| ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s) |
-| ~1:50 | Before offloading: remove the nodes, lay them flat on the table for 10 s. |
+| ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s — the closing hold; required) |
+| ~1:50 | Next take: back to 0:00. End of block: nodes off, onto the charger (section 3b). |
 
 ---
 
-## 5. Accept or redo — right after the session
+## 5. Accept or redo — at each charging checkpoint
 
-Offload and run the analysis (checklist, sections 4–5), then read these. They
-are all printed by `analyze_session.py` or found in its outputs.
+Run the analysis on the block's folder (checklist, section 5), ideally while
+the nodes charge, then read these. They are all printed by `analyze_session.py`
+or found in its outputs.
 
 | Check | Where | Accept | If not |
 |---|---|---|---|
 | Logging rate | `reconcile_nodes.py --inspect <node>.bin` | ~10 Hz while moving, ~1 Hz while still | Firmware version / flash throttle (watermark) — check before the next take |
 | Neutral window found | calibrate: `auto-detected first still window …` | At the time of step 2, **still ✓**, ≤ 0.10 rad/s | Hold longer / stiller; or pass `--window t0,t1` if you know when it was |
+| Closing hold found | calibrate: `closing hold: … — analysis ends here`; metrics: `analysis ends at the closing hold` | At the time of the last step 6 | `! no closing hold found`: the take ended without a still N-pose — the analysis includes taking the nodes off; end every take with step 6 |
+| No clock restart | reconcile / `--inspect`: no `clock restarted` warning; `clock_restarts: 0` in `aligned.quality.json` | 0 | A node rebooted (battery) mid-block: part of its log was not analyzed; charge earlier |
 | Sync | `aligned.quality.json`: `sync_method`, `sync_peak_ratio`, `sync_reliable` | `vector`, ≥ 1.25, `true` | Redo with a bigger, cleaner sync gesture (right one for the montage) |
 | Data loss | `aligned.quality.json`: `gap_frac`, `longest_gap_ms` | Gaps only where the subject was still | Check battery / node reset; a gap during motion is lost data |
 | Facing | calibrate: `FACING (auto from torso)` or `FACING (from elbow hinge motion)` | confident; hinge contrast ≤ 0.75 | No torso: add the step-4 elbow flexions; torso: check the node is on the sternum, face up |
@@ -196,5 +221,6 @@ are all printed by `analyze_session.py` or found in its outputs.
 | Fast, snappy task reps | Aliasing at 10 Hz; large fit residuals | ≤ 1 rep/s, smooth |
 | Long still pauses (≥ 60 s) mid-take | Nodes go IDLE and stop logging | Keep rests 5–8 s, or re-do steps 0–3 after a long break |
 | Working next to a metal desk / laptop | Nodes disagree on north, unflagged | Section 2: place |
-| Re-mounting a node (after charging or a strap change) without a new hold | The old mounting is applied to the new position | Start the next take from step 0 — see section 3b |
-| Several takes in one log, nodes re-mounted in between, analyzed as one | Every take is calibrated on the FIRST take's hold | Analyze each mounting with its own hold — see section 3b |
+| Skipping the closing hold | Taking the nodes off is analyzed as movement (bogus range, reps) | End every take with step 6 |
+| Re-mounting nodes without offloading first | The next takes are calibrated on the old mounting's hold | Charging checkpoint: offload + erase before re-mounting (section 3b) |
+| Letting a battery die mid-block | Clock restart; part of that node's log is not analyzed | End the block and charge before the battery runs out |
