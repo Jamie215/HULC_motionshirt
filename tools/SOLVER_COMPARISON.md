@@ -25,7 +25,12 @@ Model** for right-arm sessions (`--opensense-model ThoracoscapularShoulderModel.
   ISB angle conventions (see *Methods text* below), instead of "our own chain".
 
 Keep the **default chain** as the dependency-free path and as a built-in
-cross-check. Use **Rajagopal** only where TSM has no body: the left arm and the
+cross-check — and always look at it beside the model. IK can lose the sensors
+after a fast movement and hold a wrong pose for seconds (§2b). Such stretches
+are now detected, shaded in the viewer and excluded from the model's metrics,
+and the review page switches between the direct sensor view and each model
+solve on the same timeline (`analyze_session.py run … --opensense-model A.osim
+--opensense-model B.osim`). Use **Rajagopal** only where TSM has no body: the left arm and the
 wrists. Report its raw coordinates only with a torso node (see finding 3).
 
 ## 1. Synthetic ground truth (`tools/compare_paths.py`)
@@ -179,6 +184,33 @@ Limits to state with it:
 - **Coverage:** right arm only (TSM). The left arm needs Rajagopal or a
   mirrored model.
 
+### 2b. Solver stability: the model can lose the sensors (2026-09-27)
+
+Re-running the same capture after the vector clock sync (an input change of
+under 1 ms in the node alignment) made TSM's IK settle in a wrong pose for
+**12 s** (25.7–37.6 s into the analysis window, during the wide shoulder
+swing): the elbow pinned at its 168° flexion limit while the sensors read an
+almost straight arm, with every sensor ~90° from the solved skeleton. The
+earlier run on the old alignment tracked that stretch fine. Rajagopal on the
+new alignment lost the fit for only 1.1 s in short blips.
+
+IK solves each frame starting from the previous pose, so a fast movement
+sampled at ~8 Hz can move the arm past the basin of the right solution; once
+there it stays until the motion carries it back. The fit residual shows it
+plainly (median error ~92° inside the stretch vs 2–6° elsewhere), so
+`opensense_ik.py` now marks frames where any sensor sits more than
+`FIT_LOST_DEG` (30°) from the solved skeleton as **fit lost**:
+
+- they are left out of the model's metrics (TSM elbow ROM back to −12…145°
+  instead of −12…168°), and listed in `pose_solver.fit_lost`;
+- `opensense_fit.csv` records the per-frame fit, and the review page shades
+  those stretches on the angle graph, warns in the live panel and the header
+  chip, and blanks them from the solver-comparison overlay.
+
+Implication for reporting: a model solve is only as good as its fit, frame by
+frame. Report the fit-lost time with any model-based number, and treat a
+session with long lost stretches as needing the direct sensor path there.
+
 ## 4. Recommendations
 
 1. **Collect torso + upper arm** for shoulder work with the two nodes.
@@ -191,7 +223,10 @@ Limits to state with it:
    - Raise the log rate from 10 Hz toward 30–60 Hz.
    - Keep full rate through the neutral hold.
    - Tighten straps.
-4. **Both arms at full scale:** TSM is right-arm only. The published model
+4. **Review every model solve against the direct sensor view** (the page's
+   solver switch and the graph's "compare solvers" overlay), and report the
+   fit-lost time alongside model-based numbers (§2b).
+5. **Both arms at full scale:** TSM is right-arm only. The published model
    could be mirrored for the left arm, which is a modification to report, or
    Rajagopal used for the left, with the raw-coordinate caveat in finding 3.
 

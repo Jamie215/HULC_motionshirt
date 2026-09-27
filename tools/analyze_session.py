@@ -12,8 +12,11 @@ segments automatically (no hand-ordering of .bin files):
                                       window isn't still; facing; closing hold)
     metrics    -> metrics.json       (per-DOF joint angles, ROM, rep bouts over
                                       the opening -> closing hold window)
-    render     -> <out>.html         (stage-7 review: viewer + metrics panel)
-    opensense  -> <outdir>/opensense/ (optional, --opensense-model)
+    opensense  -> <outdir>/opensense/<profile>/  (optional, --opensense-model,
+                                      once per model)
+    render     -> <out>.html         (stage-7 review: viewer + metrics panel;
+                                      with OpenSense, a switch between the
+                                      direct sensor view and each model solve)
 
 The montage records each node's column (n0, n1, ...) and its id. Offload names
 each file by node id (e.g. HULC-IMU-485C.bin), so this tool resolves every
@@ -33,6 +36,12 @@ Usage
     # no torso node and too little elbow flexion to infer the facing? state it:
     python tools/analyze_session.py run --montage montage.json \
         --capture-dir ./capture/block1 --outdir ./out/block1 --facing-deg 90
+
+    # also solve on published models; the page gets a Sensors / model switch:
+    python tools/analyze_session.py run --montage montage.json \
+        --capture-dir ./capture/block1 --outdir ./out/block1 \
+        --opensense-model ThoracoscapularShoulderModel.osim \
+        --opensense-model Rajagopal2015_opensense.osim
 
     # override the neutral window / output name:
     python tools/analyze_session.py run --montage montage.json \
@@ -128,7 +137,7 @@ def _run(cmd, step):
 
 
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
-        facing_deg=None, opensense_model=None):
+        facing_deg=None, opensense_models=None):
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -169,21 +178,40 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
           montage_path, "--calibration", calib, "--out", metrics],
          "4/5 metrics (per-DOF joint angles + range of motion)")
 
-    # 5. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
-    #    (it also picks up reconcile's aligned.quality.json for the sync chips)
-    _run([py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
-          montage_path, "--calibration", calib, "--metrics", metrics,
-          "--out", out_html],
-         "5/5 render (stage-7 review: viewer + metrics panel)")
+    # 5. (optional) the OpenSense path — the same session solved on each given
+    #    OpenSim model, reported through the same metrics. A failed solve is
+    #    reported and skipped: the direct sensor review is still produced.
+    solver_dirs = []
+    models = [m for m in (opensense_models or []) if m]
+    if models:
+        from opensense_ik import detect_profile
+        for k, model in enumerate(models, 1):
+            try:
+                name = detect_profile(model)
+            except (OSError, SystemExit, ValueError, KeyError):
+                name = os.path.splitext(os.path.basename(model))[0]
+            os_dir = os.path.join(outdir, "opensense", name)
+            if os_dir in solver_dirs:
+                os_dir += f"_{k}"
+            cmd = [py, os.path.join(TOOLS, "opensense_ik.py"), "run", aligned,
+                   montage_path, "--calibration", calib, "--model", model,
+                   "--outdir", os_dir, "--no-render"]
+            step = f"OpenSense {k}/{len(models)}: {os.path.basename(model)}"
+            print(f"\n===== {step} =====\n  $ " + " ".join(cmd))
+            if subprocess.run(cmd).returncode == 0:
+                solver_dirs.append(os_dir)
+            else:
+                print(f"[analyze] {step} failed — left out of the review page.")
 
-    # 6. (optional) the OpenSense path — the same session solved on OpenSim's
-    #    musculoskeletal model, reported through the same metrics + viewer.
-    os_dir = os.path.join(outdir, "opensense")
-    if opensense_model:
-        _run([py, os.path.join(TOOLS, "opensense_ik.py"), "run", aligned,
-              montage_path, "--calibration", calib, "--model", opensense_model,
-              "--outdir", os_dir],
-             "6/6 OpenSense path (pose solved on the OpenSim model)")
+    # 6. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
+    #    (it also picks up reconcile's aligned.quality.json for the sync chips).
+    #    Each OpenSense solve rides along, switchable against the sensor view.
+    cmd = [py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
+           montage_path, "--calibration", calib, "--metrics", metrics,
+           "--out", out_html]
+    for d in solver_dirs:
+        cmd += ["--solver-dir", d]
+    _run(cmd, "5/5 render (stage-7 review: viewer + metrics panel)")
 
     print("\n===== DONE =====")
     print(f"  aligned stream : {aligned}")
@@ -191,9 +219,9 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     print(f"  metrics        : {metrics}")
     print(f"  review (html)  : {out_html}   (3-D viewer + metrics panel)")
     print(f"  open it        : file://{os.path.abspath(out_html)}")
-    if opensense_model:
-        print(f"  opensense      : {os.path.join(os_dir, 'opensense_metrics.json')}"
-              f" + opensense.html")
+    for d in solver_dirs:
+        print(f"  opensense      : {os.path.join(d, 'opensense_metrics.json')}"
+              f"  (switch to it in the review page)")
 
 
 # ---------------------------------------------------------------------------
@@ -316,11 +344,13 @@ def main():
                     help="subject's facing at neutral, degrees clockwise from "
                          "world +Y; gives anatomical joint axes when the montage "
                          "has no torso node")
-    pr.add_argument("--opensense-model", metavar="OSIM",
+    pr.add_argument("--opensense-model", metavar="OSIM", action="append",
                     help="also solve the session with OpenSim OpenSense on this "
                          "model (ThoracoscapularShoulderModel.osim for the right "
                          "arm, or Rajagopal2015_opensense.osim; needs "
-                         "`pip install opensim`) -> <outdir>/opensense/")
+                         "`pip install opensim`) -> <outdir>/opensense/<profile>/; "
+                         "repeat for several models. The review page then has a "
+                         "switch between the direct sensor view and each model")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
 

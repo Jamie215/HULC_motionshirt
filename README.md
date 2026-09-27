@@ -119,8 +119,8 @@ number a placement can't support.
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
 | 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from the opening neutral hold (found automatically if the montage window isn't still), estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and locates the closing hold → `calibration.json` |
 | 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window (opening hold → closing hold) → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
-| 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views |
-| (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
+| 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views. With OpenSense solves, a footer switch between the direct sensor view and each model, and a solver-comparison overlay on the angle graph |
+| (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual; frames where the model loses the sensors are flagged and excluded. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
 
 `analyze_session.py` orchestrates stages 3–7 in one command, binding each log
 to its segment automatically from the montage.
@@ -146,6 +146,8 @@ python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
 python tools/analyze_session.py run --montage montage.json \
     --capture-dir ./capture/block1 --outdir ./out/block1
 #    → aligned.csv, calibration.json, metrics.json, and an HTML viewer
+#    (add --opensense-model PATH, repeatable, for model solves you can switch
+#    to in the same page)
 ```
 
 Almost every tool has a `selftest` / `--selftest` that validates its logic on

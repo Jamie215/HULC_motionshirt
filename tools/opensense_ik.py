@@ -33,8 +33,19 @@ the pose is solved, never in how an angle is defined or reported.
         │  forward kinematics of the solved model
         ▼
     opensense_aligned.csv (segment orientation from neutral, world axes)
-        └──▶ metrics.py  →  opensense_metrics.json      (same report format)
+        └──▶ metrics.py  →  opensense_metrics.json      (same report format;
+        │                                                 fit-lost frames left out)
+        └──▶ opensense_fit.csv                           (per-frame fit)
         └──▶ skeleton_viewer.py → opensense.html         (same viewer)
+
+Through analyze_session.py the model solve is instead added to the main review
+page (skeleton_viewer.py render --solver-dir), switchable against the direct
+sensor view on the same timeline, one entry per model.
+
+Fit lost: IK solves each frame from the previous pose, so after a fast move it
+can settle in a wrong configuration and stay there. Frames where any sensor
+sits more than FIT_LOST_DEG from the solved skeleton are marked, excluded from
+the metrics (pose_solver.fit_lost) and shaded in the viewer.
 
 What it relies on from the default pipeline
 -------------------------------------------
@@ -88,7 +99,8 @@ Usage
     python tools/opensense_ik.py run aligned.csv montage.json \\
         --calibration calibration.json --model ThoracoscapularShoulderModel.osim \\
         --outdir out/opensense
-    # or as the last stage of analyze_session.py run ... --opensense-model PATH
+    # or inside analyze_session.py run ... --opensense-model PATH (repeatable;
+    # each model becomes a solver in the review page's switch)
 
     python tools/opensense_ik.py selftest   # model-plan + export logic, no OpenSim
 """
@@ -119,6 +131,13 @@ from reconcile_nodes import quality_path  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = [1.0, 0.0, 0.0, 0.0]
+# A frame where any sensor sits further than this from the solved skeleton is
+# one the model could not follow (normal frames fit within ~2-15°). IK solves
+# frame to frame from the previous pose, so after a fast move it can settle in
+# a wrong configuration and stay there for seconds (seen on a real capture:
+# ~90° off for 12 s). Such frames are left out of the model's metrics and
+# shaded in the viewer, never reported as motion.
+FIT_LOST_DEG = 30.0
 
 # ---------------------------------------------------------------------------
 # Model profiles — how each supported OpenSim model maps onto our montage
@@ -380,6 +399,40 @@ def residual_stats(err_path):
     return out
 
 
+def fit_series(err_path, t_s):
+    """Per-frame worst sensor-to-skeleton error (degrees) on the times `t_s`."""
+    if not err_path:
+        return np.zeros(len(t_s))
+    import opensim as osim
+    e = osim.TimeSeriesTable(err_path)
+    te = np.array(e.getIndependentColumn(), dtype=float)
+    worst = np.max(np.column_stack([np.degrees(e.getDependentColumn(lbl).to_numpy())
+                                    for lbl in e.getColumnLabels()]), axis=1)
+    return np.interp(t_s, te, worst)
+
+
+def lost_stretches(t_ms, lost):
+    """[[t_start_ms, t_end_ms], ...] of consecutive lost frames."""
+    out, i, n = [], 0, len(lost)
+    while i < n:
+        if not lost[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and lost[j + 1]:
+            j += 1
+        out.append([round(float(t_ms[i]), 1), round(float(t_ms[j]), 1)])
+        i = j + 1
+    return out
+
+
+def write_fit(path, t_ms, fit_deg, lost):
+    """opensense_fit.csv: the per-frame fit, read by the viewer."""
+    np.savetxt(path, np.column_stack([t_ms, fit_deg, lost.astype(float)]),
+               delimiter=",", header="t_common_ms,fit_err_deg,lost",
+               comments="", fmt=["%.1f", "%.2f", "%d"])
+
+
 def write_aligned(path, t_ms, seg_q, montage):
     """A reconcile-format CSV of the solved segment orientations, so metrics.py
     and the viewer read OpenSense output exactly like a node stream."""
@@ -473,8 +526,17 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
     with open(cal_path, "w") as f:
         json.dump(cal_out, f, indent=2)
 
+    # frames the model could not follow: kept in the stream (the viewer shows
+    # them, shaded) but left out of the metrics
+    fit = fit_series(err, t_ik)
+    lost = fit > FIT_LOST_DEG
+    write_fit(os.path.join(outdir, "opensense_fit.csv"), t_ik_ms, fit, lost)
     t2, sq2, meta2 = load_aligned(aligned_out, montage)
-    rep = compute_metrics(montage, t2, sq2, meta2, cal_out, trim=False)
+    keep = ~(np.interp(t2, t_ik_ms, lost.astype(float)) > 0.5)
+    if keep.sum() < 3:
+        keep[:] = True
+    rep = compute_metrics(montage, t2[keep], {s: q[keep] for s, q in sq2.items()},
+                          meta2, cal_out, trim=False)
     rep["pose_solver"] = {
         "name": "OpenSim OpenSense (IMUPlacer + IMU IK)",
         "model": os.path.basename(model_path),
@@ -484,6 +546,16 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
         "free_coordinates": sorted(free),
         "ik_seconds": round(secs, 1),
         "residual_deg": residual_stats(err),
+        "fit_lost": {
+            "threshold_deg": FIT_LOST_DEG,
+            "frames": int(lost.sum()),
+            "seconds": round(float(np.sum(np.diff(t_ik_ms, append=t_ik_ms[-1])[lost]))
+                             / 1000.0, 1),
+            "stretches_ms": lost_stretches(t_ik_ms, lost),
+            "note": ("frames where a sensor sits more than "
+                     f"{FIT_LOST_DEG:.0f}° from the solved skeleton: the model "
+                     "could not follow them; they are left out of these metrics"),
+        },
         "model_coordinates_deg": {
             c: {"p5": round(float(np.percentile(v, 5)), 1),
                 "p50": round(float(np.median(v)), 1),
@@ -499,6 +571,14 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
     for lbl, r in rep["pose_solver"]["residual_deg"].items():
         print(f"  {lbl:<16} median {r['median_deg']:5.1f}°  p95 {r['p95_deg']:5.1f}°"
               f"  >20°: {r['frac_over_20deg'] * 100:.0f}% of frames")
+    fl = rep["pose_solver"]["fit_lost"]
+    if fl["frames"]:
+        print(f"  ! the model LOST the sensors for {fl['seconds']:.1f} s "
+              f"({fl['frames']} frames over {FIT_LOST_DEG:.0f}°: "
+              + ", ".join(f"{(a - t_ik_ms[0]) / 1000:.1f}–{(b - t_ik_ms[0]) / 1000:.1f} s"
+                          for a, b in fl["stretches_ms"][:6])
+              + "). Those frames are excluded from the model's metrics; compare "
+              "against the direct sensor view there.")
 
     if render:
         html = os.path.join(outdir, "opensense.html")
@@ -567,6 +647,11 @@ def selftest():
         txt = f.read()
     check("DataType=Quaternion" in txt and "radius_r_imu" in txt
           and "1.00000000,0.00000000" in txt, "OpenSense .sto layout")
+
+    lost = np.array([0, 1, 1, 0, 0, 1, 0, 1], dtype=bool)
+    check(lost_stretches(np.arange(8) * 100.0, lost)
+          == [[100.0, 200.0], [500.0, 500.0], [700.0, 700.0]],
+          "fit-lost frames grouped into stretches")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — model plans for both profiles "
           f"(what each montage frees), profile detection, world->model frame, .sto "

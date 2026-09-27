@@ -240,6 +240,13 @@ segment **in montage order automatically**, so there's no hand-ordering of logs:
 python tools/analyze_session.py run --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1 --out elbow.html
 ```
 
+With one or more `--opensense-model PATH`, each model's solve is added to the
+same review page: a **Sensors / model** switch in the footer changes how the
+pose is solved (same moment, camera and graph), and the angle graph's
+**compare solvers** overlay draws the other solves over the current one.
+Stretches where a model lost the sensors are shaded and left out of that
+model's numbers.
+
 Run it once **per block folder** — each block is one mounting with its own
 neutral hold.
 

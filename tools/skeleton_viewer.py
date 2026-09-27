@@ -49,6 +49,16 @@ undefined stretches shaded, min / max marked. The series is computed in the page
 from the baked quaternions with metrics.py's chain (unwrapped, then shifted by a
 multiple of 360° so its middle reads within ±180°, as the panel does).
 
+Solver switch
+-------------
+One page can carry the same session solved several ways: the direct sensor
+chain (default, with its raw <-> calibrated toggle) and OpenSense on one or
+more published models (--solver-dir). A footer switch picks the solver; the
+page reloads onto that scene at the same moment, camera and graph (state rides
+in the URL hash). The angle graph can overlay the other solvers' series. A
+model solve has no raw view, and the frames where it lost the sensors (fit
+error over opensense_ik.FIT_LOST_DEG) are shaded and warned about.
+
 Facing (heading) auto-correction
 --------------------------------
 The mag-referenced world gives orientation but not how the subject's forward
@@ -91,6 +101,12 @@ Usage
     # reads out beside the body, sharing the raw<->calibrated toggle:
     python tools/skeleton_viewer.py render aligned.csv montage.json \
         --calibration calibration.json --metrics metrics.json --out review.html
+
+    # + OpenSense solves (opensense_ik.py output folders) -> a Sensors / model
+    # switch in the footer and a "compare solvers" overlay on the angle graph:
+    python tools/skeleton_viewer.py render aligned.csv montage.json \
+        --calibration calibration.json --metrics metrics.json \
+        --solver-dir out/opensense/thoracoscapular --out review.html
 
     # validate end-to-end with no hardware (synth a session, bake, check):
     python tools/skeleton_viewer.py selftest
@@ -167,8 +183,18 @@ def _anat_chain():
     return chain
 
 
+SENSOR_SOLVER = {
+    "key": "sensor", "kind": "sensor", "label": "Sensors",
+    "title": "Direct from the sensors (no body model)",
+    "note": "Each joint angle comes straight from its two calibrated sensors. "
+            "Nothing is constrained, so every sensor reading is kept as measured.",
+}
+# Short button labels for the OpenSense model profiles (opensense_ik.PROFILES).
+MODEL_SHORT = {"thoracoscapular": "Shoulder model", "rajagopal": "Rajagopal model"}
+
+
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
-                metrics=None, quality=None, trim=True):
+                metrics=None, quality=None, trim=True, solver=None):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
@@ -183,8 +209,12 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
     confidence, shown as a header chip and per-card warnings.
 
-    With `trim` (default) playback starts at the neutral hold — the setup before
-    it is not protocol, and metrics.py drops it the same way.
+    With `trim` (default) playback runs from the neutral hold to the closing
+    hold — the same analysis window metrics.py uses.
+
+    `solver` describes how the orientations were obtained (SENSOR_SOLVER by
+    default; a model solve from opensense_ik.py via load_solver_dir). A page can
+    carry several scenes, one per solver, switched in the viewer (build_page).
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
     if trim:
@@ -264,6 +294,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "heading": heading,
             "anatomical_frame_quat": (None if q_wa is None
                                       else [round(float(v), 8) for v in q_wa]),
+            "solver": dict(solver or SENSOR_SOLVER),
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
@@ -289,13 +320,75 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     }
 
 
+def load_solver_dir(solver_dir, montage, max_frames=DEFAULT_MAX_FRAMES):
+    """Bake the scene of an opensense_ik.py output folder (the pose solved on a
+    published model), for the viewer's solver switch.
+
+    The folder holds opensense_aligned.csv (segment orientations from the
+    solved skeleton), opensense_calibration.json (identity offsets, the
+    original facing / neutral window) and opensense_metrics.json. The stream
+    is already cut to the analysis window, so it is not trimmed again."""
+    def f(name):
+        path = os.path.join(solver_dir, name)
+        if not os.path.exists(path):
+            raise SystemExit(f"[viewer] {solver_dir}: missing {name} — is this an "
+                             f"opensense_ik.py output folder?")
+        return path
+    csv_path = f("opensense_aligned.csv")
+    calibration = _load_calibration(f("opensense_calibration.json"))
+    metrics = _load_json(f("opensense_metrics.json"))
+    ps = metrics.get("pose_solver", {})
+    profile = ps.get("profile", "model")
+    res = ps.get("residual_deg") or {}
+    meds = [r.get("median_deg") for r in res.values()
+            if r.get("median_deg") is not None]
+    solver = {
+        "key": f"opensense_{profile}", "kind": "model",
+        "label": MODEL_SHORT.get(profile, ps.get("model_title", profile)),
+        "title": f"OpenSense on the {ps.get('model_title', profile)}",
+        "note": ("The whole arm solved at once on a published musculoskeletal "
+                 "model (OpenSim OpenSense): real joint axes and joint limits, "
+                 "so each pose is one the model's skeleton can make. Sensor "
+                 "readings the model cannot follow are smoothed over."),
+        "model": ps.get("model"),
+        "free_coordinates": ps.get("free_coordinates"),
+        "residual_median_deg": (round(float(np.median(meds)), 1) if meds else None),
+        "residual_deg": res,
+    }
+    qpath = quality_path(csv_path)
+    quality = _load_json(qpath) if os.path.exists(qpath) else None
+    scene = build_scene(csv_path, montage, calibration, max_frames,
+                        metrics=metrics, quality=quality, trim=False, solver=solver)
+    # Per-frame fit (opensense_fit.csv): frames the model could not follow are
+    # shaded and warned about in the page, never shown as trustworthy motion.
+    fit_path = os.path.join(solver_dir, "opensense_fit.csv")
+    if os.path.exists(fit_path):
+        fit = np.loadtxt(fit_path, delimiter=",", skiprows=1, ndmin=2)
+        t = np.asarray(scene["t_ms"], dtype=float)
+        fl = ps.get("fit_lost") or {}
+        sv = scene["meta"]["solver"]
+        sv["fit_err_deg"] = [round(float(v), 1)
+                             for v in np.interp(t, fit[:, 0], fit[:, 1])]
+        sv["fit_lost_deg"] = float(fl.get("threshold_deg", 30.0))
+        sv["fit_lost_s"] = float(fl.get("seconds", 0.0))
+        sv["fit_lost_stretches_ms"] = fl.get("stretches_ms", [])
+    return scene
+
+
+def build_page(scenes):
+    """One page, several scenes (one per solver). The first is shown first."""
+    return scenes[0] if len(scenes) == 1 else {"solvers": list(scenes)}
+
+
 # ---------------------------------------------------------------------------
 # HTML emit
 # ---------------------------------------------------------------------------
 def render_html(scene):
+    """`scene` is one build_scene() dict, or build_page()'s {"solvers": [...]}."""
     data_json = json.dumps(scene, separators=(",", ":"))
-    title = (f"Skeleton review — {scene['meta']['subject']} / "
-             f"{scene['meta']['session']}")
+    first = scene["solvers"][0] if "solvers" in scene else scene
+    title = (f"Skeleton review — {first['meta']['subject']} / "
+             f"{first['meta']['session']}")
     return (_HTML_TEMPLATE
             .replace("__TITLE__", _html_escape(title))
             .replace("/*__FBD_DATA__*/null", data_json))
@@ -329,7 +422,9 @@ def cmd_render(args):
     quality = _load_json(qpath) if os.path.exists(qpath) else None
     scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
                         metrics=metrics, quality=quality)
-    html = render_html(scene)
+    extra = [load_solver_dir(d, montage, args.max_frames)
+             for d in (args.solver_dir or [])]
+    html = render_html(build_page([scene] + extra))
     # UTF-8 always: the page is <meta charset="utf-8"> and carries non-ASCII glyphs
     # (↔, °, ·, —). Without this, Python on Windows defaults to cp1252 and the
     # write dies with a UnicodeEncodeError.
@@ -374,6 +469,10 @@ def cmd_render(args):
     else:
         print("[viewer] no sync summary found (re-run reconcile_nodes.py to write "
               "aligned.quality.json) — the page shows 'Sync not recorded'.")
+    if extra:
+        print("[viewer] solver switch: " + " | ".join(
+            sc["meta"]["solver"]["label"] for sc in [scene] + extra)
+            + " — same session, pick how the pose is solved in the page footer.")
     print(f"[viewer] open it in a browser: file://{os.path.abspath(args.out)}")
 
 
@@ -489,6 +588,34 @@ def selftest():
             {"column": "n1", "reference": False, "sync_confidence": 0.2,
              "sync_reliable": False, "gap_frac": 0.0, "longest_gap_ms": 0.0}]}
         scene_q = build_scene(csv, montage, cal, max_frames=50, quality=qual)
+
+        # A model solve next to the direct one (the layout opensense_ik.py
+        # writes): the solved segment orientations with identity offsets.
+        osd = os.path.join(d, "opensense")
+        os.makedirs(osd)
+        solved = {sg: qnorm(qmul(q, np.array(
+            cal["segments"][sg]["mounting_offset_quat"]))) for sg, q in seg_quats.items()}
+        with open(os.path.join(osd, "opensense_aligned.csv"), "w") as f:
+            np.savetxt(f, np.column_stack([t_ms] + [solved[sg][:, k]
+                       for sg in true_bone for k in range(4)]), delimiter=",",
+                       header=",".join(header), comments="", fmt="%.6f")
+        cal_os = json.loads(json.dumps(cal))
+        for e in cal_os["segments"].values():
+            e["mounting_offset_quat"] = list(IDENTITY_Q)
+        with open(os.path.join(osd, "opensense_calibration.json"), "w") as f:
+            json.dump(cal_os, f)
+        rep_os = json.loads(json.dumps(metrics_report))
+        rep_os["pose_solver"] = {
+            "profile": "thoracoscapular", "model": "tsm.osim",
+            "model_title": "Thoracoscapular Shoulder Model (Seth et al. 2019)",
+            "free_coordinates": ["shoulder_elv"],
+            "residual_deg": {"upper_arm_r": {"median_deg": 4.0, "p95_deg": 9.0},
+                             "forearm_r": {"median_deg": 5.0, "p95_deg": 11.0}}}
+        with open(os.path.join(osd, "opensense_metrics.json"), "w") as f:
+            json.dump(rep_os, f)
+        scene_os = load_solver_dir(osd, montage, max_frames=200)
+        page = build_page([scene, scene_os])
+        html_page = render_html(page)
 
     ok = True
 
@@ -615,10 +742,29 @@ def selftest():
           and ac.get("torso") is None,
           f"middle-gap chain: parents={scene_gap['parents']} anat={ac}")
 
+    # (9) Solver switch: one page carries the direct scene and the model solve,
+    #     the model's offsets are identity and the two agree at every frame
+    #     (the synthetic "solve" is the calibrated stream itself).
+    sv = scene_os["meta"]["solver"]
+    same = all(np.allclose(np.abs(np.sum(
+        qmul(np.array(scene["frames"][sg]), np.array(
+            next(x for x in scene["segments"] if x["segment"] == sg)["offset"]))
+        * np.array(scene_os["frames"][sg]), axis=1)), 1.0, atol=1e-3)
+        for sg in true_bone)
+    check(list(page) == ["solvers"] and len(page["solvers"]) == 2
+          and scene["meta"]["solver"]["kind"] == "sensor"
+          and sv["kind"] == "model" and sv["label"] == "Shoulder model"
+          and sv["residual_median_deg"] == 4.5
+          and all(x["offset"] == IDENTITY_Q for x in scene_os["segments"])
+          and same and '"solvers":[' in html_page
+          and build_page([scene]) is scene,
+          f"solver switch: sensor + {sv['label']} on one page, model offsets "
+          f"identity, poses agree frame for frame")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
           f"raw↔calibrated promise, the stage-7 metrics panel, the skeleton "
-          f"chain, the no-torso bilateral fallback, and the missing-middle ghost "
-          f"chain.")
+          f"chain, the no-torso bilateral fallback, the missing-middle ghost "
+          f"chain, and the solver switch.")
     return 0 if ok else 1
 
 
@@ -643,6 +789,10 @@ def main():
                     "stage-7 review panel: ROM / velocity / reps / derived)")
     pr.add_argument("--out", default="skeleton.html",
                     help="output HTML file (default: skeleton.html)")
+    pr.add_argument("--solver-dir", action="append", metavar="DIR",
+                    help="an opensense_ik.py output folder: adds that model "
+                         "solve to the page, switchable against the direct "
+                         "sensor view (repeat for several models)")
     pr.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
                     help=f"cap baked frames by striding (default "
                          f"{DEFAULT_MAX_FRAMES})")
@@ -797,11 +947,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .gleg i{display:inline-block;width:16px;height:0;border-top:2.5px solid;vertical-align:middle;
     margin-right:5px}
   .gleg i.dash{border-top-style:dashed}
+  .gleg i.dot{border-top-style:dotted}
   .gopt{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px}
   #gclose{margin-left:auto;padding:3px 11px;font-size:12.5px}
   #gcv{flex:1;width:100%;min-height:0;display:block;cursor:crosshair;touch-action:none}
   /* relative-only numbers dim while the view shows RAW (anatomical zero off) */
   body[data-mode="raw"] .clin-gated{opacity:.5}
+  .lv-why.lv-lost{color:var(--planned);font-weight:600;font-size:12px}
   @media (max-width:640px){.legend{display:none}
     #metrics{width:100%;max-width:100%;top:auto;height:60%}
     #metrics.hidden{transform:translateY(102%)}}
@@ -824,6 +976,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <span class="gleg" id="gleg"></span>
       <label class="gopt" id="gotherwrap"><input type="checkbox" id="gother" checked>
         compare other side</label>
+      <label class="gopt" id="gsolvwrap" hidden><input type="checkbox" id="gsolv" checked>
+        compare solvers</label>
       <button id="gclose" title="Close the graph">Close</button>
     </div>
     <canvas id="gcv"></canvas>
@@ -855,6 +1009,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <button data-view="side">Side</button>
     <button data-view="top">Top</button>
   </div>
+  <div class="toggle" id="solver" hidden title="How the pose is solved"></div>
   <div class="toggle" id="mode">
     <button data-mode="raw">Raw</button>
     <button data-mode="cal">Calibrated</button>
@@ -867,7 +1022,20 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
 <script>
 "use strict";
-const DATA = /*__FBD_DATA__*/null;
+const PAGE = /*__FBD_DATA__*/null;
+// One page can carry the same session solved several ways (the direct sensor
+// chain, and OpenSense on one or more models). The URL hash picks the scene
+// (#s=index), so switching reloads the page onto the other scene with the
+// playhead, camera and open graph carried over in the hash.
+const SOLVERS = PAGE.solvers || [PAGE];
+const HASH = new URLSearchParams(location.hash.slice(1));
+const SOLVER_I = Math.max(0, Math.min(SOLVERS.length-1, parseInt(HASH.get('s')||'0',10)||0));
+const DATA = SOLVERS[SOLVER_I];
+const SOLVER = DATA.meta.solver || {key:'sensor',kind:'sensor',label:'Sensors'};
+// model solves: per-frame worst sensor-to-skeleton error; above the threshold
+// the model lost the sensors and the pose is not trustworthy
+const lostIn=(S,i)=>{const sv=S.meta.solver||{}, f=sv.fit_err_deg;
+  return !!(f&&f[i]>(sv.fit_lost_deg||30));};
 
 // ---- anthropometry: one body, sized from a standard ----
 // Every segment's length AND breadth is a fraction of the subject's stature,
@@ -1146,11 +1314,19 @@ function jointAngles(J, qp, qd, qwa){
 const _series={};
 function angleSeries(jk, dk){
   const key=jk+'.'+dk; if(key in _series) return _series[key];
-  const J=JDEF[jk], bp=J&&bodyOf(J.proximal), bd=J&&bodyOf(J.distal);
-  if(!bp||!bd) return (_series[key]=null);
-  const out=new Array(N); let prev=null;
-  for(let i=0;i<N;i++){
-    const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), QWA);
+  return (_series[key]=sceneSeries(DATA, jk, dk));
+}
+// the same series computed from any baked scene (another solver on the page)
+function sceneSeries(S, jk, dk){
+  const J=JDEF[jk]; if(!J) return null;
+  const bone=seg=>{const sg=S.segments.find(x=>x.segment===seg);
+    return sg&&S.frames[seg]?{frames:S.frames[seg],offset:sg.offset}:null;};
+  const bp=bone(J.proximal), bd=bone(J.distal);
+  if(!bp||!bd) return null;
+  const qwa=S.meta.anatomical_frame_quat, n=S.t_ms.length;
+  const out=new Array(n); let prev=null;
+  for(let i=0;i<n;i++){
+    const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), qwa);
     let v=a?a[dk]:null;
     if(v!=null&&prev!=null) v+=360*Math.round((prev-v)/360);   // unwrap
     out[i]=v; if(v!=null) prev=v;
@@ -1158,9 +1334,20 @@ function angleSeries(jk, dk){
   const def=out.filter(v=>v!=null).sort((x,y)=>x-y);
   if(def.length){
     const k=360*Math.round(def[def.length>>1]/360);
-    if(k) for(let i=0;i<N;i++) if(out[i]!=null) out[i]-=k;
+    if(k) for(let i=0;i<n;i++) if(out[i]!=null) out[i]-=k;
   }
-  return (_series[key]=out);
+  return out;
+}
+// the other solvers' series for the graph overlay, cached per movement
+const _cmp={};
+function solverSeries(jk, dk){
+  const key=jk+'.'+dk; if(key in _cmp) return _cmp[key];
+  return (_cmp[key]=SOLVERS.map((S,i)=>{
+    if(i===SOLVER_I) return null;
+    const ser=sceneSeries(S,jk,dk);
+    if(ser) for(let k=0;k<ser.length;k++) if(lostIn(S,k)) ser[k]=null;
+    return ser?{S,i,ser}:null;
+  }).filter(Boolean));
 }
 // kept for existing callers: the forearm's pronation (+) / supination (-)
 function proSup(side){ const a=liveAngles('elbow_'+side); return a?a.pro_sup:null; }
@@ -1187,7 +1374,11 @@ function updateLive(){
     return `<div class="lv-j"><div class="n">${nameOf(k)}</div>`+
       `<div class="v">${vals.length?vals.join(' · '):'<span class="lv-na">—</span>'}</div></div>`;
   }).join('');
-  liveEl.innerHTML=`<h2>Live angles</h2>${rows}`+(why?`<div class="lv-why">${why}</div>`:'');
+  const lost=lostIn(DATA,frame)
+    ?`<div class="lv-why lv-lost">The model lost the sensors here (fit off by `+
+      `${Math.round(SOLVER.fit_err_deg[frame])}°), so this pose is not trustworthy. `+
+      `Compare with Sensors.</div>`:'';
+  liveEl.innerHTML=`<h2>Live angles</h2>${rows}`+(why?`<div class="lv-why">${why}</div>`:'')+lost;
 }
 
 // ---- the renderer ----
@@ -1488,6 +1679,55 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
+// A model solve has no raw view: its orientations ARE the fitted skeleton.
+if(SOLVER.kind==='model'){
+  const rb=modeBox.querySelector('[data-mode="raw"]');
+  rb.disabled=true;
+  rb.title='A model solve has no raw view. Switch to Sensors to see the raw sensor orientation.';
+}
+// solver switch (only when the page carries more than one)
+const solverBox=document.getElementById('solver');
+if(SOLVERS.length>1){
+  solverBox.hidden=false;
+  solverBox.innerHTML=SOLVERS.map((S,i)=>{
+    const sv=S.meta.solver||{label:'Sensors'};
+    return `<button data-i="${i}" class="${i===SOLVER_I?'on':''}" `+
+      `title="${esc(sv.title||sv.label)}\n\n${esc(sv.note||'')}">${esc(sv.label)}</button>`;
+  }).join('');
+  solverBox.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(b) switchSolver(+b.dataset.i);
+  });
+}
+function switchSolver(i){
+  if(i===SOLVER_I) return;
+  const h=new URLSearchParams({s:i, t:DATA.t_ms[frame], m:mode, x:SPEED,
+    az:az.toFixed(4), el:el.toFixed(4), r:rad.toFixed(3), p:playing?1:0,
+    mo:metricsEl.classList.contains('hidden')?0:1});
+  if(GRAPH) h.set('g',GRAPH.jk+'.'+GRAPH.dk);
+  const on=viewBox.querySelector('button.on'); if(on) h.set('v',on.dataset.view);
+  location.hash=h.toString(); location.reload();
+}
+function nearestFrame(t){
+  let lo=0,hi=N-1; while(hi-lo>1){const m=(lo+hi)>>1; if(DATA.t_ms[m]<t) lo=m; else hi=m;}
+  return Math.abs(DATA.t_ms[lo]-t)<=Math.abs(DATA.t_ms[hi]-t)?lo:hi;
+}
+// after a switch: land on the same moment, camera, view and graph
+function restoreFromHash(){
+  if(!HASH.has('s')) return;
+  const num=k=>{const v=parseFloat(HASH.get(k)); return isFinite(v)?v:null;};
+  if(num('t')!=null) setFrame(nearestFrame(num('t')));
+  if(HASH.get('m')==='raw'&&SOLVER.kind!=='model') setMode('raw');
+  if(num('az')!=null) az=num('az');
+  if(num('el')!=null) el=num('el');
+  if(num('r')!=null) rad=num('r');
+  const v=HASH.get('v'); if(v&&VIEWS[v]) setView(v);
+  const sb=speedBox.querySelector(`[data-speed="${HASH.get('x')}"]`); if(sb) sb.click();
+  if(MET&&HASH.has('mo')&&(HASH.get('mo')==='1')===metricsEl.classList.contains('hidden'))
+    msToggle.click();
+  const g=HASH.get('g');
+  if(g&&MET){const [jk,dk]=g.split('.'); if(JDEF[jk]) openGraph(jk,dk);}
+  if(HASH.get('p')==='1') playBtn.click();
+}
 // front-direction status (header chip tooltip)
 const FACING=FRONT_KNOWN
   ? (HEADING.source==='manual'
@@ -1566,7 +1806,23 @@ document.getElementById('chips').innerHTML=
       ? chip('warn',`${ncal} of ${DATA.segments.length} calibrated`,'Some sensors were not calibrated; their angles are relative only.')
       : chip('warn','Not calibrated','No calibration: angles are relative only.'))+
   chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING)+
-  syncChips();
+  syncChips()+solverChip();
+// How the pose was solved: shown whenever it is a model, or a choice exists.
+function solverChip(){
+  if(SOLVER.kind!=='model') return SOLVERS.length>1
+    ? chip('muted','Direct from sensors',SOLVER.note||'') : '';
+  const r=SOLVER.residual_median_deg, lostS=SOLVER.fit_lost_s||0;
+  const fit=lostS>0?` · fit lost ${lostS.toFixed(0)} s`:r==null?'':` · fit ${r.toFixed(1)}°`;
+  const per=Object.entries(SOLVER.residual_deg||{}).map(([k,v])=>
+    `${k}: median ${v.median_deg}°, p95 ${v.p95_deg}°`).join('\n');
+  return chip(lostS>0||(r!=null&&r>10)?'warn':'good',`${esc(SOLVER.label)}${fit}`,
+    `${SOLVER.title||''}\n\n${SOLVER.note||''}`+
+    (lostS>0?`\n\nFor ${lostS.toFixed(1)} s the model could not follow the sensors `+
+      `(a sensor more than ${SOLVER.fit_lost_deg}° from the solved skeleton). Those `+
+      `stretches are shaded on the graph and left out of this model's metrics.`:'')+
+    (per?`\n\nHow far each sensor sits from the solved skeleton:\n${per}`:'')+
+    (SOLVER.free_coordinates?`\n\nModel joints solved: ${SOLVER.free_coordinates.join(', ')}`:''));
+}
 // Sync: did every sensor's clock line up with the first one (enough shared
 // motion)?
 function syncChips(){
@@ -1769,7 +2025,11 @@ if(MET){
 // the playhead synced to playback; click or drag on it to seek. Shaded: the
 // neutral-pose window (green) and stretches where the angle is undefined.
 const gcv=document.getElementById('gcv'), gctx=gcv.getContext('2d');
-const gOther=document.getElementById('gother');
+const gOther=document.getElementById('gother'), gSolv=document.getElementById('gsolv');
+if(SOLVERS.length>1){
+  document.getElementById('gsolvwrap').hidden=false;
+  gSolv.addEventListener('change',drawGraph);
+}
 const otherSide=jk=>jk.endsWith('_r')?jk.slice(0,-2)+'_l':jk.slice(0,-2)+'_r';
 function layoutOverlays(){
   const mEl=document.getElementById('metrics');
@@ -1823,13 +2083,19 @@ function drawGraph(){
   const main=angleSeries(jk,dk), osk=otherSide(jk);
   const showOther=gOther.checked&&document.getElementById('gotherwrap').style.display!=='none';
   const other=showOther?angleSeries(osk,dk):null;
+  const cmp=(SOLVERS.length>1&&gSolv.checked)?solverSeries(jk,dk):[];
   const t0=DATA.t_ms[0], tEnd=DATA.t_ms[N-1], tspan=Math.max(1,tEnd-t0);
   const X=t=>G_PAD.l+(t-t0)/tspan*(GW-G_PAD.l-G_PAD.r);
-  const vals=[...(main||[]),...(other||[])].filter(v=>v!=null);
+  const inView=(c,i)=>c.S.t_ms[i]>=t0&&c.S.t_ms[i]<=tEnd;
+  const vals=[...(main||[]),...(other||[]),
+    ...cmp.flatMap(c=>c.ser.filter((v,i)=>inView(c,i)))].filter(v=>v!=null);
+  const CMP_DASH=[[2,3],[9,3,2,3],[1,5]];
   const leg=document.getElementById('gleg');
   const colOf=k=>rgb((SEG[(JDEF[k]||{}).distal]||{color:[120,120,120]}).color);
   leg.innerHTML=`<span><i style="border-color:${colOf(jk)}"></i>${esc(nameOf(jk))}</span>`+
-    (other?`<span><i class="dash" style="border-color:${colOf(osk)}"></i>${esc(nameOf(osk))}</span>`:'');
+    (other?`<span><i class="dash" style="border-color:${colOf(osk)}"></i>${esc(nameOf(osk))}</span>`:'')+
+    cmp.map(c=>`<span><i class="dot" style="border-color:${colOf(jk)}"></i>`+
+      `${esc(c.S.meta.solver.label)}</span>`).join('');
   if(!vals.length){
     g.fillStyle=cssVar('--faint'); g.font='13px system-ui,sans-serif'; g.textAlign='center';
     g.fillText('This angle is undefined for the whole session.',GW/2,GH/2); return;
@@ -1847,6 +2113,17 @@ function drawGraph(){
     g.fillStyle=cssVar('--built'); g.globalAlpha=.10;
     g.fillRect(X(Math.max(t0,nw[0])),plotT,X(Math.min(tEnd,nw[1]))-X(Math.max(t0,nw[0])),plotB-plotT);
     g.globalAlpha=.8; g.textAlign='left'; g.fillText('neutral pose',X(Math.max(t0,nw[0]))+4,plotT+11);
+    g.globalAlpha=1;
+  }
+  // stretches where this model solve lost the sensors
+  if(SOLVER.fit_lost_stretches_ms&&SOLVER.fit_lost_stretches_ms.length){
+    g.fillStyle=cssVar('--planned');
+    for(const [a,b] of SOLVER.fit_lost_stretches_ms){
+      const xa=X(Math.max(t0,a)), xb=Math.max(xa+2,X(Math.min(tEnd,b)));
+      g.globalAlpha=.13; g.fillRect(xa,plotT,xb-xa,plotB-plotT);
+      if(xb-xa>70){ g.globalAlpha=.9; g.textAlign='left';
+        g.fillText('model lost the sensors',xa+4,plotT+11); }
+    }
     g.globalAlpha=1;
   }
   // undefined stretches of the main series
@@ -1876,20 +2153,22 @@ function drawGraph(){
     g.fillText(`↑ ${info.pos}`,4,plotT); g.textBaseline='bottom'; g.fillText(`↓ ${info.neg}`,4,plotB);
   }
   // series
-  const line=(ser,color,dash,w)=>{
+  const line=(ser,color,dash,w,T=DATA.t_ms)=>{
     if(!ser) return; g.strokeStyle=color; g.lineWidth=w; g.setLineDash(dash); g.beginPath();
     let pen=false;
-    for(let i=0;i<N;i++){ const v=ser[i];
-      if(v==null){pen=false;continue;}
-      const x=X(DATA.t_ms[i]), y=Y(v);
+    for(let i=0;i<ser.length;i++){ const v=ser[i];
+      if(v==null||T[i]<t0||T[i]>tEnd){pen=false;continue;}
+      const x=X(T[i]), y=Y(v);
       if(pen) g.lineTo(x,y); else {g.moveTo(x,y); pen=true;} }
     g.stroke(); g.setLineDash([]);
   };
   line(other,colOf(osk),[6,4],1.6);
+  cmp.forEach((c,k)=>line(c.ser,colOf(jk),CMP_DASH[k%CMP_DASH.length],1.6,c.S.t_ms));
   line(main,colOf(jk),[],2.4);
-  // min / max of the main series
-  if(main){
-    const d=main.filter(v=>v!=null), mn=Math.min(...d), mx=Math.max(...d);
+  // min / max of the main series (a model's lost frames excluded, as in its metrics)
+  const good=main&&main.filter((v,i)=>v!=null&&!lostIn(DATA,i));
+  if(good&&good.length){
+    const mn=Math.min(...good), mx=Math.max(...good);
     g.strokeStyle=colOf(jk); g.globalAlpha=.45; g.setLineDash([3,4]); g.lineWidth=1;
     for(const v of [mn,mx]){ g.beginPath(); g.moveTo(plotL,Y(v)); g.lineTo(plotR,Y(v)); g.stroke(); }
     g.setLineDash([]); g.globalAlpha=1; g.fillStyle=colOf(jk); g.textAlign='right';
@@ -1939,7 +2218,7 @@ function tick(now){
   requestAnimationFrame(tick);
 }
 
-resize(); setMode(mode); setFrame(0);
+resize(); setMode(mode); setFrame(0); restoreFromHash();
 requestAnimationFrame(tick);
 </script>
 </body>
