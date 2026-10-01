@@ -145,7 +145,8 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 | Freeze | calibration `neutral.found_by` | REDO: no clean freeze after the sync movement (calibration fell back to a weaker choice); NOTE: a node was not fully still (pose spread > 3°) | Freeze ~5 s right after the movement, palms to the thighs |
 | Facing | calibration `heading` | NOTE: front direction unknown, angles relative only | Torso node flat on the sternum; no torso node: include elbow bends |
 | Session end | calibration `end` | NOTE: nodes not seen coming off | `--end <t_ms>` if the tail includes taking them off |
-| Angles | metrics plausibility | NOTE: implausible angles for a joint | Check the freeze pose and strap slip |
+| Trunk | metrics: torso median tilt from the freeze | REDO: over 30° for most of the session — the torso was calibrated in the wrong pose (e.g. its node still on the table) or its strap moved | Strap the torso node on before the sync movement; or `--window` the real freeze |
+| Angles | metrics plausibility | REDO: a joint outside physiological limits for > 25% of the session (a calibration / facing error); NOTE: implausible angles | Check the freeze pose, the facing and strap slip |
 | Model fit | OpenSense `fit_lost` | NOTE: the model lost the sensors for some seconds | Compare with the Sensors view there |
 
 ---

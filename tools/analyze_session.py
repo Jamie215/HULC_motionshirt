@@ -179,6 +179,13 @@ def resolve_opensense_models(requested):
 MIN_ACTIVE_HZ = 8.0          # median logging rate below this = old firmware / throttle
 PEAK_RATIO_MIN = 1.25        # reconcile_nodes.VECTOR_PEAK_RATIO_MIN
 NOISY_POSE_DEG = 3.0         # calibrate's "noisy pose" flag
+# The trunk sits near its freeze pose for most of a session: on real captures
+# the torso's median tilt from the freeze was 4–5°; a torso calibrated while its
+# node lay on the table read 82° (the figure drawn face-down).
+TRUNK_MAX_MEDIAN_DEG = 30.0
+# A joint spending more than this share of the session outside physiological
+# limits is calibrated wrong, not moving oddly (`plausibility.outside_limits_frac`).
+OUTSIDE_LIMITS_REDO_FRAC = 0.25
 
 
 def _log_rate_hz(path):
@@ -265,12 +272,31 @@ def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None
     else:
         add("Session end", "NOTE", e.get("note", "nodes not seen coming off"),
             "if the tail includes taking the nodes off, re-run with --end <ms>")
-    # 6. plausible angles
+    # 6. physically sensible results
+    torso = next((sg for sg in (metrics or {}).get("segments", [])
+                  if sg.get("segment") == "torso" and sg.get("calibrated")), None)
+    tilt = ((torso or {}).get("elevation") or {}).get("median_deg")
+    if tilt is not None:
+        if tilt > TRUNK_MAX_MEDIAN_DEG:
+            add("Trunk", "REDO", f"the torso reads {tilt:.0f}° tilted for most of the "
+                "session — it was calibrated in the wrong pose (node not yet on the "
+                "chest?) or its strap moved",
+                "strap the torso node on before the sync movement and freeze "
+                "upright; or re-run with --window <freeze t0,t1>")
+        else:
+            add("Trunk", "OK", f"upright (median tilt {tilt:.0f}° from the freeze)")
     for j in (metrics or {}).get("joints", []):
-        if j.get("plausibility_warning"):
-            add("Angles", "NOTE", f"{j.get('name', j.get('key'))}: implausible "
-                "angles", "check the freeze pose (palms, elbows straight) and "
-                "strap slip")
+        worst = max((d.get("plausibility") or {}).get("outside_limits_frac") or 0.0
+                    for d in j.get("dofs", [{}]))
+        name = j.get("name", j.get("key"))
+        if worst > OUTSIDE_LIMITS_REDO_FRAC:
+            add("Angles", "REDO", f"{name}: outside physiological limits {worst:.0%} "
+                "of the session — a calibration or facing error, not real motion",
+                "check the freeze pose (palms to the thighs, elbows straight), the "
+                "facing line, and strap slip")
+        elif j.get("plausibility_warning"):
+            add("Angles", "NOTE", f"{name}: implausible angles", "check the freeze "
+                "pose (palms, elbows straight) and strap slip")
     # 7. model solves
     for r in solver_reports:
         ps = r.get("pose_solver", {})
@@ -534,6 +560,13 @@ def selftest():
     v_bad = block_check(bad_q, bad_c, {"joints": []})
     v_face = block_check(good_q, {**good_c, "heading": {"confident": False}},
                          {"joints": []})
+    torso_seg = lambda tilt: {"segments": [{"segment": "torso", "calibrated": True,
+                                            "elevation": {"median_deg": tilt}}],
+                              "joints": []}
+    v_flat = block_check(good_q, good_c, torso_seg(82.0))      # the face-down torso
+    v_up = block_check(good_q, good_c, torso_seg(5.0))
+    v_lim = block_check(good_q, good_c, {"joints": [{"key": "elbow_r", "name": "Elbow",
+        "dofs": [{"plausibility": {"outside_limits_frac": 0.6}}]}]})
     vok = (v_good["verdict"] == "OK"
            and all(c["status"] == "OK" for c in v_good["checks"])
            and v_bad["verdict"] == "REDO"
@@ -541,10 +574,13 @@ def selftest():
            == {"Sync", "Freeze"}
            and v_face["verdict"] == "OK"
            and any(c["check"] == "Facing" and c["status"] == "NOTE"
-                   for c in v_face["checks"]))
+                   for c in v_face["checks"])
+           and v_flat["verdict"] == "REDO" and v_up["verdict"] == "OK"
+           and v_lim["verdict"] == "REDO")
     ok = ok and vok
     check(vok, "block check: clean block OK; weak sync + no freeze -> REDO on "
-          "both; unknown facing alone -> NOTE")
+          "both; unknown facing alone -> NOTE; torso tilted 82° all session -> "
+          "REDO; elbow outside its limits 60% of the time -> REDO")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — log binding/ordering, the "
           f"missing-log guard, and the full reconcile->render chain "

@@ -25,3 +25,6 @@ calibration.json
 !tools/pipeline_walkthrough.html
 metrics.json
 *.json
+# Regression library: the case files are tracked, the real recordings are not
+!tools/regress_cases/*.json
+regress_data/

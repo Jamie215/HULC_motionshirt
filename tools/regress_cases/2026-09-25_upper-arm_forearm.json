@@ -1,0 +1,60 @@
+{
+  "description": "Upper arm + forearm, right arm, old order (hold before the sync). Still neutral hold 35.0-44.1 s (subject: 'thumb pointing inwards'), then a wide shoulder swing, bicep curls, supination / abduction, a full shoulder swing again (108-117 s), arm hanging, forearm node taken off ~123 s, both nodes flat from 124.8 s. Old firmware (~8.3 Hz). Facing from the elbow hinge.",
+  "recorded": "2026-09-25",
+  "protocol": "hold-first",
+  "montage": {
+    "schema_version": "1.0",
+    "subject": {
+      "id": "S01",
+      "notes": ""
+    },
+    "session": {
+      "id": "",
+      "aligned_csv": "aligned.csv"
+    },
+    "calibration": {
+      "neutral_pose": "N-pose",
+      "captured": true,
+      "t_window_ms": [
+        1000,
+        4000
+      ],
+      "functional": []
+    },
+    "nodes": [
+      {
+        "node_id": "HULC-IMU-485C",
+        "column": "n0",
+        "segment": "upper_arm_r",
+        "landmark": "blue",
+        "calibrated": true
+      },
+      {
+        "node_id": "HULC-IMU-B059",
+        "column": "n1",
+        "segment": "forearm_r",
+        "landmark": "green",
+        "calibrated": true
+      }
+    ]
+  },
+  "expect": {
+    "freeze_start_s": [
+      35.0,
+      42.1
+    ],
+    "end_s": [
+      117.0,
+      123.0
+    ],
+    "verdict": "OK",
+    "sync_ok": true,
+    "facing_known": true,
+    "metrics": {
+      "elbow_r.flex_ext.max_deg": [
+        135,
+        155
+      ]
+    }
+  }
+}

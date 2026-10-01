@@ -38,6 +38,11 @@ repeat steps 2–3 first.
    - **REDO** — do what the line under it says when you record the block again.
 4. **Erase** the nodes: `python tools/multinode_test.py erase --count 2`
 5. **Re-mount** and start the next block at step 1.
+6. *Optional, but it is how the analysis gets better:* if the block was new in
+   some way (new person, montage, room) or the analysis got it wrong, keep it as
+   a test case: `python tools/regress.py add <date>_<montage> --capture-dir
+   ./capture/block1 --montage montage.json --description "what was done, when"`
+   (see the README, "Changing the analysis safely").
 
 Open `out/block1/session.html` to review the movement; **Go to neutral pose**
 should show the arms hanging, palms to the legs.

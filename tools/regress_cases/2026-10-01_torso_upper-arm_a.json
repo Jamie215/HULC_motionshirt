@@ -1,0 +1,60 @@
+{
+  "description": "Torso + upper arm, right arm, old order: warm-up (0-80 s), still hold 80.6-122.7 s, trunk-twist sync 122-135 s, three sideways raises to ~125 deg (139, 145, 156 s), alternating forward / sideways raises to ~70 deg, fast small swings 178-192 s, rest 192-211 s with the arm turned ~50 deg, nodes off from ~211 s (upper arm flat from 217 s). New firmware (~10.6 Hz).",
+  "recorded": "2026-10-01",
+  "protocol": "hold-first",
+  "montage": {
+    "schema_version": "1.0",
+    "subject": {
+      "id": "S01",
+      "notes": ""
+    },
+    "session": {
+      "id": "torso-ua-test",
+      "aligned_csv": "aligned.csv"
+    },
+    "calibration": {
+      "neutral_pose": "N-pose",
+      "captured": true,
+      "t_window_ms": [
+        1000,
+        4000
+      ],
+      "functional": []
+    },
+    "nodes": [
+      {
+        "node_id": "HULC-IMU-485C",
+        "column": "n0",
+        "segment": "torso",
+        "landmark": "sternum",
+        "calibrated": true
+      },
+      {
+        "node_id": "HULC-IMU-B059",
+        "column": "n1",
+        "segment": "upper_arm_r",
+        "landmark": "right humerus",
+        "calibrated": true
+      }
+    ]
+  },
+  "expect": {
+    "freeze_start_s": [
+      80.0,
+      120.7
+    ],
+    "end_s": [
+      205.0,
+      217.0
+    ],
+    "verdict": "OK",
+    "sync_ok": true,
+    "facing_known": true,
+    "metrics": {
+      "shoulder_r.elevation.max_deg": [
+        116,
+        136
+      ]
+    }
+  }
+}

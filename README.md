@@ -163,6 +163,36 @@ python tools/analyze_session.py selftest
 python tools/multinode_test.py selftest
 ```
 
+GitHub Actions runs every selftest on each push and pull request
+(`.github/workflows/selftest.yml`).
+
+### Changing the analysis safely — the regression library
+
+Synthetic selftests check the math; they cannot tell whether a change still
+handles **real** recordings. `tools/regress.py` runs the whole pipeline on a
+library of real captures and checks each against what a person confirmed once:
+where the freeze is, where the session ends, the block-check verdict, the
+facing, and plausible ranges.
+
+```bash
+# before AND after any change to the analysis — every case must still pass:
+python tools/regress.py run --data /path/to/regress_data
+
+# grow the library: add a recording (expectations pre-filled from today's
+# analysis), then CHECK them against what really happened, edit, and commit
+# tools/regress_cases/<name>.json
+python tools/regress.py add 2026-10-07_torso_upper-arm \
+    --capture-dir ./capture/block1 --montage montage.json --description "..."
+```
+
+The case files (montage, description, expectations) are in git
+(`tools/regress_cases/`); the recordings are **not** — keep them on a lab drive
+(`<data>/<case name>/*.bin`) and point `--data` or `$HULC_REGRESS_DATA` at it.
+Cases without recordings are skipped. When a recording breaks the analysis, add
+it as a case first, then fix the code until every case passes: each fix then
+stays fixed. The more varied the library (people, mountings, rooms, montages),
+the safer a threshold change.
+
 ### Pipeline docs
 
 - [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the one-page recording
