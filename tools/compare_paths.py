@@ -209,7 +209,9 @@ def run_case(model, truth_model, montage_name, segs, cond, outdir, seed):
     seg_quats = {s: nodes[TRUTH_BODY[s]] for s in segs}
     montage = {"schema_version": "1.0", "subject": {"id": "SYN"},
                "session": {"id": f"{montage_name}_{cond}"},
-               "calibration": {"neutral_pose": "N-pose", "captured": True},
+               # synthetic order: neutral hold first, no separate sync gesture
+               "calibration": {"neutral_pose": "N-pose", "captured": True,
+                               "protocol": "hold-first"},
                "nodes": [{"node_id": f"N{i}", "column": f"n{i}", "segment": s,
                           "calibrated": True} for i, s in enumerate(segs)]}
     meta = {s: {"column": f"n{i}", "node_id": f"N{i}"} for i, s in enumerate(segs)}

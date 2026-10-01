@@ -148,7 +148,8 @@ one offload), not once-forever. See `COLLECTION_SOP.md` §3b.
 > - **Neutral window precedence** — `--window` › the montage's
 >   `calibration.t_window_ms` *only if the data there is still* › auto-detect
 >   (the first deliberate hold — ≥ 3 s still, ≤ 0.04 rad/s at its quietest —
->   and its quietest window; warm-up pauses don't qualify). A placeholder window
+>   after the sync gesture, and its quietest window; `hold-first` recordings
+>   take the first hold of the log). A placeholder window
 >   in the montage can no longer silently calibrate on motion.
 > - **Facing sources** — torso node heading › elbow hinge axis (the facing
 >   that makes elbow motion a pure hinge; needs ≥30° of flexion in the

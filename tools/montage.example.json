@@ -11,6 +11,7 @@
   "calibration": {
     "neutral_pose": "N-pose",
     "captured": true,
+    "protocol": "sync-first",
     "t_window_ms": [
       1000,
       4000

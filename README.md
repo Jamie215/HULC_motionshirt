@@ -138,7 +138,7 @@ python tools/opensense_ik.py fetch-models     # -> models/opensense/
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 
 # 2. record one block per tools/COLLECTION_SOP.md, laptop DISCONNECTED:
-#    warm-up → neutral hold → sync gesture → task(s) → closing hold
+#    wake-up → sync gesture → neutral hold → task(s) → closing hold
 #    (each node logs to its own flash while it is moving)
 
 # 3. charging checkpoint: nodes off the body onto the charger (they go IDLE and
@@ -165,7 +165,7 @@ python tools/multinode_test.py selftest
 ### Pipeline docs
 
 - [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the recording procedure:
-  warm-up, neutral hold, sync gesture per montage, task pacing, timings (each
+  wake-up, sync gesture per montage, neutral hold, task pacing, timings (each
   tied to the firmware / pipeline setting behind it) and accept/redo checks.
 - [`COLLECTION_CHECKLIST.md`](tools/COLLECTION_CHECKLIST.md) — the end-to-end
   run-sheet for a session, including the minimal-connect BLE workflow and

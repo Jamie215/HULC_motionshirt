@@ -272,8 +272,10 @@ def run_case(segs, seed, wobble, outdir, variants):
         p = os.path.join(d, f"N{i}.bin")
         write_node_log(p, ts, qs, off, dr)
         paths.append(p)
+    # synthetic order: neutral hold 5-10 s, THEN the sync gesture at 10-13 s
     montage = {"schema_version": "1.0", "subject": {"id": "BENCH"},
-               "session": {"id": d}, "calibration": {"captured": True},
+               "session": {"id": d},
+               "calibration": {"captured": True, "protocol": "hold-first"},
                "nodes": [{"node_id": f"N{i}", "column": f"n{i}", "segment": s,
                           "calibrated": True} for i, s in enumerate(segs)]}
 

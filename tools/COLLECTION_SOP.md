@@ -17,13 +17,17 @@ update this SOP too.
 
 | Part | What the pipeline gets from it | Fails without it |
 |---|---|---|
-| **Warm-up** | Wakes every node (nodes log nothing while IDLE), and gives the sensor fusion wide rotations to settle its magnetic heading | Missing first seconds; nodes disagreeing on "north" |
-| **Neutral hold** | The sensor→segment mounting offsets and the zero for every angle (`calibrate_segments.py`) | Every angle is measured against a wrong zero |
-| **Sync gesture** | One strong motion shared by all nodes, so their independent clocks can be aligned (`reconcile_nodes.py`) | Offsets off by milliseconds to tens of seconds; joint angles meaningless |
+| **Wake-up** | Wakes every node (nodes log nothing while IDLE), and gives the sensor fusion wide rotations to settle its magnetic heading. Nothing before the sync gesture is used for calibration, so setup — nodes powering up one by one, strapping, waiting — can take as long as it takes | Missing first seconds; nodes disagreeing on "north" |
+| **Sync gesture** | One strong motion shared by all nodes, so their independent clocks can be aligned (`reconcile_nodes.py`). It is also the **landmark** the calibration uses to find the neutral hold right after it | Offsets off by milliseconds to tens of seconds; the hold cannot be told from setup stillness |
+| **Neutral hold** | The sensor→segment mounting offsets and the zero for every angle (`calibrate_segments.py`). Taken after the gesture, so the nodes are awake and settled and any strap shift from the gesture is already in the calibration | Every angle is measured against a wrong zero |
 | **Facing** | Which way the subject faces: from the **torso node**, or with no torso node, from **elbow flexion** | Angles split along the wrong axes; flexion mixed with pronation |
 | **Task** | The movement of interest | — |
 | **Closing hold** | **Where the analysis ends** — the last still N-pose after the task. Also a second pose for the strap-slip check (`calibrate_segments.py verify`) | Taking the nodes off (logged like any motion) is analyzed as if it were movement |
 | **Rest-down** | Nodes drop to IDLE so they can be offloaded | Offload refused while a node is recording |
+
+**Order: sync first, then the hold** (`protocol: sync-first`, the default).
+Recordings made in the earlier order (hold, then sync) are analyzed with
+`--protocol hold-first` (calibrate warns when a recording looks like one).
 
 **Takes and blocks.** A *take* is steps 0–6 of section 3. A *block* is the
 takes between two offloads — normally one charge of the nodes, one mounting,
@@ -59,7 +63,7 @@ the logs are offloaded while they charge (section 3b).
       ~2.6 h; still time costs little (1 sample/s). Plan blocks by battery,
       and never past ~90 min of recording.
 - [ ] **Brief the subject** with the script in section 4, and demonstrate the
-      N-pose and the sync gesture once.
+      sync gesture and the N-pose once.
 
 ---
 
@@ -70,18 +74,18 @@ aim for; **max** = beyond this something changes (e.g. the nodes' logging rate).
 
 | # | Phase | Min / target / max | Do | Why (the setting behind it) |
 |---|---|---|---|---|
-| 0 | **Warm-up** | 10 / 15 / — s | Slowly move every instrumented segment through wide orientations: 2–3 big arm circles each way, 2 slow trunk turns left–right, turn the forearm palm-up/palm-down. Smooth, not fast. | Nodes log only in ACTIVE; motion wakes them from IDLE. Wide rotations help the BNO086 settle its magnetic heading (it calibrates itself from motion; the log does not record its status). |
-| 1 | **Settle** | 2 / 3 / — s | Step into the N-pose and let the arms come to rest. | Setup motion before the hold is dropped automatically: analysis starts at the neutral hold. |
-| 2 | **Neutral hold** | **3 / 5 / 8 s** | **N-pose, fully still.** Details below. | The finder takes the **first still stretch lasting ≥ 3 s whose quietest 2 s averages ≤ 0.04 rad/s (~2°/s)** (`NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`) — a pause in the warm-up is too short and not still enough to count, so **really freeze** for the hold. Over **10 s** without motion a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`): still usable, but 5 s keeps it at 10 Hz. |
-| 3 | **Sync gesture** | 4 / 6 / 10 s | 3–5 cycles of the montage's gesture (below), ~1–1.5 s per cycle, wide and moderate. | Clocks are aligned by matching world angular-velocity vectors; a clear shared burst makes one distinct peak (`sync_peak_ratio` ≥ 1.25). Faster than ~2 cycles/s aliases at 10 Hz. |
+| 0 | **Wake-up** | 10 / 15 / — s | All nodes on and strapped first (take as long as needed — nothing before step 1 is used). Then slowly move every instrumented segment through wide orientations: 2–3 big arm circles each way, 2 slow trunk turns left–right, turn the forearm palm-up/palm-down. Smooth, not fast. Flow straight into step 1. | Nodes log only in ACTIVE; motion wakes them from IDLE. Wide rotations help the BNO086 settle its magnetic heading (it calibrates itself from motion; the log does not record its status). |
+| 1 | **Sync gesture** | 4 / 6 / 10 s | 3–5 cycles of the montage's gesture (below), ~1–1.5 s per cycle, wide and moderate. | Clocks are aligned by matching world angular-velocity vectors; a clear shared burst makes one distinct peak (`sync_peak_ratio` ≥ 1.25). Faster than ~2 cycles/s aliases at 10 Hz. Calibration recognises it as every node above **1 rad/s for ≥ 3 s** (`SYNC_MIN_RAD_S`, `SYNC_MIN_MS`) — a real gesture runs ~2 rad/s. |
+| 2 | **Settle** | 2 / 3 / — s | Step into the N-pose and let the arms stop swaying. | The arm keeps swinging for a moment after the gesture; the finder uses the quietest 2 s of the hold, so the settle just has to end before the hold does. |
+| 3 | **Neutral hold** | **3 / 5 / 8 s** | **N-pose, fully still.** Details below. Must start **within 20 s** of the end of the gesture. | The finder takes the **first still stretch after the sync gesture lasting ≥ 3 s whose quietest 2 s averages ≤ 0.04 rad/s (~2°/s)** (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`) — so **really freeze**. Over **10 s** without motion a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`): still usable, but 5 s keeps it at 10 Hz. |
 | 4 | **Facing (no torso node only)** | 3 reps | Upper arm hanging still, 3 slow elbow flexions from straight to ≥ 90° and back (~2 s each), palm facing the thigh. | Facing comes from the elbow hinge: it needs flexion ≥ 30° (95th percentile, `HINGE_MIN_FLEX_DEG`) and a clear minimum (`HINGE_MAX_COST_RATIO`). Elbow-task curls usually cover it; doing it here makes it reliable. |
 | 5 | **Task** | — | The movement of interest. Rules below. | — |
-| 6 | **Closing hold** | **3 / 5 / 8 s** | **Same N-pose as step 2, fully still. Required.** | **The analysis ends here:** calibrate looks for the last still 2 s window, ≥ 5 s after the opening hold, where every node is tilted as in the opening hold within 10° (`CLOSING_MIN_GAP_MS`, `CLOSING_POSE_DEG`). If the arm is turned differently (palm back instead of to the thigh) the hold still counts but calibrate warns: keep the palms to the thighs, as in step 2; everything after it — taking the nodes off — is dropped. Without it the analysis runs to the end of the log. Also serves `verify` (strap slip). |
+| 6 | **Closing hold** | **3 / 5 / 8 s** | **Same N-pose as step 3, fully still. Required.** | **The analysis ends here:** calibrate looks for the last still 2 s window, ≥ 5 s after the opening hold, where every node is tilted as in the opening hold within 10° (`CLOSING_MIN_GAP_MS`, `CLOSING_POSE_DEG`). If the arm is turned differently (palm back instead of to the thigh) the hold still counts but calibrate warns: keep the palms to the thighs, as in step 3; everything after it — taking the nodes off — is dropped. Without it the analysis runs to the end of the log. Also serves `verify` (strap slip). |
 | 7 | **Rest-down** (end of block) | 10 / — / — s | Take the nodes off and lay them flat on the charger ≥ 10 s (or stay still ≥ 60 s), then the charging checkpoint (section 3b). Not needed between takes of a block. | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE) or 60 s without motion (`NOT_MOTION_TO_IDLE_MS`). Offload needs IDLE. |
 
 A typical take is **~50 s of protocol plus the task**.
 
-### The N-pose (steps 2 and 6)
+### The N-pose (steps 3 and 6)
 
 - Standing upright, weight even, looking ahead. Seated is fine if the trunk is
   upright and the arms hang freely clear of the chair.
@@ -90,9 +94,9 @@ A typical take is **~50 s of protocol plus the task**.
   is what `metrics.py` and the OpenSense models assume.
 - No talking, weight shifting or looking around. Breathing is fine. The hold
   must average under ~6°/s.
-- Hold the same pose in steps 2 and 6.
+- Hold the same pose in steps 3 and 6.
 
-### The sync gesture (step 3) — depends on the montage
+### The sync gesture (step 1) — depends on the montage
 
 | Montage | Gesture | Key points |
 |---|---|---|
@@ -109,7 +113,8 @@ A typical take is **~50 s of protocol plus the task**.
   - ≤ 8 s keeps the nodes at 10 Hz (STATIC after 10 s still).
   - **Never stay still ≥ 60 s mid-take.** The nodes go IDLE and stop logging
     until moved; the first moments after waking can be lost. For a longer
-    rest, keep making small movements, or re-do steps 0–3 afterwards.
+    rest, keep making small movements, or re-do steps 0–3 afterwards
+    (wake-up, sync gesture, settle, hold).
 - **Range:** move through the full range of interest, but avoid reaching past
   what the subject can hold steadily. Wobble grows with speed and effort.
 - **Straps:** if a strap slips or is adjusted mid-block, the rest of the block
@@ -170,8 +175,8 @@ Why one block per folder:
 | Time | Cue |
 |---|---|
 | 0:00 | "Circle your arm slowly, both directions … turn your palm up and down." (15 s) |
-| 0:15 | "Arms down by your sides, palms facing your legs … and **hold still**." (settle 3 s + hold 5 s) |
-| 0:23 | "Swing your straight arm forward and back, big and smooth — five times." (6 s) |
+| 0:15 | "Swing your straight arm forward and back, big and smooth — five times." (6 s) |
+| 0:21 | "Arms down by your sides, palms facing your legs … and **hold still**." (settle 3 s + hold 5 s) |
 | 0:29 | "Arm by your side, bend your elbow up slowly and down — three times." (6 s) |
 | 0:35 | Task, e.g. "Five slow curls" … rest 6 s … "five turns of the palm, up and down" … |
 | ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s — the closing hold; required) |
@@ -182,8 +187,8 @@ Why one block per folder:
 | Time | Cue |
 |---|---|
 | 0:00 | "Circle your arm slowly … now turn your upper body slowly left and right." (15 s) |
-| 0:15 | "Arms down by your sides, palms facing your legs … and **hold still**." (settle 3 s + hold 5 s) |
-| 0:23 | "Hand on your hip. Twist your upper body left and right, smoothly — four times." (6 s) |
+| 0:15 | "Hand on your hip. Twist your upper body left and right, smoothly — four times." (6 s) |
+| 0:21 | "Arms down by your sides, palms facing your legs … and **hold still**." (settle 3 s + hold 5 s) |
 | 0:29 | Task, e.g. "Raise your arm forward as high as is comfortable, and down — five times" … rest 6 s … "now out to the side, five times" … |
 | ~1:45 | "Arms down, palms to your legs, **hold still**." (5 s — the closing hold; required) |
 | ~1:50 | Next take: back to 0:00. End of block: nodes off, onto the charger (section 3b). |
@@ -199,7 +204,7 @@ or found in its outputs.
 | Check | Where | Accept | If not |
 |---|---|---|---|
 | Logging rate | `reconcile_nodes.py --inspect <node>.bin` | ~10 Hz while moving, ~1 Hz while still | Firmware version / flash throttle (watermark) — check before the next take |
-| Neutral window found | calibrate: `auto-detected first neutral hold …` | At the time of step 2, **still ✓**, ≤ 0.04 rad/s | Hold longer / stiller; or pass `--window t0,t1` if you know when it was |
+| Neutral window found | calibrate: `auto-detected neutral hold after the sync gesture …` | At the time of step 3, **still ✓**, ≤ 0.04 rad/s | `no hold right after a sync gesture`: make the gesture bigger and freeze within 20 s of it; a `hold-first` hint: an old-order recording — add `--protocol hold-first`; or pass `--window t0,t1` if you know when the hold was |
 | Closing pose | calibrate: no `! closing hold: … turned` line | joints within 10° of the opening hold | Same N-pose at the end, palms to the thighs; a large value can also mean strap slip |
 | Closing hold found | calibrate: `closing hold: … — analysis ends here`; metrics: `analysis ends at the closing hold` | At the time of the last step 6 | `! no closing hold found`: the take ended without a still N-pose — the analysis includes taking the nodes off; end every take with step 6 |
 | No clock restart | reconcile / `--inspect`: no `clock restarted` warning; `clock_restarts: 0` in `aligned.quality.json` | 0 | A node rebooted (battery) mid-block: part of its log was not analyzed; charge earlier |
@@ -215,12 +220,14 @@ or found in its outputs.
 
 | Mistake | What happens | Prevention |
 |---|---|---|
-| Starting the hold before the nodes woke up | The hold is missing from the log | Always do the warm-up (step 0) |
+| Holding the N-pose before the sync gesture (the old order) | Calibration takes a later rest as neutral; calibrate prints a `hold-first` hint | Gesture first, then the hold; for old recordings `--protocol hold-first` |
+| Waiting too long after the gesture (> 20 s) before the hold | The hold is not tied to the gesture; calibrate falls back to the first hold of the log | Go straight from the gesture into settle + hold |
 | Palms forward (anatomical position) instead of to the thighs | Pro/supination zero off by ~90° | Cue "palms facing your legs" |
 | Elbows slightly bent in the hold | Elbow zero off by that bend | Cue "arms straight" and look before starting the count |
 | Swinging the arm as the sync gesture with a torso node | Torso cannot be synced | Trunk twists with the hand on the hip |
 | Fast, snappy task reps | Aliasing at 10 Hz; large fit residuals | ≤ 1 rep/s, smooth |
 | Long still pauses (≥ 60 s) mid-take | Nodes go IDLE and stop logging | Keep rests 5–8 s, or re-do steps 0–3 after a long break |
+| A weak sync gesture | Clocks may not align, and calibration cannot find the hold after it | Wide, moderate cycles that move **every** node (section 3, step 1) |
 | Working next to a metal desk / laptop | Nodes disagree on north, unflagged | Section 2: place |
 | Skipping the closing hold | Taking the nodes off is analyzed as movement (bogus range, reps) | End every take with step 6 |
 | Re-mounting nodes without offloading first | The next takes are calibrated on the old mounting's hold | Charging checkpoint: offload + erase before re-mounting (section 3b) |

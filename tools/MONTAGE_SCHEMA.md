@@ -60,6 +60,7 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
   "calibration": {
     "neutral_pose": "N-pose",
     "captured": true,
+    "protocol": "sync-first",
     "t_window_ms": [1000, 4000],
     "functional": []
   },
@@ -79,7 +80,8 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
 | `session.aligned_csv` | The reconcile output this montage annotates. |
 | `calibration.neutral_pose` | The static zeroing pose captured at session start (e.g. `N-pose`). |
 | `calibration.captured` | Whether that pose was actually recorded this session. |
-| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the first deliberate hold (≥ 3 s still, not a warm-up pause). `--window` overrides both. The closing hold is always found automatically and lands in `calibration.json`'s `closing` block, not here. |
+| `calibration.protocol` | *Optional.* Order of the recording: `sync-first` (default — sync gesture, then the neutral hold) or `hold-first` (recordings made before that order). Calibration looks for the hold after the gesture, or the first hold of the log; `--protocol` overrides. `enroll` writes `sync-first`. |
+| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the neutral hold: the first deliberate hold (≥ 3 s still) after the sync gesture, or for `hold-first` the first of the log. `--window` overrides both. The closing hold is always found automatically and lands in `calibration.json`'s `closing` block, not here. |
 | `calibration.functional` | Optional functional-calibration movements captured (e.g. a known elbow flexion to fix a joint axis). |
 | `nodes[].node_id` | The board's advertised id (`HULC-IMU-XXXX`), for traceability. |
 | `nodes[].column` | **The bridge to reconcile output** — the per-node prefix in the aligned CSV header (`n0`, `n1`, …). |

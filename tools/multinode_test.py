@@ -855,6 +855,7 @@ def build_montage(assignments, subject_id="S01", session_id="", notes=""):
         "subject": {"id": subject_id, "notes": notes},
         "session": {"id": session_id, "aligned_csv": "aligned.csv"},
         "calibration": {"neutral_pose": "N-pose", "captured": True,
+                        "protocol": "sync-first",
                         "t_window_ms": [1000, 4000], "functional": []},
         "nodes": nodes,
     }

@@ -51,12 +51,17 @@ Which window is the neutral hold
 `choose_neutral_window`: an explicit `--window` wins; otherwise the montage's
 `calibration.t_window_ms` is used only if the data there is actually still
 (<= STILL_MAX_RAD_S) — a placeholder or mistimed window is ignored — and
-otherwise `find_neutral_window` takes the FIRST deliberate hold of the
-recording — a still stretch lasting at least NEUTRAL_MIN_HOLD_MS whose quietest
-window averages <= NEUTRAL_QUIET_RAD_S — and that quietest window. A warm-up
-pause (short, and only slowed to ~0.06–0.09 rad/s) does not qualify; it was
-taken for the hold on a real capture and skewed every angle by 20–30°. With no
-such hold, the first window under NEUTRAL_MAX_RAD_S, then the quietest.
+otherwise `find_neutral_window` takes a deliberate hold — a still stretch
+lasting at least NEUTRAL_MIN_HOLD_MS whose quietest window averages <=
+NEUTRAL_QUIET_RAD_S — and that quietest window. A warm-up pause (short, and
+only slowed to ~0.06–0.09 rad/s) does not qualify; it was taken for the hold on
+a real capture and skewed every angle by 20–30°. WHICH hold depends on the
+recording's order (`--protocol`, or the montage's `calibration.protocol`):
+sync-first (default, the SOP) takes the first hold right after the sync
+gesture — every node moving fast together — so setup stillness before it, of
+any length, is never taken; hold-first (older recordings) takes the first hold
+of the log. With no such hold, the first window under NEUTRAL_MAX_RAD_S, then
+the quietest.
 
 The closing hold — the `closing` block
 --------------------------------------
@@ -185,6 +190,26 @@ NEUTRAL_MAX_RAD_S = 0.10
 # the 0.10 rule above is the fallback when no stretch does.
 NEUTRAL_QUIET_RAD_S = 0.04
 NEUTRAL_MIN_HOLD_MS = 3000.0
+
+# ---- protocol order: sync gesture, THEN the neutral hold (the default) ------
+# Nodes power up and wake one by one, so the start of a log is setup of any
+# length, possibly with still stretches as long as a hold. The SOP therefore
+# runs wake-up -> sync gesture -> neutral hold, and the hold is the first
+# deliberate hold that starts within SYNC_TO_HOLD_MAX_MS after a stretch of
+# shared fast motion: every node above SYNC_MIN_RAD_S (2 s mean) for at least
+# SYNC_MIN_MS. On real captures the sync gesture held every node at 1.8–2.3
+# rad/s; a warm-up is not followed by a hold, so it is passed over.
+# "hold-first" (recordings made before this order) takes the first deliberate
+# hold of the log instead.
+PROTOCOLS = ("sync-first", "hold-first")
+DEFAULT_PROTOCOL = "sync-first"
+SYNC_MIN_RAD_S = 1.0
+SYNC_MIN_MS = 3000.0
+SYNC_TO_HOLD_MAX_MS = 20000.0
+# A deliberate hold ending within this of the gesture's start is how a
+# hold-first recording looks (on real ones: 0.2 s apart) -> calibrate hints at
+# --protocol hold-first. A wait before a warm-up ends further off.
+HOLD_FIRST_HINT_GAP_MS = 3000.0
 
 # ---- facing from elbow motion (montages without a torso node) --------------
 # The elbow must flex at least this far (95th percentile) for its hinge axis to
@@ -360,38 +385,83 @@ def _window_means(t_ms, seg_quats, win_ms):
     return starts, mean
 
 
-def find_neutral_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
-    """The protocol's neutral hold: the FIRST window that is genuinely still.
+def find_sync_bursts(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
+    """Stretches of shared fast motion — the sync gesture and anything like it:
+    every node's 2 s mean angular speed >= SYNC_MIN_RAD_S for >= SYNC_MIN_MS.
+    Returns [(t0_ms, t1_ms), ...] in time order."""
+    if len(t_ms) < 3 or t_ms[-1] - t_ms[0] <= win_ms:
+        return []
+    per = []
+    for seg, q in seg_quats.items():
+        starts, mean = _window_means(t_ms, {seg: q}, win_ms)
+        per.append(mean)
+    low = np.min(per, axis=0)
+    out = []
+    for i, j in _runs(low >= SYNC_MIN_RAD_S):
+        b0, b1 = float(starts[i]), float(starts[j] + win_ms)
+        if b1 - b0 >= SYNC_MIN_MS:
+            out.append((b0, b1))
+    return out
 
-    The collection protocol opens with the neutral hold, but a log usually
-    starts a little earlier (strapping on, getting set) — so the quietest window
-    of the whole record can be the closing rest instead, and a fixed window from
-    the montage can land in the setup fidget, and a warm-up has short pauses.
-    We take the earliest still stretch (windows under NEUTRAL_MAX_RAD_S) that
-    lasts at least NEUTRAL_MIN_HOLD_MS and whose quietest window is under
-    NEUTRAL_QUIET_RAD_S — a deliberate hold, not a pause. If none qualifies, the
-    first window under NEUTRAL_MAX_RAD_S, then the quietest window (and say so).
-    Returns (t0, t1, source).
-    """
+
+def _runs(mask):
+    """(first, last) index of each run of True in `mask`."""
+    idx = np.flatnonzero(mask)
+    if idx.size == 0:
+        return []
+    return [(int(r[0]), int(r[-1]))
+            for r in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)]
+
+
+def _deliberate_holds(starts, mean, win_ms):
+    """Still stretches that are deliberate holds: windows under
+    NEUTRAL_MAX_RAD_S lasting >= NEUTRAL_MIN_HOLD_MS, the quietest one under
+    NEUTRAL_QUIET_RAD_S. Returns [(stretch_start_ms, quietest_window_start_ms,
+    stretch_end_ms)]."""
+    out = []
+    for i, j in _runs(mean <= NEUTRAL_MAX_RAD_S):
+        k = i + int(np.argmin(mean[i:j + 1]))
+        if (starts[j] + win_ms - starts[i] >= NEUTRAL_MIN_HOLD_MS
+                and mean[k] <= NEUTRAL_QUIET_RAD_S):
+            out.append((float(starts[i]), float(starts[k]),
+                        float(starts[j] + win_ms)))
+    return out
+
+
+def find_neutral_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
+                        protocol=DEFAULT_PROTOCOL):
+    """The protocol's neutral hold. Returns (t0, t1, source).
+
+    A log starts with setup of any length (nodes powering up one by one,
+    strapping on, a warm-up with pauses), so the hold is found by what it is —
+    a deliberate hold: a still stretch lasting NEUTRAL_MIN_HOLD_MS whose
+    quietest window is under NEUTRAL_QUIET_RAD_S (warm-up pauses are short and
+    only slowed down) — and, by default, by WHERE it is:
+      sync-first (default): the first deliberate hold starting within
+        SYNC_TO_HOLD_MAX_MS after a burst of shared fast motion (the sync
+        gesture, see find_sync_bursts). Still stretches before the gesture —
+        waiting for nodes to start — never qualify.
+      hold-first: the first deliberate hold of the log (the order used before).
+    Falls back to the first deliberate hold, then the first window under
+    NEUTRAL_MAX_RAD_S, then the quietest window — each named in `source`.
+    The window returned is the stretch's quietest one (its edges still carry
+    the settle-in)."""
     if len(t_ms) < 3 or t_ms[-1] - t_ms[0] <= win_ms:
         t0, t1 = auto_still_window(t_ms, seg_quats, win_ms)
         return t0, t1, "whole_record"
     starts, mean = _window_means(t_ms, seg_quats, win_ms)
+    holds = _deliberate_holds(starts, mean, win_ms)
+    if protocol == "sync-first":
+        for b0, b1 in find_sync_bursts(t_ms, seg_quats, win_ms):
+            after = [k for h0, k, _ in holds
+                     if b1 - win_ms <= h0 <= b1 + SYNC_TO_HOLD_MAX_MS]
+            if after:
+                return after[0], after[0] + win_ms, "after_sync"
+    if holds:
+        k = holds[0][1]
+        return k, k + win_ms, ("first_hold" if protocol == "hold-first"
+                               else "first_hold_no_sync")
     still = mean <= NEUTRAL_MAX_RAD_S
-    i, n = 0, len(still)
-    while i < n:                                   # deliberate holds first
-        if not still[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and still[j + 1]:
-            j += 1
-        k = i + int(np.argmin(mean[i:j + 1]))
-        if (starts[j] + win_ms - starts[i] >= NEUTRAL_MIN_HOLD_MS
-                and mean[k] <= NEUTRAL_QUIET_RAD_S):
-            t0 = float(starts[k])
-            return t0, t0 + win_ms, "first_hold"
-        i = j + 1
     if still.any():
         # the first still stretch, then its quietest window (not its edge, which
         # still carries the settle-in)
@@ -404,7 +474,7 @@ def find_neutral_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
 
 
 def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
-                          window=None):
+                          window=None, protocol=None):
     """Resolve the calibration window: --window > a STILL montage window > auto.
 
     A montage window is only trusted if it was actually still — enrollment
@@ -422,10 +492,34 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
             return t0, t1, f"using montage neutral window {t0:.0f}–{t1:.0f} ms"
         note = (f"montage window {t0:.0f}–{t1:.0f} ms was not still "
                 f"({s:.2f} rad/s) — ignoring it; ")
-    t0, t1, src = find_neutral_window(t_ms, seg_quats, win_ms)
-    how = {"first_hold": "first neutral hold "
-                         f"(≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s still, "
-                         f"≤ {NEUTRAL_QUIET_RAD_S} rad/s)",
+    # protocol order: --protocol > the montage's calibration.protocol > default
+    protocol = (protocol or montage.get("calibration", {}).get("protocol")
+                or DEFAULT_PROTOCOL)
+    if protocol not in PROTOCOLS:
+        raise SystemExit(f"[calibrate] unknown protocol {protocol!r} "
+                         f"(choose: {', '.join(PROTOCOLS)})")
+    t0, t1, src = find_neutral_window(t_ms, seg_quats, win_ms, protocol)
+    bursts = find_sync_bursts(t_ms, seg_quats, win_ms) if src == "after_sync" else []
+    before = [b for b in bursts if b[1] - win_ms <= t0]   # the gesture it follows
+    sync = f"{before[-1][0]:.0f}–{before[-1][1]:.0f} ms" if before else ""
+    if before:
+        # a deliberate hold that ENDS right at the gesture is what a hold-first
+        # recording looks like: say so instead of silently taking a later rest
+        starts, mean = _window_means(t_ms, seg_quats, win_ms)
+        prior = [(h0, h1) for h0, _, h1 in _deliberate_holds(starts, mean, win_ms)
+                 for g0, _ in before
+                 if h1 <= t0 and g0 - HOLD_FIRST_HINT_GAP_MS <= h1 <= g0 + win_ms]
+        if prior:
+            note += (f"a still hold ({prior[-1][0]:.0f}–{prior[-1][1]:.0f} ms) ends "
+                     f"right before the sync gesture — if this recording held the "
+                     f"neutral pose FIRST, re-run with --protocol hold-first. ")
+    hold = (f"≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s still, "
+            f"≤ {NEUTRAL_QUIET_RAD_S} rad/s")
+    how = {"after_sync": f"neutral hold after the sync gesture ({sync}; {hold})",
+           "first_hold": f"first neutral hold ({hold}; protocol hold-first)",
+           "first_hold_no_sync": "no hold right after a sync gesture (every node "
+                                 f"moving ≥ {SYNC_MIN_RAD_S} rad/s together) — "
+                                 f"first neutral hold ({hold})",
            "first_still": f"no hold ≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s at "
                           f"≤ {NEUTRAL_QUIET_RAD_S} rad/s — first still window",
            "quietest": "no window under "
@@ -1090,11 +1184,12 @@ def cmd_calibrate(args):
     t_ms, seg_quats, seg_meta = load_aligned(args.aligned_csv, montage)
 
     t0, t1, msg = choose_neutral_window(montage, t_ms, seg_quats, args.win_ms,
-                                        args.window)
+                                        args.window, args.protocol)
     print(f"[calibrate] {msg}")
 
     cal = build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
                             args.aligned_csv, facing_deg=args.facing_deg)
+    cal["neutral"]["found_by"] = msg
     with open(args.out, "w") as f:
         json.dump(cal, f, indent=2)
     print(f"[calibrate] wrote {args.out}\n")
@@ -1385,14 +1480,39 @@ def selftest():
     ang = np.concatenate([[0.0], np.cumsum(rate[:-1] * 0.1)])
     q_w = np.column_stack([np.cos(ang / 2), np.zeros(len(t_w)), np.zeros(len(t_w)),
                            np.sin(ang / 2)])
-    w0, w1, wsrc = find_neutral_window(t_w, {"torso": q_w, "upper_arm_r": q_w})
+    w0, w1, wsrc = find_neutral_window(t_w, {"torso": q_w, "upper_arm_r": q_w},
+                                       protocol="hold-first")
     pause_ok = 8000 <= w0 and w1 <= 14000 and wsrc == "first_hold"
     print(f"[selftest] warm-up pause skipped: neutral {w0:.0f}–{w1:.0f} ms "
           f"(hold 8000–14000, pause at 3000–5500) "
           f"{'OK' if pause_ok else 'FAIL'}")
 
+    # (11) Sync-first order: a 10 s still wait while nodes start (as still as a
+    #      hold), a warm-up, the sync gesture (both nodes ~2 rad/s), THEN the
+    #      neutral hold. sync-first must skip the wait and take the hold after
+    #      the gesture; hold-first takes the wait (the old order's answer).
+    t_s = np.arange(0, 40000, 100.0)
+    rate = np.full(len(t_s), 0.6)                         # warm-up / task
+    rate[t_s < 10000] = 0.003                             # waiting for nodes
+    rate[(t_s >= 16000) & (t_s < 22000)] = 2.0            # sync gesture
+    rate[(t_s >= 24000) & (t_s < 30000)] = 0.003          # neutral hold
+    ang = np.concatenate([[0.0], np.cumsum(rate[:-1] * 0.1)])
+    q_s = np.column_stack([np.cos(ang / 2), np.zeros(len(t_s)), np.zeros(len(t_s)),
+                           np.sin(ang / 2)])
+    both = {"torso": q_s, "upper_arm_r": q_s}
+    s0, s1, ssrc = find_neutral_window(t_s, both)
+    h0, h1, hsrc = find_neutral_window(t_s, both, protocol="hold-first")
+    _, _, smsg = choose_neutral_window({}, t_s, both)
+    sync_ok = (24000 <= s0 and s1 <= 30000 and ssrc == "after_sync"
+               and h1 <= 10000 and hsrc == "first_hold"
+               and "after the sync gesture" in smsg and "hold-first" not in smsg)
+    print(f"[selftest] sync-first: hold {s0:.0f}–{s1:.0f} ms after the gesture "
+          f"(want 24000–30000; the still wait before it skipped), hold-first "
+          f"-> {h0:.0f}–{h1:.0f} ms (want the wait) "
+          f"{'OK' if sync_ok else 'FAIL'}")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
-          and window_ok and hinge_ok and end_ok and pause_ok
+          and window_ok and hinge_ok and end_ok and pause_ok and sync_ok
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]
@@ -1429,6 +1549,12 @@ def main():
     pc.add_argument("--window", type=_window_arg, metavar="t0,t1",
                     help="neutral-pose window in ms (overrides montage "
                          "t_window_ms / auto-detect)")
+    pc.add_argument("--protocol", choices=PROTOCOLS,
+                    help="order of the recording: sync-first (default; sync "
+                         "gesture, then the neutral hold) or hold-first "
+                         "(recordings made before; hold, then the gesture). "
+                         "Default: the montage's calibration.protocol, else "
+                         f"{DEFAULT_PROTOCOL}")
     pc.add_argument("--win-ms", type=float, default=DEFAULT_WIN_MS,
                     help="auto-detected window length in ms (default 2000)")
     pc.add_argument("--facing-deg", type=float, metavar="DEG",

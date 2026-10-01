@@ -43,6 +43,10 @@ Usage
         --opensense-model ThoracoscapularShoulderModel.osim \
         --opensense-model Rajagopal2015_opensense.osim
 
+    # a recording made in the old order (neutral hold BEFORE the sync gesture):
+    python tools/analyze_session.py run --montage montage.json \
+        --capture-dir ./capture/old --protocol hold-first
+
     # override the neutral window / output name:
     python tools/analyze_session.py run --montage montage.json \
         --capture-dir ./capture/block1 --window 1200,4000 --out elbow.html
@@ -170,7 +174,7 @@ def resolve_opensense_models(requested):
 
 
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
-        facing_deg=None, opensense_models=None):
+        facing_deg=None, opensense_models=None, protocol=None):
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -201,6 +205,8 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
            aligned, montage_path, "--out", calib]
     if window:
         cmd += ["--window", window]
+    if protocol:
+        cmd += ["--protocol", protocol]
     if facing_deg is not None:
         cmd += ["--facing-deg", str(facing_deg)]
     _run(cmd, "3/5 calibrate (sensor->segment offsets)")
@@ -378,6 +384,11 @@ def main():
     pr.add_argument("--window", metavar="t0,t1",
                     help="neutral window in ms (default: auto-detect)")
     pr.add_argument("--fs", type=float, help="resample rate Hz (default: native)")
+    pr.add_argument("--protocol", choices=["sync-first", "hold-first"],
+                    help="order of the recording: sync-first (default: sync "
+                         "gesture, then the neutral hold) or hold-first "
+                         "(recordings made before that order). Default: the "
+                         "montage's calibration.protocol, else sync-first")
     pr.add_argument("--facing-deg", type=float, metavar="DEG",
                     help="subject's facing at neutral, degrees clockwise from "
                          "world +Y; gives anatomical joint axes when the montage "
@@ -403,7 +414,7 @@ def main():
     if args.cmd == "run":
         run(args.montage, args.capture_dir, args.out, args.outdir,
             args.window, args.fs, args.facing_deg,
-            [] if args.no_opensense else args.opensense_model)
+            [] if args.no_opensense else args.opensense_model, args.protocol)
         return
     ap.error("choose a command: run | selftest")
 
