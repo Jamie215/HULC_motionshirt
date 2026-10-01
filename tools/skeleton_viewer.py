@@ -126,7 +126,8 @@ except ImportError:  # pragma: no cover
 # loader from the calibration stage; reuse the body model for segment names.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calibrate_segments import (  # noqa: E402
-    load_aligned, load_montage, qmul, qnorm, _q_list,
+    load_aligned, load_montage, qmul, qnorm, _q_list, find_sync_bursts,
+    DEFAULT_WIN_MS,
 )
 from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
 from metrics import (  # noqa: E402
@@ -193,8 +194,56 @@ SENSOR_SOLVER = {
 MODEL_SHORT = {"thoracoscapular": "Shoulder model", "rajagopal": "Rajagopal model"}
 
 
+TIMELINE_BIN_MS = 200.0          # session-timeline overview resolution
+
+
+def build_timeline(t_ms, seg_quats, calibration, rerun=None):
+    """The whole log at a glance, for the review page's Timeline strip: each
+    node's angular speed in TIMELINE_BIN_MS bins, the detected sync movement,
+    freeze and session end, and the command that re-runs the analysis (the
+    page appends --window / --end when they are dragged)."""
+    t = np.asarray(t_ms, dtype=float)
+    edges = np.arange(t[0], t[-1] + TIMELINE_BIN_MS, TIMELINE_BIN_MS)
+    centre = (edges[:-1] + edges[1:]) / 2.0
+    speeds = {}
+    for seg, q in seg_quats.items():
+        dot = np.clip(np.abs(np.sum(q[:-1] * q[1:], axis=1)), 0.0, 1.0)
+        dt = np.diff(t) / 1000.0
+        sp = np.where(dt > 0, 2.0 * np.arccos(dot) / np.where(dt > 0, dt, 1.0), np.nan)
+        mid = (t[:-1] + t[1:]) / 2.0
+        idx = np.clip(np.searchsorted(edges, mid, side="right") - 1, 0, len(centre) - 1)
+        tot = np.bincount(idx, weights=np.nan_to_num(sp), minlength=len(centre))
+        cnt = np.bincount(idx, weights=np.isfinite(sp).astype(float),
+                          minlength=len(centre))
+        speeds[seg] = [round(float(v), 3) if c else None
+                       for v, c in zip(tot / np.maximum(cnt, 1), cnt)]
+    cal = calibration or {}
+    nw = cal.get("neutral", {}).get("t_window_ms")
+    end = cal.get("end") or {}
+    sync = None
+    if nw:
+        before = [b for b in find_sync_bursts(t, seg_quats)
+                  if b[1] - DEFAULT_WIN_MS <= nw[0]]
+        sync = [round(before[-1][0], 1), round(before[-1][1], 1)] if before else None
+    return {
+        "bin_ms": TIMELINE_BIN_MS,
+        "t0_ms": round(float(centre[0]), 1), "log_ms": [float(t[0]), float(t[-1])],
+        "speeds": speeds,
+        "freeze_ms": nw, "freeze_len_ms": (nw[1] - nw[0]) if nw else DEFAULT_WIN_MS,
+        "freeze_how": cal.get("neutral", {}).get("found_by"),
+        # set by hand (--window / --end): the page keeps them in the command
+        "freeze_manual": str(cal.get("neutral", {}).get("found_by", "")
+                             ).startswith("using --window"),
+        "end_manual": end.get("method") == "manual",
+        "end_ms": end.get("t_end_ms"), "end_how": end.get("method") or end.get("note"),
+        "end_node": end.get("first_node_off"),
+        "sync_ms": sync,
+        "rerun": rerun,
+    }
+
+
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
-                metrics=None, quality=None, trim=True, solver=None):
+                metrics=None, quality=None, trim=True, solver=None, rerun=None):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
@@ -217,6 +266,9 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     carry several scenes, one per solver, switched in the viewer (build_page).
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
+    # the whole log for the Timeline strip (the direct sensor scene only)
+    timeline = (build_timeline(t_ms, seg_quats, calibration, rerun)
+                if calibration and not solver else None)
     if trim:
         t_ms, seg_quats, _ = trim_to_analysis(t_ms, seg_quats, calibration)
     n = len(t_ms)
@@ -295,6 +347,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "anatomical_frame_quat": (None if q_wa is None
                                       else [round(float(v), 8) for v in q_wa]),
             "solver": dict(solver or SENSOR_SOLVER),
+            "timeline": timeline,
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
@@ -421,7 +474,7 @@ def cmd_render(args):
     qpath = args.quality or quality_path(args.aligned_csv)
     quality = _load_json(qpath) if os.path.exists(qpath) else None
     scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
-                        metrics=metrics, quality=quality)
+                        metrics=metrics, quality=quality, rerun=args.rerun)
     extra = [load_solver_dir(d, montage, args.max_frames)
              for d in (args.solver_dir or [])]
     html = render_html(build_page([scene] + extra))
@@ -614,6 +667,9 @@ def selftest():
         with open(os.path.join(osd, "opensense_metrics.json"), "w") as f:
             json.dump(rep_os, f)
         scene_os = load_solver_dir(osd, montage, max_frames=200)
+        scene_tl = build_scene(csv, montage, cal, max_frames=200,
+                               rerun="python tools/analyze_session.py run --montage m.json")
+        html_tl = render_html(scene_tl)
         page = build_page([scene, scene_os])
         html_page = render_html(page)
 
@@ -761,6 +817,21 @@ def selftest():
           f"solver switch: sensor + {sv['label']} on one page, model offsets "
           f"identity, poses agree frame for frame")
 
+    # (10) Session timeline: the WHOLE log's speed per node, the detected
+    #      freeze, and the re-run command are baked; model scenes carry none.
+    tl = scene_tl["meta"]["timeline"]
+    n_bins = int(np.ceil((t_ms[-1] - t_ms[0]) / TIMELINE_BIN_MS))
+    check(tl is not None and set(tl["speeds"]) == set(true_bone)
+          and all(abs(len(v) - n_bins) <= 1 for v in tl["speeds"].values())
+          and tl["freeze_ms"] == cal["neutral"]["t_window_ms"]
+          and tl["rerun"].endswith("--montage m.json")
+          and not tl["freeze_manual"]
+          and scene_os["meta"]["timeline"] is None
+          and 'id="tline"' in html_tl and "function drawTimeline" in html_tl,
+          f"session timeline baked: {len(tl['speeds'])} node(s) x "
+          f"{len(next(iter(tl['speeds'].values())))} bins, freeze {tl['freeze_ms']}, "
+          f"re-run command; model scenes carry none")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
           f"raw↔calibrated promise, the stage-7 metrics panel, the skeleton "
           f"chain, the no-torso bilateral fallback, the missing-middle ghost "
@@ -789,6 +860,9 @@ def main():
                     "stage-7 review panel: ROM / velocity / reps / derived)")
     pr.add_argument("--out", default="skeleton.html",
                     help="output HTML file (default: skeleton.html)")
+    pr.add_argument("--rerun", metavar="CMD",
+                    help="the command that re-runs this analysis (analyze_session "
+                         "passes it); the Timeline strip appends --window/--end")
     pr.add_argument("--solver-dir", action="append", metavar="DIR",
                     help="an opensense_ik.py output folder: adds that model "
                          "solve to the page, switchable against the direct "
@@ -936,10 +1010,21 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .row.plot.sel{background:color-mix(in srgb,var(--accent) 13%,transparent)}
   .row.plot .k::after{content:"  graph";font-size:11px;color:var(--faint);opacity:0}
   .row.plot:hover .k::after{opacity:1}
-  #graph{position:absolute;left:0;right:0;bottom:0;height:210px;z-index:4;
+  #graph,#tline{position:absolute;left:0;right:0;bottom:0;height:210px;z-index:4;
     background:var(--surface);border-top:1px solid var(--line);
     box-shadow:0 -6px 18px rgba(22,32,43,.06);display:flex;flex-direction:column}
-  #graph[hidden]{display:none}
+  #tline{height:250px}
+  #graph[hidden],#tline[hidden]{display:none}
+  #tltitle{font-weight:650;font-size:14px}
+  #tlreset{margin-left:auto;padding:3px 11px;font-size:12.5px}
+  #tlclose{padding:3px 11px;font-size:12.5px}
+  #tlcv{flex:1;width:100%;min-height:0;display:block;cursor:crosshair;touch-action:none}
+  .tlfoot{display:flex;align-items:center;gap:8px;padding:2px 14px 8px;font-size:12px;
+    flex-wrap:wrap}
+  #tlinfo{color:var(--muted);flex-basis:100%}
+  #tlcmd{flex:1;min-width:200px;font:12px ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--paper);
+    color:var(--ink)}
   .ghead{display:flex;align-items:center;gap:14px;padding:7px 14px 0;font-size:13px;
     flex-wrap:wrap}
   #gtitle{font-weight:650;font-size:14px}
@@ -982,6 +1067,20 @@ _HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <canvas id="gcv"></canvas>
   </div>
+  <div id="tline" hidden aria-label="Session timeline">
+    <div class="ghead">
+      <span id="tltitle">Session timeline</span>
+      <span class="gleg" id="tlleg"></span>
+      <button id="tlreset" title="Back to what the analysis detected">Reset</button>
+      <button id="tlclose" title="Close the timeline">Close</button>
+    </div>
+    <canvas id="tlcv"></canvas>
+    <div class="tlfoot">
+      <span id="tlinfo"></span>
+      <input id="tlcmd" readonly aria-label="Re-run command">
+      <button id="tlcopy">Copy command</button>
+    </div>
+  </div>
   <div class="legend">
     <div class="live" id="live" hidden></div>
     <h2>Sensors</h2><div id="legend"></div>
@@ -1004,6 +1103,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <button data-speed="5">5&times;</button>
   </div>
   <button id="mstoggle" hidden>&#9776; Metrics</button>
+  <button id="tltoggle" hidden title="The whole log: where the sync movement, the freeze and the end were found — drag to correct them">Timeline</button>
   <div class="toggle" id="view3d" title="Snap the camera">
     <button data-view="front">Front</button>
     <button data-view="side">Side</button>
@@ -1192,7 +1292,7 @@ function updateCamera(){
   // centre the figure in the part of the canvas the metrics drawer leaves free
   const mEl=document.getElementById('metrics');
   const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
-  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  const gh=bottomH();
   focal=((H-gh)/2)/Math.tan(FOV/2); ccx=(W+cover)/2; ccy=(H-gh)/2;
 }
 function project(P){
@@ -1717,6 +1817,7 @@ function switchSolver(i){
     az:az.toFixed(4), el:el.toFixed(4), r:rad.toFixed(3), p:playing?1:0,
     mo:metricsEl.classList.contains('hidden')?0:1});
   if(GRAPH) h.set('g',GRAPH.jk+'.'+GRAPH.dk);
+  if(TL&&!tlEl.hidden) h.set('tl',`${TLS.f0},${TLS.end==null?'':TLS.end}`);
   const on=viewBox.querySelector('button.on'); if(on) h.set('v',on.dataset.view);
   location.hash=h.toString(); location.reload();
 }
@@ -1740,6 +1841,12 @@ function restoreFromHash(){
   const g=HASH.get('g');
   if(g&&MET){const [jk,dk]=g.split('.'); if(JDEF[jk]) openGraph(jk,dk);}
   if(HASH.get('p')==='1') playBtn.click();
+  if(TL&&HASH.has('tl')){
+    const [f,e]=HASH.get('tl').split(',');
+    if(isFinite(parseFloat(f))) TLS.f0=parseFloat(f);
+    TLS.end=isFinite(parseFloat(e))?parseFloat(e):null;
+    openTimeline();
+  }
 }
 // front-direction status (header chip tooltip)
 const FACING=FRONT_KNOWN
@@ -2044,15 +2151,23 @@ if(SOLVERS.length>1){
   gSolv.addEventListener('change',drawGraph);
 }
 const otherSide=jk=>jk.endsWith('_r')?jk.slice(0,-2)+'_l':jk.slice(0,-2)+'_r';
+// height of whichever bottom strip is open (angle graph or session timeline)
+function bottomH(){
+  const tl=document.getElementById('tline');
+  if(tl&&!tl.hidden) return tl.offsetHeight;
+  return (GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+}
 function layoutOverlays(){
   const mEl=document.getElementById('metrics');
   const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
   graphEl.style.left=cover+'px';
-  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  document.getElementById('tline').style.left=cover+'px';
+  const gh=bottomH();
   const lg=document.querySelector('.legend');
   if(lg) lg.style.maxHeight=`calc(100% - ${24+gh}px)`;
 }
 function openGraph(jk,dk){
+  if(!document.getElementById('tline').hidden) closeTimeline();
   GRAPH={jk,dk}; graphEl.hidden=false;
   const J=(MET&&MET.joints||[]).find(j=>j.key===jk);
   const info=DOF_INFO[dk]||{name:dk};
@@ -2216,6 +2331,180 @@ gcv.addEventListener('pointerdown',e=>{gdrag=true; gcv.setPointerCapture(e.point
 gcv.addEventListener('pointermove',e=>{if(gdrag) gseek(e);});
 gcv.addEventListener('pointerup',()=>{gdrag=false;});
 
+// ---- session timeline: the whole log, the detected events, drag to correct ----
+// Shows every node's angular speed over the WHOLE log (the 3-D view and the
+// graph only cover the analysis window), with the sync movement, the freeze
+// and the session end the analysis found. Dragging the freeze band (it snaps
+// to the quietest stretch nearby) or the end line builds the command that
+// re-runs the analysis with --window / --end — corrections need no code.
+const TL=(SOLVERS[0].meta||{}).timeline||null;
+const tlEl=document.getElementById('tline'), tlcv=document.getElementById('tlcv'),
+  tlctx=tlcv.getContext('2d'), tlBtn=document.getElementById('tltoggle');
+let TLS=null, TW=0, TH=0, tlDrag=null;
+const TL_PAD={l:58,r:18,t:18,b:24};
+const tlDefault=()=>({f0:TL.freeze_ms?TL.freeze_ms[0]:TL.log_ms[0], end:TL.end_ms});
+const TL_LEN=TL?TL.freeze_len_ms:2000;
+// mean speed of all nodes per bin (nulls skipped), for snapping the freeze
+const TL_COMB=TL?Object.values(TL.speeds)[0].map((_,i)=>{
+  const v=Object.values(TL.speeds).map(a=>a[i]).filter(x=>x!=null);
+  return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;}):[];
+const TL_MAX=TL?Math.min(6,Math.max(1,...TL_COMB.filter(v=>v!=null))):1;
+if(TL){
+  TLS=tlDefault(); tlBtn.hidden=false;
+  tlBtn.addEventListener('click',()=>tlEl.hidden?openTimeline():closeTimeline());
+}
+function openTimeline(){
+  if(GRAPH) closeGraph();
+  tlEl.hidden=false; tlBtn.classList.add('primary');
+  layoutOverlays(); resizeTimeline(); tlText();
+}
+function closeTimeline(){
+  tlEl.hidden=true; tlBtn.classList.remove('primary'); layoutOverlays();
+}
+document.getElementById('tlclose').addEventListener('click',closeTimeline);
+document.getElementById('tlreset').addEventListener('click',()=>{TLS=tlDefault(); tlText();});
+function resizeTimeline(){
+  TW=tlcv.clientWidth; TH=tlcv.clientHeight; tlcv.width=TW*DPR; tlcv.height=TH*DPR;
+}
+window.addEventListener('resize',()=>{ if(TL&&!tlEl.hidden) resizeTimeline(); });
+const tlX=t=>TL_PAD.l+(t-TL.log_ms[0])/Math.max(1,TL.log_ms[1]-TL.log_ms[0])*(TW-TL_PAD.l-TL_PAD.r);
+const tlT=x=>TL.log_ms[0]+(x-TL_PAD.l)/Math.max(1,TW-TL_PAD.l-TL_PAD.r)*(TL.log_ms[1]-TL.log_ms[0]);
+const sec=ms=>(ms/1000).toFixed(1);
+function tlEdited(){
+  const d=tlDefault();
+  return {f:Math.abs(TLS.f0-d.f0)>50, e:(TLS.end==null)!==(d.end==null)
+          ||(TLS.end!=null&&Math.abs(TLS.end-d.end)>50)};
+}
+function tlCommand(){
+  const ed=tlEdited();
+  let c=TL.rerun||'python tools/analyze_session.py run --montage montage.json --capture-dir <block folder>';
+  // a value set by hand last time stays in the command even when not moved
+  if(ed.f||TL.freeze_manual) c+=` --window ${Math.round(TLS.f0)},${Math.round(TLS.f0+TL_LEN)}`;
+  if((ed.e||TL.end_manual)&&TLS.end!=null) c+=` --end ${Math.round(TLS.end)}`;
+  return c;
+}
+function tlText(){
+  if(!TL) return;
+  const ed=tlEdited();
+  document.getElementById('tlinfo').innerHTML=
+    `Freeze <b>${sec(TLS.f0)}–${sec(TLS.f0+TL_LEN)} s</b>${ed.f?' (moved)':''} · `+
+    `end <b>${TLS.end==null?'end of the log':sec(TLS.end)+' s'}</b>${ed.e?' (moved)':''}`+
+    (ed.f||ed.e?' — copy the command and run it to re-analyze with these.'
+     :TL.freeze_manual||TL.end_manual?' — as set by hand last time (kept in the command).'
+     :' — as detected. Drag the green freeze band or the end line if they are wrong.');
+  document.getElementById('tlcmd').value=tlCommand();
+}
+document.getElementById('tlcopy').addEventListener('click',()=>{
+  const inp=document.getElementById('tlcmd'), btn=document.getElementById('tlcopy');
+  const done=()=>{btn.textContent='Copied'; setTimeout(()=>btn.textContent='Copy command',1500);};
+  const fallback=()=>{inp.select(); try{document.execCommand('copy'); done();}catch(e){}};
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(inp.value).then(done,fallback);
+  else fallback();
+});
+document.getElementById('tlleg').innerHTML=TL?Object.keys(TL.speeds).map(sg=>
+  `<span><i style="border-color:${rgb((SEG[sg]||{color:[120,120,120]}).color)}"></i>${esc(nameOf(sg))}</span>`).join('')
+  +'<span>speed, whole log</span>':'';
+function tlHit(x){
+  const fx0=tlX(TLS.f0), fx1=tlX(TLS.f0+TL_LEN), ex=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  if(Math.abs(x-ex)<=8) return 'end';
+  if(x>=fx0-6&&x<=fx1+6) return 'freeze';
+  return null;
+}
+tlcv.addEventListener('pointerdown',e=>{
+  if(!TL) return;
+  const x=e.clientX-tlcv.getBoundingClientRect().left, t=tlT(x), hit=tlHit(x);
+  if(hit){ tlDrag={kind:hit, off:t-TLS.f0}; tlcv.setPointerCapture(e.pointerId); return; }
+  if(t>=DATA.t_ms[0]&&t<=DATA.t_ms[N-1]){ pause(); setFrame(nearestFrame(t)); }
+});
+tlcv.addEventListener('pointermove',e=>{
+  if(!TL) return;
+  const x=e.clientX-tlcv.getBoundingClientRect().left, t=tlT(x);
+  if(!tlDrag){ tlcv.style.cursor=tlHit(x)?'ew-resize':'crosshair'; return; }
+  const [L0,L1]=TL.log_ms;
+  if(tlDrag.kind==='freeze') TLS.f0=Math.max(L0,Math.min(L1-TL_LEN,t-tlDrag.off));
+  else TLS.end=Math.max(TLS.f0+TL_LEN,Math.min(L1,t));
+  tlText();
+});
+tlcv.addEventListener('pointerup',()=>{
+  if(tlDrag&&tlDrag.kind==='freeze'){
+    // snap to the quietest stretch within ±2 s of where it was dropped
+    const b=TL.bin_ms, k=Math.max(1,Math.round(TL_LEN/b));
+    let best=TLS.f0, bv=Infinity;
+    for(let c=TLS.f0-2000;c<=TLS.f0+2000;c+=b){
+      const i0=Math.round((c-TL.t0_ms)/b); if(i0<0||i0+k>TL_COMB.length) continue;
+      const v=TL_COMB.slice(i0,i0+k).filter(x=>x!=null);
+      if(v.length<k/2) continue;
+      const m=v.reduce((a,x)=>a+x,0)/v.length;
+      if(m<bv){bv=m; best=c;}
+    }
+    TLS.f0=Math.max(TL.log_ms[0],Math.min(TL.log_ms[1]-TL_LEN,best));
+    tlText();
+  }
+  tlDrag=null;
+});
+function drawTimeline(){
+  if(!TL||tlEl.hidden||!TW) return;
+  const g=tlctx, P=TL_PAD; g.setTransform(DPR,0,0,DPR,0,0); g.clearRect(0,0,TW,TH);
+  const plotL=P.l, plotR=TW-P.r, plotT=P.t, plotB=TH-P.b;
+  const Y=v=>plotB-Math.min(v,TL_MAX)/TL_MAX*(plotB-plotT);
+  const faint=cssVar('--faint'), grid=cssVar('--line');
+  g.font='11px system-ui,sans-serif';
+  // outside the analysis window: dimmed
+  const a0=tlX(TLS.f0), a1=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  g.fillStyle=faint; g.globalAlpha=.10;
+  g.fillRect(plotL,plotT,a0-plotL,plotB-plotT); g.fillRect(a1,plotT,plotR-a1,plotB-plotT);
+  g.globalAlpha=1;
+  // y grid + labels
+  g.strokeStyle=grid; g.fillStyle=faint; g.textAlign='right'; g.textBaseline='middle';
+  const ys=niceStep(TL_MAX,3);
+  for(let v=0;v<=TL_MAX+1e-9;v+=ys){
+    g.beginPath(); g.moveTo(plotL,Y(v)); g.lineTo(plotR,Y(v)); g.stroke();
+    g.fillText(`${v.toFixed(v<1?1:0)}`,plotL-8,Y(v));
+  }
+  g.save(); g.translate(14,(plotT+plotB)/2); g.rotate(-Math.PI/2); g.textAlign='center';
+  g.fillText('rad/s',0,0); g.restore();
+  // time axis
+  const span=(TL.log_ms[1]-TL.log_ms[0])/1000, xs=niceStep(span,10);
+  g.textAlign='center'; g.textBaseline='top';
+  for(let s=Math.ceil(TL.log_ms[0]/1000/xs)*xs; s<=TL.log_ms[1]/1000; s+=xs)
+    g.fillText(`${s.toFixed(xs<1?1:0)} s`,tlX(s*1000),plotB+6);
+  // sync movement
+  if(TL.sync_ms){
+    const s0=tlX(TL.sync_ms[0]), s1=tlX(TL.sync_ms[1]);
+    g.fillStyle=cssVar('--accent'); g.globalAlpha=.14; g.fillRect(s0,plotT,s1-s0,plotB-plotT);
+    g.globalAlpha=.9; g.textAlign='left'; g.textBaseline='bottom';
+    g.fillText('sync',s0+3,plotB-2);              // bottom: the freeze / end labels sit on top
+    g.globalAlpha=1;
+  }
+  // speed traces
+  for(const [sg,arr] of Object.entries(TL.speeds)){
+    g.strokeStyle=rgb((SEG[sg]||{color:[120,120,120]}).color); g.lineWidth=1.2; g.beginPath();
+    let pen=false;
+    arr.forEach((v,i)=>{ if(v==null){pen=false;return;}
+      const x=tlX(TL.t0_ms+i*TL.bin_ms), y=Y(v);
+      if(pen) g.lineTo(x,y); else {g.moveTo(x,y); pen=true;} });
+    g.stroke();
+  }
+  // freeze band (draggable)
+  const f0=tlX(TLS.f0), f1=tlX(TLS.f0+TL_LEN);
+  g.fillStyle=cssVar('--built'); g.globalAlpha=.28; g.fillRect(f0,plotT,Math.max(3,f1-f0),plotB-plotT);
+  g.globalAlpha=1; g.strokeStyle=cssVar('--built'); g.lineWidth=1.5;
+  g.strokeRect(f0,plotT,Math.max(3,f1-f0),plotB-plotT);
+  g.fillStyle=cssVar('--built'); g.textAlign='left'; g.textBaseline='top';
+  g.font='600 11px system-ui,sans-serif'; g.fillText('freeze',f1+3,2);
+  // end line (draggable)
+  const ex=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  g.strokeStyle=cssVar('--planned'); g.lineWidth=2; g.setLineDash([5,3]);
+  g.beginPath(); g.moveTo(ex,plotT); g.lineTo(ex,plotB); g.stroke(); g.setLineDash([]);
+  g.fillStyle=cssVar('--planned'); g.textAlign=ex>plotR-30?'right':'left';
+  g.fillText('end',ex+(ex>plotR-30?-4:4),2);
+  // playhead
+  const px=tlX(DATA.t_ms[frame]);
+  g.strokeStyle=cssVar('--accent'); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(px,plotT); g.lineTo(px,plotB); g.stroke();
+}
+
 // ---- animation loop (real-time playback keyed on baked t_ms) ----
 let last=performance.now(), acc=0;
 function tick(now){
@@ -2227,7 +2516,7 @@ function tick(now){
     }
     if(frame>=N-1) pause();
   }
-  render(); drawGraph();
+  render(); drawGraph(); drawTimeline();
   requestAnimationFrame(tick);
 }
 

@@ -260,8 +260,9 @@ movement never count; a montage window is used only if it was actually still)
 and **where the nodes came off** (the log's final rest in a pose no body holds).
 Recordings made in the old order (hold before the movement) need
 `--protocol hold-first` — calibrate prints a hint when one looks like that. If
-it picks the wrong span, pin it: read the times off `t_common_ms` in the
-emitted `aligned.csv` and re-run with `--window <t0>,<t1>` and/or `--end <t_ms>`.
+it picks the wrong span, open **Timeline** on the review page, drag the freeze
+band / end line to the right place and run the command it gives (it adds
+`--window <t0>,<t1>` and/or `--end <t_ms>`).
 
 <details>
 <summary>Prefer to run the stages by hand?</summary>

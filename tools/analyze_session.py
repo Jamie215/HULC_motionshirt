@@ -320,8 +320,36 @@ def print_block_check(bc):
             print(f"        {'':<12} -> {c['fix']}")
 
 
+def rerun_command(montage_path, capture_dir, out_html, outdir, fs, facing_deg,
+                  opensense_models, protocol):
+    """The command that re-runs this analysis, WITHOUT --window / --end — the
+    review page's Timeline strip appends those when the user drags a marker."""
+    q = lambda v: f'"{v}"' if any(c in str(v) for c in ' "\'') else str(v)
+    script = os.path.relpath(os.path.join(TOOLS, "analyze_session.py"))
+    if script.startswith(".."):
+        script = os.path.join(TOOLS, "analyze_session.py")
+    # the interpreter that ran this analysis (it has numpy, and opensim if used)
+    parts = [q(sys.executable or "python"), q(script), "run", "--montage", q(montage_path),
+             "--capture-dir", q(capture_dir), "--outdir", q(outdir)]
+    if out_html != "session.html":
+        parts += ["--out", q(out_html)]
+    if protocol:
+        parts += ["--protocol", protocol]
+    if facing_deg is not None:
+        parts += ["--facing-deg", f"{facing_deg:g}"]
+    if fs:
+        parts += ["--fs", f"{fs:g}"]
+    if opensense_models == []:
+        parts.append("--no-opensense")
+    for m in opensense_models or []:
+        parts += ["--opensense-model", q(m)]
+    return " ".join(parts)
+
+
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
         facing_deg=None, opensense_models=None, protocol=None, end_ms=None):
+    rerun = rerun_command(montage_path, capture_dir, out_html, outdir, fs,
+                          facing_deg, opensense_models, protocol)
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -398,7 +426,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     #    Each OpenSense solve rides along, switchable against the sensor view.
     cmd = [py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
            montage_path, "--calibration", calib, "--metrics", metrics,
-           "--out", out_html]
+           "--out", out_html, "--rerun", rerun]
     for d in solver_dirs:
         cmd += ["--solver-dir", d]
     _run(cmd, "5/5 render (stage-7 review: viewer + metrics panel)")

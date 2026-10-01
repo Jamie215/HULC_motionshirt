@@ -1035,7 +1035,7 @@ def print_report(rep):
               f"({rep['analysis_window_ms'][0]:.0f} ms) — dropped "
               f"{rep['trimmed_before_neutral_s']:.1f} s of pre-protocol setup")
     if rep.get("trimmed_after_end_s"):
-        print(f"  analysis ends where the nodes come off "
+        print(f"  analysis ends {'at --end' if rep.get('end_method') == 'manual' else 'where the nodes come off'} "
               f"({rep['analysis_window_ms'][1]:.0f} ms) — dropped "
               f"{rep['trimmed_after_end_s']:.1f} s after it")
     elif rep["calibration_used"] and not rep.get("end_detected"):

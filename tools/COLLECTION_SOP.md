@@ -45,4 +45,6 @@ repeat steps 2–3 first.
    (see the README, "Changing the analysis safely").
 
 Open `out/block1/session.html` to review the movement; **Go to neutral pose**
-should show the arms hanging, palms to the legs.
+should show the arms hanging, palms to the legs. If the freeze or the end was
+found in the wrong place, click **Timeline**: drag the green freeze band or the
+end line to where they really were, **Copy command**, and run it.

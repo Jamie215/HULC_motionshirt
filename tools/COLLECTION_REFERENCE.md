@@ -101,8 +101,14 @@ other is still being handled. The analysis ends where taking them off began —
 at the last whole-body pause within 10 s before that (`HANDLING_MAX_MS`),
 otherwise 5 s before it (`HANDLING_MARGIN_MS`). If the log
 ends in motion or with the nodes still worn, the analysis runs to its end and
-the block check says so; `--end <t_ms>` sets the end by hand (read the time off
-`t_common_ms` in `aligned.csv` or the review page).
+the block check says so.
+
+**Correcting a detection.** The review page's **Timeline** strip shows the
+whole log (each node's speed), the detected sync movement, the freeze (green
+band) and the end (dashed line). Drag the freeze band to where the subject
+really froze — it snaps to the quietest 2 s nearby — and/or the end line, then
+**Copy command**: it is the same analysis command with `--window t0,t1` /
+`--end t` added. Values set by hand stay in the command on the next page.
 
 **The checkpoint, step by step.**
 
