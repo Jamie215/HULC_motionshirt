@@ -151,39 +151,6 @@ The residual marks frames where the nodes disagree with any rigid skeleton.
 On this capture those are the fast movements, where 8 Hz sampling and
 inter-node timing (sync confidence 0.52) dominate.
 
-## 3. Methods text (draft)
-
-> Segment orientations were measured with inertial nodes (BNO086, 9-axis
-> fusion) strapped to the thorax, upper arm and forearm. Sensor-to-segment
-> alignment was obtained from a static neutral pose (arms at the sides,
-> palms facing the thighs), detected automatically as the first still window
-> of each recording. Joint kinematics were estimated with OpenSim 4.6
-> OpenSense [Delp 2007; Seth 2018; Al Borno 2022]: IMUPlacer registered the
-> nodes to the Thoracoscapular Shoulder Model [Seth 2019; Seth 2016] in the
-> neutral pose, and IMU inverse kinematics solved the pose at every sample.
-> The model's default pose was set to the neutral pose. Sternoclavicular and
-> scapulothoracic coordinates were held at the model's resting posture, as
-> the scapula was not instrumented. Ranges were widened to elbow flexion
-> −15–160° and pro/supination ±100°. Shoulder, elbow and forearm angles were
-> expressed from the solved segment orientations following the ISB
-> recommendations [Wu 2005].
-
-References (verify volume/pages before use):
-- Delp SL et al. 2007, *IEEE Trans Biomed Eng* 54(11)
-- Seth A et al. 2018, *PLoS Comput Biol* 14(7)
-- Al Borno M et al. 2022, *J NeuroEng Rehabil* 19:22
-- Seth A, Dong M, Matias R, Delp SL 2019, *Front Neurorobot* 13:90
-- Seth A et al. 2016, *PLoS ONE* 11(1)
-- Wu G et al. 2005, *J Biomech* 38(5)
-
-Limits to state with it:
-- **Scapula:** held fixed, so "glenohumeral" motion here is humerothoracic.
-- **Validation:** OpenSense's published validation is lower-limb gait. This
-  device's accuracy still needs its own check against optical motion capture
-  or a goniometer.
-- **Coverage:** right arm only (TSM). The left arm needs Rajagopal or a
-  mirrored model.
-
 ### 2b. Solver stability: the model can lose the sensors (2026-09-27)
 
 Re-running the same capture after the vector clock sync (an input change of
@@ -210,6 +177,56 @@ plainly (median error ~92° inside the stretch vs 2–6° elsewhere), so
 Implication for reporting: a model solve is only as good as its fit, frame by
 frame. Report the fit-lost time with any model-based number, and treat a
 session with long lost stretches as needing the direct sensor path there.
+
+### 2c. Torso + upper arm: the model adds no constraint (2026-10-01)
+
+First real torso + upper-arm session (two nodes, new firmware at ~10.6 Hz;
+three sideways raises to ~125°, alternating forward and sideways raises to
+~70°, then fast small swings). On this montage TSM has exactly as many free
+coordinates as the nodes measure (thorax 3 + glenohumeral 3 = 2 × 3), so IK
+fits the nodes exactly: median residual **0.0°**, and its elevation (0…126°)
+and axial rotation (−76…69°) equal the direct path's. The model can only
+constrain what the nodes over-determine, which two nodes on a ball joint never
+do. Rajagopal, whose shoulder ranges are clamped, could not follow the large
+raises and lost the fit for 9.9 s.
+
+So with torso + upper arm, report the direct path (or TSM, identically) and
+treat the model as a cross-check. Model constraints start to matter with a
+forearm node (the elbow hinge over-determines the chain) or with joint limits
+that the subject's real motion respects.
+
+## 3. Methods text (draft)
+
+> Segment orientations were measured with inertial nodes (BNO086, 9-axis
+> fusion) strapped to the thorax, upper arm and forearm. Sensor-to-segment
+> alignment was obtained from a static neutral pose (arms at the sides,
+> palms facing the thighs), detected automatically as the first deliberate
+> still hold of each recording. Joint kinematics were estimated with OpenSim 4.6
+> OpenSense [Delp 2007; Seth 2018; Al Borno 2022]: IMUPlacer registered the
+> nodes to the Thoracoscapular Shoulder Model [Seth 2019; Seth 2016] in the
+> neutral pose, and IMU inverse kinematics solved the pose at every sample.
+> The model's default pose was set to the neutral pose. Sternoclavicular and
+> scapulothoracic coordinates were held at the model's resting posture, as
+> the scapula was not instrumented. Ranges were widened to elbow flexion
+> −15–160° and pro/supination ±100°. Shoulder, elbow and forearm angles were
+> expressed from the solved segment orientations following the ISB
+> recommendations [Wu 2005].
+
+References (verify volume/pages before use):
+- Delp SL et al. 2007, *IEEE Trans Biomed Eng* 54(11)
+- Seth A et al. 2018, *PLoS Comput Biol* 14(7)
+- Al Borno M et al. 2022, *J NeuroEng Rehabil* 19:22
+- Seth A, Dong M, Matias R, Delp SL 2019, *Front Neurorobot* 13:90
+- Seth A et al. 2016, *PLoS ONE* 11(1)
+- Wu G et al. 2005, *J Biomech* 38(5)
+
+Limits to state with it:
+- **Scapula:** held fixed, so "glenohumeral" motion here is humerothoracic.
+- **Validation:** OpenSense's published validation is lower-limb gait. This
+  device's accuracy still needs its own check against optical motion capture
+  or a goniometer.
+- **Coverage:** right arm only (TSM). The left arm needs Rajagopal or a
+  mirrored model.
 
 ## 4. Recommendations
 

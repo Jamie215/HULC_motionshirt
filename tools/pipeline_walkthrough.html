@@ -341,8 +341,8 @@
           <span class="tool">calibrate_segments.py</span> uses the mag-referenced
           Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
-          <b>neutral / N-pose</b> hold (found automatically: the first still
-          stretch) solves that offset and sets the anatomical zero;
+          <b>neutral / N-pose</b> hold (found automatically: the first deliberate
+          still hold, not a warm-up pause) solves that offset and sets the anatomical zero;
           the subject's facing (from the torso node, else the elbow's hinge axis)
           turns the world axes into anatomical ones (forward / up / right) for
           the joint decomposition. A matching <b>closing hold</b> marks the end

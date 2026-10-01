@@ -51,17 +51,23 @@ Which window is the neutral hold
 `choose_neutral_window`: an explicit `--window` wins; otherwise the montage's
 `calibration.t_window_ms` is used only if the data there is actually still
 (<= STILL_MAX_RAD_S) — a placeholder or mistimed window is ignored — and
-otherwise `find_neutral_window` takes the FIRST still stretch of the recording
-(mean angular speed <= NEUTRAL_MAX_RAD_S) and the quietest window inside it.
+otherwise `find_neutral_window` takes the FIRST deliberate hold of the
+recording — a still stretch lasting at least NEUTRAL_MIN_HOLD_MS whose quietest
+window averages <= NEUTRAL_QUIET_RAD_S — and that quietest window. A warm-up
+pause (short, and only slowed to ~0.06–0.09 rad/s) does not qualify; it was
+taken for the hold on a real capture and skewed every angle by 20–30°. With no
+such hold, the first window under NEUTRAL_MAX_RAD_S, then the quietest.
 
 The closing hold — the `closing` block
 --------------------------------------
 The protocol ends with a second neutral hold before the nodes come off.
 `find_closing_hold` finds the LAST still window at least CLOSING_MIN_GAP_MS after
-the opening hold whose pose matches neutral (every segment's gravity direction
-and every pair's relative rotation within CLOSING_POSE_DEG). It is recorded
-with its deviations (a free end-of-block slip check) and ends metrics'
-analysis window; none found -> the note says so and nothing is cut.
+the opening hold in which every segment's gravity direction matches neutral
+within CLOSING_POSE_DEG (limbs hanging, trunk upright, no node lying on a
+table). Each adjacent pair's relative rotation is recorded too and, past
+CLOSING_POSE_DEG, warned about (`pose_note`: the arm turned about its own axis,
+or a strap slipped) rather than required. It ends metrics' analysis window;
+none found -> the note says so and nothing is cut.
 
 Heading (facing) recovery — the `heading` block
 -----------------------------------------------
@@ -172,6 +178,13 @@ DEFAULT_WIN_MS = 2000.0          # auto-detected still-window length
 # than STILL_MAX_RAD_S (a deliberate hold sits around 0.01–0.05 rad/s); the
 # stricter bar keeps a slow setup fidget from passing for it.
 NEUTRAL_MAX_RAD_S = 0.10
+# A deliberate hold is far stiller and longer than a pause in the warm-up: on
+# real captures the hold's quietest 2 s sat at 0.004–0.017 rad/s for 9–42 s,
+# while warm-up pauses sat at 0.06–0.09 rad/s for 2–4 s. So the first stretch
+# that lasts the SOP's minimum hold AND reaches this quiet is the neutral hold;
+# the 0.10 rule above is the fallback when no stretch does.
+NEUTRAL_QUIET_RAD_S = 0.04
+NEUTRAL_MIN_HOLD_MS = 3000.0
 
 # ---- facing from elbow motion (montages without a torso node) --------------
 # The elbow must flex at least this far (95th percentile) for its hinge axis to
@@ -179,8 +192,8 @@ NEUTRAL_MAX_RAD_S = 0.10
 # fraction of the median over all facings (a clear minimum, not a flat cost).
 # ---- closing hold (the end of the protocol) --------------------------------
 # The last still window at least CLOSING_MIN_GAP_MS after the opening hold whose
-# pose matches it within CLOSING_POSE_DEG (each node's gravity direction and each
-# adjacent pair's relative rotation) closes the analysis window.
+# nodes' gravity directions match it within CLOSING_POSE_DEG closes the analysis
+# window; a larger pair (relative) rotation is reported, not disqualifying.
 CLOSING_MIN_GAP_MS = 5000.0
 CLOSING_POSE_DEG = 10.0
 
@@ -353,15 +366,32 @@ def find_neutral_window(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
     The collection protocol opens with the neutral hold, but a log usually
     starts a little earlier (strapping on, getting set) — so the quietest window
     of the whole record can be the closing rest instead, and a fixed window from
-    the montage can land in the setup fidget. We take the earliest window whose
-    mean angular speed is under NEUTRAL_MAX_RAD_S; if none qualifies, fall back
-    to the quietest window (and say so). Returns (t0, t1, source).
+    the montage can land in the setup fidget, and a warm-up has short pauses.
+    We take the earliest still stretch (windows under NEUTRAL_MAX_RAD_S) that
+    lasts at least NEUTRAL_MIN_HOLD_MS and whose quietest window is under
+    NEUTRAL_QUIET_RAD_S — a deliberate hold, not a pause. If none qualifies, the
+    first window under NEUTRAL_MAX_RAD_S, then the quietest window (and say so).
+    Returns (t0, t1, source).
     """
     if len(t_ms) < 3 or t_ms[-1] - t_ms[0] <= win_ms:
         t0, t1 = auto_still_window(t_ms, seg_quats, win_ms)
         return t0, t1, "whole_record"
     starts, mean = _window_means(t_ms, seg_quats, win_ms)
     still = mean <= NEUTRAL_MAX_RAD_S
+    i, n = 0, len(still)
+    while i < n:                                   # deliberate holds first
+        if not still[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and still[j + 1]:
+            j += 1
+        k = i + int(np.argmin(mean[i:j + 1]))
+        if (starts[j] + win_ms - starts[i] >= NEUTRAL_MIN_HOLD_MS
+                and mean[k] <= NEUTRAL_QUIET_RAD_S):
+            t0 = float(starts[k])
+            return t0, t0 + win_ms, "first_hold"
+        i = j + 1
     if still.any():
         # the first still stretch, then its quietest window (not its edge, which
         # still carries the settle-in)
@@ -393,7 +423,11 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
         note = (f"montage window {t0:.0f}–{t1:.0f} ms was not still "
                 f"({s:.2f} rad/s) — ignoring it; ")
     t0, t1, src = find_neutral_window(t_ms, seg_quats, win_ms)
-    how = {"first_still": "first still window",
+    how = {"first_hold": "first neutral hold "
+                         f"(≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s still, "
+                         f"≤ {NEUTRAL_QUIET_RAD_S} rad/s)",
+           "first_still": f"no hold ≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s at "
+                          f"≤ {NEUTRAL_QUIET_RAD_S} rad/s — first still window",
            "quietest": "no window under "
                        f"{NEUTRAL_MAX_RAD_S} rad/s — quietest window",
            "whole_record": "record too short — whole record"}[src]
@@ -463,8 +497,14 @@ def find_closing_hold(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS
 
     It marks where the recording stops being protocol: after it the nodes are
     usually taken off and carried to the charger, and that handling motion is
-    logged like any other. Rests in other poses (elbow bent, arm raised) fail
-    the pose test; a mid-session N-pose rest passes, so the LAST match wins.
+    logged like any other. The pose test is each node's GRAVITY direction (the
+    limbs hang and the trunk is upright as at neutral, and no node lies on a
+    table): rests in other poses (elbow bent, arm raised) fail it; a mid-session
+    N-pose rest passes, so the LAST match wins. The adjacent pairs' relative
+    rotation is reported, not required: a hanging arm turned about its own axis
+    (palm back instead of to the thigh), or a strap that slipped, still ends the
+    protocol, and the deviation warns about it. Rejecting such a hold made the
+    analysis end at a mid-task rest on a real capture.
     Returns a dict (t_window_ms, stillness, deviations) or None."""
     if len(t_ms) < 3 or t_ms[-1] - after_ms < win_ms + CLOSING_MIN_GAP_MS:
         return None
@@ -482,11 +522,17 @@ def find_closing_hold(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS
         if dev is None:
             continue
         seg_dev, pair_dev = dev
-        if seg_dev <= CLOSING_POSE_DEG and pair_dev <= CLOSING_POSE_DEG:
-            return {"t_window_ms": [round(t0, 1), round(t1, 1)],
-                    "stillness_rad_s": round(float(mean[k]), 4),
-                    "segment_gravity_dev_deg": round(seg_dev, 2),
-                    "pair_rel_dev_deg": round(pair_dev, 2)}
+        if seg_dev <= CLOSING_POSE_DEG:
+            out = {"t_window_ms": [round(t0, 1), round(t1, 1)],
+                   "stillness_rad_s": round(float(mean[k]), 4),
+                   "segment_gravity_dev_deg": round(seg_dev, 2),
+                   "pair_rel_dev_deg": round(pair_dev, 2)}
+            if pair_dev > CLOSING_POSE_DEG:
+                out["pose_note"] = (
+                    f"adjacent segments are turned {pair_dev:.0f}° relative to the "
+                    f"opening hold (the arm rotated about its own axis, or a strap "
+                    f"slipped) — angles near the end may carry that offset")
+            return out
     return None
 
 
@@ -938,8 +984,10 @@ def print_calibrate_report(cal):
     c = cal.get("closing") or {}
     if c.get("t_window_ms"):
         print(f"  closing hold:   {c['t_window_ms'][0]:.0f}–{c['t_window_ms'][1]:.0f} ms "
-              f"(pose within {max(c['segment_gravity_dev_deg'], c['pair_rel_dev_deg']):.1f}° "
-              f"of neutral) — analysis ends here")
+              f"(tilt within {c['segment_gravity_dev_deg']:.1f}°, joints within "
+              f"{c['pair_rel_dev_deg']:.1f}° of neutral) — analysis ends here")
+        if c.get("pose_note"):
+            print(f"  ! closing hold: {c['pose_note']}")
     else:
         print("  ! no closing hold found — analysis runs to the end of the log "
               "(may include taking the nodes off); end each take with the N-pose")
@@ -1327,8 +1375,24 @@ def selftest():
           f"before 27 s) "
           f"{'OK' if end_ok else 'FAIL'}")
 
+    # (10) A warm-up pause is not the neutral hold: a 2.5 s pause at 0.07 rad/s
+    #      (the speed real warm-up pauses showed) precedes the real 6 s hold at
+    #      0.003 rad/s. The finder must skip the pause.
+    t_w = np.arange(0, 20000, 100.0)
+    rate = np.full(len(t_w), 1.0)
+    rate[(t_w >= 3000) & (t_w < 5500)] = 0.07
+    rate[(t_w >= 8000) & (t_w < 14000)] = 0.003
+    ang = np.concatenate([[0.0], np.cumsum(rate[:-1] * 0.1)])
+    q_w = np.column_stack([np.cos(ang / 2), np.zeros(len(t_w)), np.zeros(len(t_w)),
+                           np.sin(ang / 2)])
+    w0, w1, wsrc = find_neutral_window(t_w, {"torso": q_w, "upper_arm_r": q_w})
+    pause_ok = 8000 <= w0 and w1 <= 14000 and wsrc == "first_hold"
+    print(f"[selftest] warm-up pause skipped: neutral {w0:.0f}–{w1:.0f} ms "
+          f"(hold 8000–14000, pause at 3000–5500) "
+          f"{'OK' if pause_ok else 'FAIL'}")
+
     ok = (max_resid < 0.5 and max_pair < 0.5
-          and window_ok and hinge_ok and end_ok
+          and window_ok and hinge_ok and end_ok and pause_ok
           and rep_reuse["decision"] == "reuse"
           and rep_repose["decision"] == "re-pose"
           and "forearm_r" in rep_repose["offenders"]

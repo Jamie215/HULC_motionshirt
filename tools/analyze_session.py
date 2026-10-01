@@ -136,6 +136,39 @@ def _run(cmd, step):
                          f"Fix the above and re-run.")
 
 
+def resolve_opensense_models(requested):
+    """Which OpenSim models to solve on, and a hint when none can run.
+
+    `requested`: --opensense-model values (files or folders); [] = --no-opensense;
+    None = automatic: $HULC_OPENSENSE_MODEL (os.pathsep-separated), else the
+    folder `opensense_ik.py fetch-models` fills — used only when OpenSim is
+    installed, so a plain setup never pays for (or fails on) a model solve."""
+    from opensense_ik import DEFAULT_MODELS_DIR, find_models, opensim_available
+    how = ("model solves need `pip install opensim` and the models: "
+           "`python tools/opensense_ik.py fetch-models`; the review page then "
+           "offers a Sensors / model switch")
+    if requested == []:
+        return [], None
+    explicit = requested is not None
+    if not explicit:
+        env = os.environ.get("HULC_OPENSENSE_MODEL")
+        requested = ([p for p in env.split(os.pathsep) if p] if env
+                     else [DEFAULT_MODELS_DIR] if os.path.isdir(DEFAULT_MODELS_DIR)
+                     else [])
+    models = find_models([p for p in requested if os.path.exists(p)])
+    missing = [p for p in requested if not os.path.exists(p)]
+    if not opensim_available():
+        return [], ("OpenSim is not installed, so no model solves this run — "
+                    + how) if (models or explicit) else ("no model solves: " + how)
+    if not models:
+        return [], ((f"no OpenSim model found at {', '.join(missing or requested)} — "
+                     if explicit else "no model solves: ") + how)
+    return models, (f"OpenSense on {len(models)} model(s): "
+                    + ", ".join(os.path.basename(m) for m in models)
+                    + ("" if explicit else "  (found automatically; --no-opensense "
+                       "skips)"))
+
+
 def run(montage_path, capture_dir, out_html, outdir, window, fs,
         facing_deg=None, opensense_models=None):
     montage = load_montage(montage_path)
@@ -182,7 +215,9 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     #    OpenSim model, reported through the same metrics. A failed solve is
     #    reported and skipped: the direct sensor review is still produced.
     solver_dirs = []
-    models = [m for m in (opensense_models or []) if m]
+    models, os_hint = resolve_opensense_models(opensense_models)
+    if os_hint:
+        print(f"\n[analyze] {os_hint}")
     if models:
         from opensense_ik import detect_profile
         for k, model in enumerate(models, 1):
@@ -222,6 +257,9 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     for d in solver_dirs:
         print(f"  opensense      : {os.path.join(d, 'opensense_metrics.json')}"
               f"  (switch to it in the review page)")
+    if not solver_dirs:
+        print("  model solves   : none" + (f" — {os_hint}" if os_hint and not models
+                                           else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -344,13 +382,18 @@ def main():
                     help="subject's facing at neutral, degrees clockwise from "
                          "world +Y; gives anatomical joint axes when the montage "
                          "has no torso node")
+    pr.add_argument("--no-opensense", action="store_true",
+                    help="skip the model solves even when models are installed")
     pr.add_argument("--opensense-model", metavar="OSIM", action="append",
                     help="also solve the session with OpenSim OpenSense on this "
                          "model (ThoracoscapularShoulderModel.osim for the right "
                          "arm, or Rajagopal2015_opensense.osim; needs "
                          "`pip install opensim`) -> <outdir>/opensense/<profile>/; "
-                         "repeat for several models. The review page then has a "
-                         "switch between the direct sensor view and each model")
+                         "a folder adds every model in it; repeat for several. "
+                         "Default: $HULC_OPENSENSE_MODEL, else the models "
+                         "`opensense_ik.py fetch-models` downloaded. The review "
+                         "page then has a switch between the direct sensor view "
+                         "and each model")
 
     sub.add_parser("selftest", help="validate the pipeline on synthetic logs")
 
@@ -359,7 +402,8 @@ def main():
         sys.exit(selftest())
     if args.cmd == "run":
         run(args.montage, args.capture_dir, args.out, args.outdir,
-            args.window, args.fs, args.facing_deg, args.opensense_model)
+            args.window, args.fs, args.facing_deg,
+            [] if args.no_opensense else args.opensense_model)
         return
     ap.error("choose a command: run | selftest")
 

@@ -1307,9 +1307,10 @@ function jointAngles(J, qp, qd, qwa){
   return out;
 }
 // A whole-session angle series for one movement, matching metrics.py: the
-// calibrated stream (whatever the view toggle shows), unwrapped so a sweep past
-// ±180° stays continuous, then shifted by a multiple of 360° so its middle
-// reads within -180…180° (the same shift the panel applies). Undefined samples
+// calibrated stream (whatever the view toggle shows), unwrapped within each
+// defined run so a sweep past ±180° stays continuous, each run shifted by a
+// multiple of 360° so its middle reads within -180…180° (the same shift the
+// panel applies). Undefined samples
 // (near the decomposition's singularity) are null. Cached per movement.
 const _series={};
 function angleSeries(jk, dk){
@@ -1329,12 +1330,16 @@ function sceneSeries(S, jk, dk){
     const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), qwa);
     let v=a?a[dk]:null;
     if(v!=null&&prev!=null) v+=360*Math.round((prev-v)/360);   // unwrap
-    out[i]=v; if(v!=null) prev=v;
+    out[i]=v; prev=v;        // an undefined sample ends the run: never unwrap through it
   }
-  const def=out.filter(v=>v!=null).sort((x,y)=>x-y);
-  if(def.length){
-    const k=360*Math.round(def[def.length>>1]/360);
-    if(k) for(let i=0;i<n;i++) if(out[i]!=null) out[i]-=k;
+  // each defined run shifted by whole turns so its middle reads within ±180°
+  // (metrics.py unwrap_runs_deg)
+  for(let i=0;i<n;){
+    if(out[i]==null){i++;continue;}
+    let j=i; while(j<n&&out[j]!=null) j++;
+    const run=out.slice(i,j).sort((x,y)=>x-y), k=360*Math.round(run[run.length>>1]/360);
+    if(k) for(let q=i;q<j;q++) out[q]-=k;
+    i=j;
   }
   return out;
 }
@@ -1685,8 +1690,16 @@ if(SOLVER.kind==='model'){
   rb.disabled=true;
   rb.title='A model solve has no raw view. Switch to Sensors to see the raw sensor orientation.';
 }
-// solver switch (only when the page carries more than one)
+// solver switch: always shown, so the option is visible even when this page
+// was built without model solves (the model button then says how to add them)
 const solverBox=document.getElementById('solver');
+if(SOLVERS.length===1&&SOLVER.kind!=='model'){
+  solverBox.hidden=false;
+  solverBox.innerHTML=`<button class="on" title="${esc(SOLVER.title||'')}">Sensors</button>`+
+    `<button disabled title="No body-model solve in this page. To add one: pip install opensim, `+
+    `then python tools/opensense_ik.py fetch-models, then re-run analyze_session.py `+
+    `(it finds the models by itself).">Body model</button>`;
+}
 if(SOLVERS.length>1){
   solverBox.hidden=false;
   solverBox.innerHTML=SOLVERS.map((S,i)=>{

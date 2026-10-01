@@ -84,6 +84,10 @@ Model preparation (what is changed from the published model, and why)
 Setup (one time)
 ----------------
     pip install opensim                 # official Stanford wheels, Python 3.11–3.13
+    python tools/opensense_ik.py fetch-models   # both models -> models/opensense/
+
+analyze_session.py then solves every session on the fetched models by itself
+and adds them to the review page's model switch. Or fetch by hand:
     # thoracoscapular (ships in the OpenSim source repo, Apache-2.0):
     git clone --depth 1 --filter=blob:none --sparse \\
         https://github.com/opensim-org/opensim-core
@@ -131,6 +135,18 @@ from reconcile_nodes import quality_path  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = [1.0, 0.0, 0.0, 0.0]
+# Where `fetch-models` puts the models, and where analyze_session.py looks for
+# them by default (git-ignored). Only the .osim is needed for IK: without the
+# mesh geometry OpenSim warns but solves the same.
+DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(TOOLS), "models", "opensense")
+MODEL_URLS = {
+    "ThoracoscapularShoulderModel.osim":
+        "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
+        "OpenSim/Tests/shared/ThoracoscapularShoulderModel.osim",
+    "Rajagopal2015_opensense.osim":
+        "https://raw.githubusercontent.com/opensim-org/opensim-models/master/"
+        "Models/Rajagopal_OpenSense/Rajagopal2015_opensense.osim",
+}
 # A frame where any sensor sits further than this from the solved skeleton is
 # one the model could not follow (normal frames fit within ~2-15°). IK solves
 # frame to frame from the previous pose, so after a fast move it can settle in
@@ -238,6 +254,46 @@ def detect_profile(model_path):
         return "rajagopal"
     raise SystemExit(f"[opensense] {os.path.basename(model_path)}: not a supported "
                      f"model (supported: {', '.join(PROFILES)})")
+
+
+def opensim_available():
+    """True when `import opensim` would work (checked without importing it)."""
+    import importlib.util
+    return importlib.util.find_spec("opensim") is not None
+
+
+def find_models(paths):
+    """Expand files and folders into the supported .osim models they hold."""
+    out = []
+    for p in paths:
+        cands = ([os.path.join(p, f) for f in sorted(os.listdir(p))
+                  if f.lower().endswith(".osim")] if os.path.isdir(p) else [p])
+        for c in cands:
+            try:
+                detect_profile(c)
+            except (SystemExit, OSError):
+                if not os.path.isdir(p):
+                    out.append(c)        # an explicit file: let the run report it
+                continue
+            out.append(c)
+    return out
+
+
+def fetch_models(dest=DEFAULT_MODELS_DIR):
+    """Download both supported models (the .osim files only) into `dest`."""
+    import urllib.request
+    os.makedirs(dest, exist_ok=True)
+    for name, url in MODEL_URLS.items():
+        path = os.path.join(dest, name)
+        print(f"[opensense] {name} <- {url}")
+        urllib.request.urlretrieve(url, path)
+        print(f"            {os.path.getsize(path) / 1024:.0f} KB, profile "
+              f"{detect_profile(path)}")
+    print(f"[opensense] models in {dest}" + (
+        "" if opensim_available() else
+        "\n[opensense] OpenSim is not installed yet:  pip install opensim  "
+        "(Python 3.11–3.13)"))
+    return dest
 
 
 def check_montage(profile, present_segments):
@@ -679,16 +735,24 @@ def main():
                          "palms facing the thighs — the N-pose)")
     pr.add_argument("--no-render", action="store_true",
                     help="skip the opensense.html viewer")
+    pf = sub.add_parser("fetch-models", help="download the Thoracoscapular and "
+                        "Rajagopal models (.osim only)")
+    pf.add_argument("--dest", default=DEFAULT_MODELS_DIR,
+                    help=f"folder (default: {DEFAULT_MODELS_DIR}, where "
+                         f"analyze_session.py looks for them)")
     sub.add_parser("selftest", help="validate the OpenSim-free logic")
     args = ap.parse_args()
     if args.cmd == "selftest":
         sys.exit(selftest())
+    if args.cmd == "fetch-models":
+        fetch_models(args.dest)
+        return
     if args.cmd == "run":
         run(args.aligned_csv, args.montage, args.calibration, args.model,
             args.outdir, args.forearm_neutral, render=not args.no_render,
             profile_name=args.profile)
         return
-    ap.error("choose a command: run | selftest")
+    ap.error("choose a command: run | fetch-models | selftest")
 
 
 if __name__ == "__main__":

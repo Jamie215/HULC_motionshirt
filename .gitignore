@@ -1,3 +1,6 @@
+# Downloaded OpenSim models (tools/opensense_ik.py fetch-models)
+models/
+
 # Python
 Lib/
 venv/

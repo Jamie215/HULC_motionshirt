@@ -130,6 +130,9 @@ to its segment automatically from the montage.
 ```bash
 # 0. one-time: install the BLE dependency (only for live node actions)
 pip install bleak
+#    optional, for body-model solves (the review page's Sensors / model switch):
+pip install opensim
+python tools/opensense_ik.py fetch-models     # -> models/opensense/
 
 # 1. enroll boards → montage.json (power ONE node on at a time)
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
@@ -146,8 +149,8 @@ python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
 python tools/analyze_session.py run --montage montage.json \
     --capture-dir ./capture/block1 --outdir ./out/block1
 #    → aligned.csv, calibration.json, metrics.json, and an HTML viewer
-#    (add --opensense-model PATH, repeatable, for model solves you can switch
-#    to in the same page)
+#    (with OpenSim + fetched models it also solves on each model by itself;
+#    --no-opensense skips, --opensense-model PATH picks other models)
 ```
 
 Almost every tool has a `selftest` / `--selftest` that validates its logic on

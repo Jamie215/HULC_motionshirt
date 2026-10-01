@@ -147,13 +147,15 @@ one offload), not once-forever. See `COLLECTION_SOP.md` §3b.
 > **Since built on top:**
 > - **Neutral window precedence** — `--window` › the montage's
 >   `calibration.t_window_ms` *only if the data there is still* › auto-detect
->   (the first still stretch, quietest window inside it). A placeholder window
+>   (the first deliberate hold — ≥ 3 s still, ≤ 0.04 rad/s at its quietest —
+>   and its quietest window; warm-up pauses don't qualify). A placeholder window
 >   in the montage can no longer silently calibrate on motion.
 > - **Facing sources** — torso node heading › elbow hinge axis (the facing
 >   that makes elbow motion a pure hinge; needs ≥30° of flexion in the
 >   recording) › `--facing-deg` › none (joints relative-only).
-> - **Closing hold** — the last still, neutral-matching window ≥5 s after the
->   opening one is stored as the `closing` block (with its slip deviations) and
+> - **Closing hold** — the last still window ≥5 s after the opening one whose
+>   nodes are tilted as at neutral (relative rotation reported, not required)
+>   is stored as the `closing` block (with its slip deviations) and
 >   ends the metrics analysis window. The SOP makes it required
 >   (`COLLECTION_SOP.md`).
 > - **Blocks** — nodes come off to charge between blocks, which ends the

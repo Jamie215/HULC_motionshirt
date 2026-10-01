@@ -240,8 +240,11 @@ segment **in montage order automatically**, so there's no hand-ordering of logs:
 python tools/analyze_session.py run --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1 --out elbow.html
 ```
 
-With one or more `--opensense-model PATH`, each model's solve is added to the
-same review page: a **Sensors / model** switch in the footer changes how the
+**Body-model solves.** Once per machine: `pip install opensim` and
+`python tools/opensense_ik.py fetch-models` (downloads the Thoracoscapular
+and Rajagopal models into `models/opensense/`). From then on `analyze_session`
+solves every block on both models by itself (`--no-opensense` skips them,
+`--opensense-model PATH` picks others) and adds each to the same review page: a **Sensors / model** switch in the footer changes how the
 pose is solved (same moment, camera and graph), and the angle graph's
 **compare solvers** overlay draws the other solves over the current one.
 Stretches where a model lost the sensors are shaded and left out of that
@@ -263,9 +266,10 @@ neutral hold.
       **Raw ↔ Calibrated** — the two bars should snap to the neutral pose in
       Calibrated. That toggle *is* the calibration check.
 
-By default calibrate **auto-detects** the neutral window (the first still
-stretch; a montage window is used only if it was actually still) and the
-closing hold (the last still stretch in the same pose). If it picks the wrong
+By default calibrate **auto-detects** the neutral window (the first
+deliberate hold: ≥ 3 s, ≤ 0.04 rad/s — warm-up pauses don't count; a montage
+window is used only if it was actually still) and the closing hold (the last
+still stretch with every node tilted as at neutral). If it picks the wrong
 opening span, pin it: read the still hold off `t_common_ms` in the emitted
 `aligned.csv` and re-run with `--window <t0>,<t1>`.
 

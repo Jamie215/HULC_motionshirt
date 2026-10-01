@@ -36,7 +36,11 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
 - **Unwrap before range.** Angle series are unwrapped (`np.unwrap`) before ROM, so
   a real sweep through ±180° reports its true excursion instead of a fake 360°;
   the unwrapped series is then re-centred by whole turns so its median sits in
-  ±180° (an unwrap never shifts the zero).
+  ±180° (an unwrap never shifts the zero). A DOF with undefined stretches (the
+  plane of elevation with the arm at the side) is unwrapped only within each
+  defined run, each run re-centred on its own (`unwrap_runs_deg`): its value
+  inside a singular stretch is arbitrary, and carrying the unwrap through it
+  stacked fake turns (a real session read a 1023° range).
 - **Implausible ⇒ flagged.** Every DOF carries a `plausibility` check (§3): a
   range over a full turn, sample-to-sample jumps over `JUMP_MAX_DEG`, or — with
   anatomical axes — more than 2% of samples outside the DOF's physiological

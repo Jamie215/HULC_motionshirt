@@ -79,7 +79,7 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
 | `session.aligned_csv` | The reconcile output this montage annotates. |
 | `calibration.neutral_pose` | The static zeroing pose captured at session start (e.g. `N-pose`). |
 | `calibration.captured` | Whether that pose was actually recorded this session. |
-| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the first still stretch. `--window` overrides both. The closing hold is always found automatically and lands in `calibration.json`'s `closing` block, not here. |
+| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the first deliberate hold (≥ 3 s still, not a warm-up pause). `--window` overrides both. The closing hold is always found automatically and lands in `calibration.json`'s `closing` block, not here. |
 | `calibration.functional` | Optional functional-calibration movements captured (e.g. a known elbow flexion to fix a joint axis). |
 | `nodes[].node_id` | The board's advertised id (`HULC-IMU-XXXX`), for traceability. |
 | `nodes[].column` | **The bridge to reconcile output** — the per-node prefix in the aligned CSV header (`n0`, `n1`, …). |

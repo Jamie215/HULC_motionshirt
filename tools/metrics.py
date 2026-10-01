@@ -643,6 +643,24 @@ def _shoulder_clinical(euler, guard):
 # ---------------------------------------------------------------------------
 # Joint-level metrics (two adjacent nodes)
 # ---------------------------------------------------------------------------
+def unwrap_runs_deg(rad, ok):
+    """Angle series (deg) unwrapped only WITHIN each run of well-defined
+    samples, each run then shifted by whole turns so its median reads within
+    ±180°. Across an undefined stretch (a decomposition singularity, e.g. the
+    plane of elevation with the arm at the side) the angle is arbitrary, so
+    carrying the unwrap through it stacks fake turns: a real shoulder session
+    read a 1023° "range" that way."""
+    rad = np.asarray(rad, dtype=float)
+    out = np.degrees(rad).copy()
+    idx = np.flatnonzero(ok)
+    if idx.size == 0:
+        return out
+    for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+        a = np.degrees(np.unwrap(rad[run]))
+        out[run] = a - 360.0 * np.round(np.median(a) / 360.0)
+    return out
+
+
 def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
                           q_wa=None):
     """Per-DOF angle series → ROM, velocity, and reps for one computable joint.
@@ -678,12 +696,16 @@ def compute_joint_metrics(jkey, joint, q_prox, q_dist, t_ms, clinical,
     for d in joint.dofs:
         # Unwrap in radians (removes the ±π sawtooth) THEN convert, so a real sweep
         # past the wrap point stays continuous and ROM is the true excursion.
-        ang = np.degrees(np.unwrap(euler[:, d.seq_index]))
-        # unwrap anchors on the first sample; shift by whole turns so the
-        # session's middle reads within ±180° (a glitchy first sample must not
-        # push the whole series a turn away)
-        ang = ang - 360.0 * np.round(np.median(ang) / 360.0)
         well_defined = slot_ok[d.seq_index]
+        if well_defined.all():
+            ang = np.degrees(np.unwrap(euler[:, d.seq_index]))
+            # unwrap anchors on the first sample; shift by whole turns so the
+            # session's middle reads within ±180° (a glitchy first sample must
+            # not push the whole series a turn away)
+            ang = ang - 360.0 * np.round(np.median(ang) / 360.0)
+        else:
+            # never unwrap THROUGH a singular stretch (see unwrap_runs_deg)
+            ang = unwrap_runs_deg(euler[:, d.seq_index], well_defined)
         entry = {"key": d.key, "name": d.name, "plane": d.plane}
         if not well_defined.all():
             # Only trust this DOF where the split is well-conditioned.
@@ -1269,6 +1291,24 @@ def selftest():
     print(f"[selftest] sweep across ±180° unwrapped: range "
           f"{fb['rom']['range_deg']:.2f}° (want 60) "
           f"{'OK' if unwrap_ok else 'FAIL'}")
+
+    # (4b) Never unwrap THROUGH an undefined stretch: defined runs hold a
+    #      steady 30°, the undefined samples between them spin at random (as the
+    #      plane of elevation does with the arm at the side). Unwrapping across
+    #      them stacked turns (a real session read 1023°); per run it stays 30°.
+    rng4 = np.random.default_rng(4)
+    raw = np.full(400, np.radians(30.0))
+    okm = np.ones(400, dtype=bool)
+    for a in range(40, 400, 80):
+        okm[a:a + 30] = False
+        raw[a:a + 30] = rng4.uniform(-np.pi, np.pi, 30)
+    runs_deg = unwrap_runs_deg(raw, okm)[okm]
+    runs_ok = np.ptp(runs_deg) < 1e-6 and abs(runs_deg[0] - 30.0) < 1e-6
+    old_way = np.degrees(np.unwrap(raw))[okm]
+    ok = ok and runs_ok
+    print(f"[selftest] unwrap per defined run: range {np.ptp(runs_deg):.1f}° "
+          f"(unwrapping through the gaps: {np.ptp(old_way):.0f}°) "
+          f"{'OK' if runs_ok else 'FAIL'}")
 
     # (5) Metric primitives with known answers.
     t8 = np.arange(400) * 20.0                    # 8 s @ 50 Hz
