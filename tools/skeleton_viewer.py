@@ -209,8 +209,8 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
     confidence, shown as a header chip and per-card warnings.
 
-    With `trim` (default) playback runs from the neutral hold to the closing
-    hold — the same analysis window metrics.py uses.
+    With `trim` (default) playback runs from the neutral hold to the session
+    end (the nodes coming off) — the same analysis window metrics.py uses.
 
     `solver` describes how the orientations were obtained (SENSOR_SOLVER by
     default; a model solve from opensense_ik.py via load_solver_dir). A page can

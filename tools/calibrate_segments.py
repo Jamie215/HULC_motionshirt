@@ -63,16 +63,16 @@ any length, is never taken; hold-first (older recordings) takes the first hold
 of the log. With no such hold, the first window under NEUTRAL_MAX_RAD_S, then
 the quietest.
 
-The closing hold — the `closing` block
---------------------------------------
-The protocol ends with a second neutral hold before the nodes come off.
-`find_closing_hold` finds the LAST still window at least CLOSING_MIN_GAP_MS after
-the opening hold in which every segment's gravity direction matches neutral
-within CLOSING_POSE_DEG (limbs hanging, trunk upright, no node lying on a
-table). Each adjacent pair's relative rotation is recorded too and, past
-CLOSING_POSE_DEG, warned about (`pose_note`: the arm turned about its own axis,
-or a strap slipped) rather than required. It ends metrics' analysis window;
-none found -> the note says so and nothing is cut.
+The end of the session — the `end` block
+----------------------------------------
+No closing pose is asked of the subject. `find_session_end` reads the end of
+the log instead: taken-off nodes lie still on the charger in a pose no body
+holds (some node tilted more than OFF_BODY_TILT_DEG from its neutral), then go
+IDLE and stop logging. The analysis ends where the handling began — the last
+still pause within HANDLING_MAX_MS before that rest, else HANDLING_MARGIN_MS
+before it. A log ending in motion, or at rest in a body pose, is kept to its
+end (the note says why). `--end` sets the end by hand. Calibrations written
+before this carry a `closing` hold, still honoured by analysis_end_ms.
 
 Heading (facing) recovery — the `heading` block
 -----------------------------------------------
@@ -111,7 +111,7 @@ metrics reports the joints RELATIVE-only.
 Usage
 -----
     # solve offsets + baseline from the neutral hold (auto-located when the
-    # montage window isn't still), plus facing and the closing hold:
+    # montage window isn't still), plus facing and the session end:
     python tools/calibrate_segments.py calibrate aligned.csv montage.json \
         --out calibration.json
 
@@ -215,12 +215,19 @@ HOLD_FIRST_HINT_GAP_MS = 3000.0
 # The elbow must flex at least this far (95th percentile) for its hinge axis to
 # be observable, and the best facing's varus/valgus RMS must be at most this
 # fraction of the median over all facings (a clear minimum, not a flat cost).
-# ---- closing hold (the end of the protocol) --------------------------------
-# The last still window at least CLOSING_MIN_GAP_MS after the opening hold whose
-# nodes' gravity directions match it within CLOSING_POSE_DEG closes the analysis
-# window; a larger pair (relative) rotation is reported, not disqualifying.
-CLOSING_MIN_GAP_MS = 5000.0
-CLOSING_POSE_DEG = 10.0
+# ---- end of the session: the nodes come off ---------------------------------
+# No closing pose is asked for. When the nodes are taken off they end up lying
+# on the charger, still, in a pose no body holds; they then go IDLE and stop
+# logging, so the log ENDS with that rest. If some node is tilted more than
+# OFF_BODY_TILT_DEG from its neutral there, the nodes are off the body, and the
+# analysis ends where the handling began: at the last still pause within
+# HANDLING_MAX_MS before the rest, else HANDLING_MARGIN_MS before it. Taking a
+# node off is quick (real captures: 6.5 s after a pause; ~2.5 s straight from
+# the arm hanging), and a longer look-back reached a slow moment mid-task and
+# cut the last 21 s of a real session.
+OFF_BODY_TILT_DEG = 60.0
+HANDLING_MAX_MS = 10000.0
+HANDLING_MARGIN_MS = 5000.0
 
 HINGE_MIN_FLEX_DEG = 30.0
 HINGE_MAX_COST_RATIO = 0.75
@@ -513,19 +520,19 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
             note += (f"a still hold ({prior[-1][0]:.0f}–{prior[-1][1]:.0f} ms) ends "
                      f"right before the sync gesture — if this recording held the "
                      f"neutral pose FIRST, re-run with --protocol hold-first. ")
-    hold = (f"≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s still, "
-            f"≤ {NEUTRAL_QUIET_RAD_S} rad/s")
-    how = {"after_sync": f"neutral hold after the sync gesture ({sync}; {hold})",
-           "first_hold": f"first neutral hold ({hold}; protocol hold-first)",
-           "first_hold_no_sync": "no hold right after a sync gesture (every node "
-                                 f"moving ≥ {SYNC_MIN_RAD_S} rad/s together) — "
-                                 f"first neutral hold ({hold})",
-           "first_still": f"no hold ≥ {NEUTRAL_MIN_HOLD_MS / 1000:.0f} s at "
-                          f"≤ {NEUTRAL_QUIET_RAD_S} rad/s — first still window",
-           "quietest": "no window under "
-                       f"{NEUTRAL_MAX_RAD_S} rad/s — quietest window",
-           "whole_record": "record too short — whole record"}[src]
-    return t0, t1, f"{note}auto-detected {how} {t0:.0f}–{t1:.0f} ms"
+    gap = (t0 - before[-1][1]) / 1000.0 if before else 0.0
+    how = {"after_sync": f"freeze found {max(gap, 0):.0f} s after the sync movement "
+                         f"({sync})",
+           "first_hold": "freeze found (first of the log; protocol hold-first)",
+           "first_hold_no_sync": "! no freeze right after a sync movement (every "
+                                 f"node ≥ {SYNC_MIN_RAD_S} rad/s together) — "
+                                 "using the first freeze of the log",
+           "first_still": "! no clean freeze (≥ "
+                          f"{NEUTRAL_MIN_HOLD_MS / 1000:.0f} s, ≤ {NEUTRAL_QUIET_RAD_S} "
+                          "rad/s) — using the first still moment",
+           "quietest": "! nothing still enough — using the quietest moment",
+           "whole_record": "! record too short — using the whole record"}[src]
+    return t0, t1, f"{note}{how}: {t0:.0f}–{t1:.0f} ms"
 
 
 def analysis_start_ms(calibration, t_ms=None, seg_quats=None):
@@ -585,64 +592,75 @@ def _pose_deviation(t_ms, seg_quats, segments, t0, t1):
     return seg_dev, pair_dev
 
 
-def find_closing_hold(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS):
-    """The protocol's CLOSING hold: the last still window, at least
-    CLOSING_MIN_GAP_MS after the opening hold, in the same pose as it.
+def find_session_end(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS):
+    """Where the session stops being body motion: the nodes are taken off.
 
-    It marks where the recording stops being protocol: after it the nodes are
-    usually taken off and carried to the charger, and that handling motion is
-    logged like any other. The pose test is each node's GRAVITY direction (the
-    limbs hang and the trunk is upright as at neutral, and no node lies on a
-    table): rests in other poses (elbow bent, arm raised) fail it; a mid-session
-    N-pose rest passes, so the LAST match wins. The adjacent pairs' relative
-    rotation is reported, not required: a hanging arm turned about its own axis
-    (palm back instead of to the thigh), or a strap that slipped, still ends the
-    protocol, and the deviation warns about it. Rejecting such a hold made the
-    analysis end at a mid-task rest on a real capture.
-    Returns a dict (t_window_ms, stillness, deviations) or None."""
-    if len(t_ms) < 3 or t_ms[-1] - after_ms < win_ms + CLOSING_MIN_GAP_MS:
-        return None
+    The log ends when the nodes, laid on the charger, go IDLE — so its LAST
+    still stretch is that rest. If some node is tilted more than
+    OFF_BODY_TILT_DEG from its neutral there (gravity in the sensor frame, as
+    in `verify`), the nodes are off the body: the analysis ends at the last
+    still pause (one quiet window) within HANDLING_MAX_MS before the rest —
+    the subject stopping before reaching for the straps — or, with none,
+    HANDLING_MARGIN_MS before the rest. Never before `after_ms`.
+    Returns the `end` block: t_end_ms (None = keep to the end of the log), how
+    it was found, and the off-body rest."""
+    if len(t_ms) < 3 or t_ms[-1] - after_ms < 2 * win_ms:
+        return {"t_end_ms": None, "note": "log too short after the neutral hold"}
     starts, mean = _window_means(t_ms, seg_quats, win_ms)
-    ok = (mean <= NEUTRAL_MAX_RAD_S) & (starts >= after_ms + CLOSING_MIN_GAP_MS)
-    if not ok.any():
-        return None
-    # candidate still stretches, latest first; test each stretch's quietest window
-    idx = np.flatnonzero(ok)
-    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
-    for run in reversed(runs):
-        k = run[int(np.argmin(mean[run]))]
-        t0 = float(starts[k]); t1 = t0 + win_ms
-        dev = _pose_deviation(t_ms, seg_quats, segments, t0, t1)
-        if dev is None:
-            continue
-        seg_dev, pair_dev = dev
-        if seg_dev <= CLOSING_POSE_DEG:
-            out = {"t_window_ms": [round(t0, 1), round(t1, 1)],
-                   "stillness_rad_s": round(float(mean[k]), 4),
-                   "segment_gravity_dev_deg": round(seg_dev, 2),
-                   "pair_rel_dev_deg": round(pair_dev, 2)}
-            if pair_dev > CLOSING_POSE_DEG:
-                out["pose_note"] = (
-                    f"adjacent segments are turned {pair_dev:.0f}° relative to the "
-                    f"opening hold (the arm rotated about its own axis, or a strap "
-                    f"slipped) — angles near the end may carry that offset")
-            return out
-    return None
+    still = mean <= NEUTRAL_MAX_RAD_S
+    if not still[-1]:
+        return {"t_end_ms": None,
+                "note": "the log ends in motion (nodes not seen coming off) — "
+                        "analysis runs to the end of the log"}
+    i = len(still) - 1
+    while i > 0 and still[i - 1]:
+        i -= 1
+    rest0 = float(starts[i])
+    if rest0 <= after_ms:
+        return {"t_end_ms": None, "note": "no motion after the neutral hold"}
+    k = i + int(np.argmin(mean[i:]))
+    dev = _pose_deviation(t_ms, seg_quats, segments, float(starts[k]),
+                          float(starts[k]) + win_ms)
+    tilt = dev[0] if dev else 0.0
+    rest = [round(rest0, 1), round(float(t_ms[-1]), 1)]
+    if tilt <= OFF_BODY_TILT_DEG:
+        return {"t_end_ms": None, "final_rest_ms": rest,
+                "tilt_dev_deg": round(tilt, 1),
+                "note": "the log ends at rest in a body pose (nodes still worn?) — "
+                        "analysis runs to the end of the log"}
+    # walk back over the handling to the last pause before it
+    pause = [j for j in np.flatnonzero(still[:i])
+             if rest0 - HANDLING_MAX_MS <= starts[j] + win_ms <= rest0
+             and starts[j] >= after_ms]
+    if pause:
+        t_end, how = float(starts[pause[-1]] + win_ms), "pause_before_takeoff"
+    else:
+        t_end, how = max(after_ms + win_ms, rest0 - HANDLING_MARGIN_MS), \
+            "margin_before_takeoff"
+    return {"t_end_ms": round(t_end, 1), "method": how,
+            "off_body_rest_ms": rest, "tilt_dev_deg": round(tilt, 1),
+            "handling_s": round((rest0 - t_end) / 1000.0, 1)}
 
 
 def analysis_end_ms(calibration, t_ms=None, seg_quats=None):
-    """Where analysis should end: the end of the closing hold, or None (keep to
-    the end of the log). Same ownership test as analysis_start_ms: the window
-    must lie in THIS recording and be still in its data."""
-    cw = (calibration or {}).get("closing", {}).get("t_window_ms")
-    if not cw or len(cw) != 2:
+    """Where analysis should end — the calibration's `end` block (the nodes
+    coming off, or a manual --end) — or None (keep to the end of the log).
+    Like analysis_start_ms it only applies to THIS recording: with data given,
+    the calibration's neutral hold must be this recording's own and the end
+    must lie inside it. Calibrations written before the `end` block carry a
+    `closing` hold instead; its end is honoured the same way."""
+    cal = calibration or {}
+    t1 = (cal.get("end") or {}).get("t_end_ms")
+    if t1 is None:
+        cw = (cal.get("closing") or {}).get("t_window_ms")
+        t1 = cw[1] if cw and len(cw) == 2 else None
+    if t1 is None:
         return None
-    t0, t1 = float(cw[0]), float(cw[1])
+    t1 = float(t1)
     if t_ms is not None and seg_quats is not None:
-        if t0 < t_ms[0] or t1 > t_ms[-1]:
+        if not (t_ms[0] < t1 <= t_ms[-1]):
             return None
-        s = window_stillness(t_ms, seg_quats, t0, t1)
-        if not (np.isfinite(s) and s <= STILL_MAX_RAD_S):
+        if analysis_start_ms(cal, t_ms, seg_quats) is None:
             return None
     return t1
 
@@ -927,11 +945,13 @@ def build_anatomical_frame(heading):
 
 
 def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
-                      csv_path, targets=None, facing_deg=None):
+                      csv_path, targets=None, facing_deg=None, end_ms=None):
     stillness = window_stillness(t_ms, seg_quats, t0, t1)
     segments, pairs = solve_calibration(t_ms, seg_quats, seg_meta, t0, t1, targets)
     still_ok = bool(stillness <= STILL_MAX_RAD_S)
-    closing = find_closing_hold(t_ms, seg_quats, segments, t1)
+    end = ({"t_end_ms": round(float(end_ms), 1), "method": "manual"}
+           if end_ms is not None else
+           find_session_end(t_ms, seg_quats, segments, t1))
     heading = compute_heading(segments, still_ok, facing_deg)
     if heading["source"] == "none":
         # no torso, no stated facing: read it off the elbow's hinge motion
@@ -955,13 +975,8 @@ def build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
             "segment_gravity_deg": DEFAULT_SEG_GRAVITY_DEG,
             "pair_angle_deg": DEFAULT_PAIR_ANGLE_DEG,
         },
-        # end of the protocol: analysis stops here (see find_closing_hold)
-        "closing": (closing if closing else
-                    {"t_window_ms": None,
-                     "note": "no closing hold found (a still stretch in the "
-                             "neutral pose after the task) — analysis runs to "
-                             "the end of the log, which may include taking the "
-                             "nodes off"}),
+        # where the session ends: the nodes come off (see find_session_end)
+        "end": end,
         "heading": heading,
         "anatomical_frame": build_anatomical_frame(heading),
         "segments": segments,
@@ -1075,16 +1090,18 @@ def print_calibrate_report(cal):
     if not n["still_ok"]:
         print("  ! the pose window was not still — offsets may be biased; "
               "re-capture a quiet ~2 s neutral pose.")
-    c = cal.get("closing") or {}
-    if c.get("t_window_ms"):
-        print(f"  closing hold:   {c['t_window_ms'][0]:.0f}–{c['t_window_ms'][1]:.0f} ms "
-              f"(tilt within {c['segment_gravity_dev_deg']:.1f}°, joints within "
-              f"{c['pair_rel_dev_deg']:.1f}° of neutral) — analysis ends here")
-        if c.get("pose_note"):
-            print(f"  ! closing hold: {c['pose_note']}")
+    e = cal.get("end") or {}
+    if e.get("t_end_ms") is not None:
+        if e.get("method") == "manual":
+            print(f"  session end:    {e['t_end_ms']:.0f} ms (--end) — analysis ends here")
+        else:
+            how = ("at the last pause before it" if e["method"] == "pause_before_takeoff"
+                   else f"{HANDLING_MARGIN_MS / 1000:.0f} s before it")
+            print(f"  session end:    {e['t_end_ms']:.0f} ms — nodes off the body from "
+                  f"{e['off_body_rest_ms'][0]:.0f} ms (tilted {e['tilt_dev_deg']:.0f}°); "
+                  f"analysis ends {how}")
     else:
-        print("  ! no closing hold found — analysis runs to the end of the log "
-              "(may include taking the nodes off); end each take with the N-pose")
+        print(f"  session end:    end of the log — {e.get('note', 'not detected')}")
     print(f"\nSEGMENT mounting offsets ({len(cal['segments'])})")
     for seg, s in cal["segments"].items():
         flag = "" if s["pose_residual_deg"] < 3.0 else "  ! noisy pose"
@@ -1188,7 +1205,8 @@ def cmd_calibrate(args):
     print(f"[calibrate] {msg}")
 
     cal = build_calibration(montage, t_ms, seg_quats, seg_meta, t0, t1,
-                            args.aligned_csv, facing_deg=args.facing_deg)
+                            args.aligned_csv, facing_deg=args.facing_deg,
+                            end_ms=args.end)
     cal["neutral"]["found_by"] = msg
     with open(args.out, "w") as f:
         json.dump(cal, f, indent=2)
@@ -1393,7 +1411,7 @@ def selftest():
           f"{'OK' if frame_ok else 'FAIL'}")
 
     # (8) Protocol-shaped elbow session with NO torso: setup fidget, neutral hold,
-    #     elbow curls with some pro/sup, a quieter closing rest. The neutral
+    #     elbow curls with some pro/sup, a quieter rest at the end. The neutral
     #     finder must take the hold (not the quieter end, not a placeholder
     #     montage window over the fidget), and the elbow hinge must give back
     #     the subject's facing.
@@ -1423,7 +1441,7 @@ def selftest():
         noise = qnorm(np.column_stack([np.ones(n_e),
                                        0.0003 * rng.standard_normal((n_e, 3))]))
         elbow_q[seg] = qnorm(qmul(q_ws, noise))
-    # closing rest: dead still (quieter than the neutral hold's noise)
+    # rest at the end: dead still (quieter than the neutral hold's noise)
     rest = t_e >= 27000
     for seg in elbow_q:
         elbow_q[seg][rest] = elbow_q[seg][rest][0]
@@ -1448,27 +1466,55 @@ def selftest():
           f"no-flexion session confident={hinge_flat['confident']} (want False) "
           f"{'OK' if hinge_ok else 'FAIL'}")
 
-    # (9) Closing hold: the session ends with a still N-pose (27-30 s) — found,
-    #     and it bounds the analysis. If the last still stretch is in another
-    #     pose (the forearm node turned 80°, as when lying on the charger), it is
-    #     never taken: the closing hold falls back to the last still N-pose
-    #     BEFORE it (the arm settles in neutral at 25-27 s after the curls).
-    closing = find_closing_hold(t_e, elbow_q, segs_e, n1)
-    moved = {sg: q.copy() for sg, q in elbow_q.items()}
-    moved["forearm_r"][rest] = qmul(moved["forearm_r"][rest],
-                                    _axis_angle([1, 0, 0], 80.0))
-    closing_moved = find_closing_hold(t_e, moved, segs_e, n1)
-    end_ok = (closing is not None and closing["t_window_ms"][0] >= 25000
-              and (closing_moved is None
-                   or closing_moved["t_window_ms"][1] <= 27000)
-              and analysis_end_ms({"closing": closing}, t_e, elbow_q)
-              == closing["t_window_ms"][1])
-    print(f"[selftest] closing hold: found "
-          f"{closing['t_window_ms'] if closing else None} (want within the 27–30 s "
-          f"rest), other-pose ending -> "
-          f"{closing_moved['t_window_ms'] if closing_moved else None} (want "
-          f"before 27 s) "
-          f"{'OK' if end_ok else 'FAIL'}")
+    # (9) Session end — the nodes come off. After the curls (end 25 s) the
+    #     subject pauses 2 s, takes the nodes off (2 s of handling), and they
+    #     lie on the charger tilted 70–80° from neutral until the log ends.
+    #     The end is the pause (27 s). Without the pause, the end falls
+    #     HANDLING_MARGIN_MS before the rest. A log that ends at rest in the
+    #     body pose (the original elbow session) keeps to its end, and a
+    #     calibration from another recording cuts nothing.
+    def take_off(pause):
+        keep = t_e < 25000
+        t_a = t_e[keep]
+        t_p = np.arange(25000, 25000 + pause, 50.0)
+        t_h = np.arange(25000 + pause, 27000 + pause, 50.0)
+        t_r = np.arange(27000 + pause, 34000 + pause, 50.0)
+        out = {}
+        for seg, q in elbow_q.items():
+            last = q[keep][-1]
+            frac = (t_h - t_h[0]) / (t_h[-1] - t_h[0])
+            axis = [1, 0, 0] if seg == "forearm_r" else [0, 1, 0]
+            full = 80.0 if seg == "forearm_r" else 70.0
+            wig = 25.0 * np.sin(2 * np.pi * frac * 3)
+            hand = np.stack([qmul(last, _axis_angle(axis, full * f + w))
+                             for f, w in zip(frac, wig)])
+            off = qmul(last, _axis_angle(axis, full))
+            out[seg] = qnorm(np.vstack([q[keep], np.tile(last, (len(t_p), 1)), hand,
+                                        np.tile(off, (len(t_r), 1))]))
+        return np.concatenate([t_a, t_p, t_h, t_r]), out
+    t_p2, q_p2 = take_off(2000)
+    end_p = find_session_end(t_p2, q_p2, segs_e, n1)
+    t_p0, q_p0 = take_off(0)
+    end_m = find_session_end(t_p0, q_p0, segs_e, n1)
+    end_worn = find_session_end(t_e, elbow_q, segs_e, n1)
+    cal_p = {"neutral": {"t_window_ms": [n0, n1]}, "end": end_p}
+    foreign = {"neutral": {"t_window_ms": [n0 + 200000, n1 + 200000]}, "end": end_p}
+    end_ok = (end_p.get("method") == "pause_before_takeoff"
+              and 26500 <= end_p["t_end_ms"] <= 27500
+              and end_p["tilt_dev_deg"] > OFF_BODY_TILT_DEG
+              and end_m.get("method") == "margin_before_takeoff"
+              and end_m["t_end_ms"] < end_m["off_body_rest_ms"][0]
+              and end_worn["t_end_ms"] is None
+              and analysis_end_ms(cal_p, t_p2, q_p2) == end_p["t_end_ms"]
+              and analysis_end_ms(foreign, t_p2, q_p2) is None
+              and analysis_end_ms({"neutral": {"t_window_ms": [n0, n1]},
+                                   "closing": {"t_window_ms": [27000, 29000]}})
+              == 29000)
+    print(f"[selftest] session end: take-off after a pause -> {end_p.get('t_end_ms')} "
+          f"({end_p.get('method')}, want ~27000), straight from motion -> "
+          f"{end_m.get('t_end_ms')} ({end_m.get('method')}), still worn at the end -> "
+          f"{end_worn['t_end_ms']} (want None), foreign calibration cuts nothing, "
+          f"old closing block honoured {'OK' if end_ok else 'FAIL'}")
 
     # (10) A warm-up pause is not the neutral hold: a 2.5 s pause at 0.07 rad/s
     #      (the speed real warm-up pauses showed) precedes the real 6 s hold at
@@ -1505,7 +1551,7 @@ def selftest():
     _, _, smsg = choose_neutral_window({}, t_s, both)
     sync_ok = (24000 <= s0 and s1 <= 30000 and ssrc == "after_sync"
                and h1 <= 10000 and hsrc == "first_hold"
-               and "after the sync gesture" in smsg and "hold-first" not in smsg)
+               and "after the sync movement" in smsg and "hold-first" not in smsg)
     print(f"[selftest] sync-first: hold {s0:.0f}–{s1:.0f} ms after the gesture "
           f"(want 24000–30000; the still wait before it skipped), hold-first "
           f"-> {h0:.0f}–{h1:.0f} ms (want the wait) "
@@ -1520,7 +1566,7 @@ def selftest():
           and heading_ok and guards_ok and frame_ok)
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} "
           f"(offset recovery, heading-independent reuse, slip detection, "
-          f"still-window search, neutral + closing hold finders, facing recovery + guards "
+          f"still-window search, neutral hold + session end finders, facing recovery + guards "
           f"(torso and elbow hinge), anatomical frame)")
     return 0 if ok else 1
 
@@ -1549,6 +1595,9 @@ def main():
     pc.add_argument("--window", type=_window_arg, metavar="t0,t1",
                     help="neutral-pose window in ms (overrides montage "
                          "t_window_ms / auto-detect)")
+    pc.add_argument("--end", type=float, metavar="T_MS",
+                    help="end the analysis here (t_common_ms) instead of where "
+                         "the nodes are detected coming off")
     pc.add_argument("--protocol", choices=PROTOCOLS,
                     help="order of the recording: sync-first (default; sync "
                          "gesture, then the neutral hold) or hold-first "

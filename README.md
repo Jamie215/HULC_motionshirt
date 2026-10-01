@@ -117,8 +117,8 @@ number a placement can't support.
 | 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` | Nodes log autonomously; the central offloads each node's `.bin` |
 | 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating world-frame angular-velocity vectors; angular speed as fallback), so alignment doesn't depend on BLE latency → `aligned.csv`, plus `aligned.quality.json` (per-sensor sync confidence and peak distinctness, data gaps, clock restarts — shown in the review page) |
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
-| 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from the opening neutral hold (found automatically if the montage window isn't still), estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and locates the closing hold → `calibration.json` |
-| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window (opening hold → closing hold) → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
+| 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from the freeze right after the sync movement (found automatically), estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and finds where the nodes came off → `calibration.json` |
+| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window (freeze → nodes coming off) → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
 | 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views. With OpenSense solves, a footer switch between the direct sensor view and each model, and a solver-comparison overlay on the angle graph |
 | (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual; frames where the model loses the sensors are flagged and excluded. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
 
@@ -137,8 +137,8 @@ python tools/opensense_ik.py fetch-models     # -> models/opensense/
 # 1. enroll boards → montage.json (power ONE node on at a time)
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 
-# 2. record one block per tools/COLLECTION_SOP.md, laptop DISCONNECTED:
-#    wake-up → sync gesture → neutral hold → task(s) → closing hold
+# 2. record one block, laptop DISCONNECTED — the one-page card,
+#    tools/COLLECTION_SOP.md: sync movement → freeze → task → nodes off
 #    (each node logs to its own flash while it is moving)
 
 # 3. charging checkpoint: nodes off the body onto the charger (they go IDLE and
@@ -148,7 +148,8 @@ python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
 # 4. run the whole analysis chain for the block
 python tools/analyze_session.py run --montage montage.json \
     --capture-dir ./capture/block1 --outdir ./out/block1
-#    → aligned.csv, calibration.json, metrics.json, and an HTML viewer
+#    → aligned.csv, calibration.json, metrics.json, an HTML viewer, and a
+#      BLOCK CHECK (OK / REDO + what to change) at the end
 #    (with OpenSim + fetched models it also solves on each model by itself;
 #    --no-opensense skips, --opensense-model PATH picks other models)
 ```
@@ -164,9 +165,11 @@ python tools/multinode_test.py selftest
 
 ### Pipeline docs
 
-- [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the recording procedure:
-  wake-up, sync gesture per montage, neutral hold, task pacing, timings (each
-  tied to the firmware / pipeline setting behind it) and accept/redo checks.
+- [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the one-page recording
+  card: sync movement, freeze, task, nodes off, and the charger routine.
+- [`COLLECTION_REFERENCE.md`](tools/COLLECTION_REFERENCE.md) — why each step,
+  the setting behind every number, the block check line by line, and
+  troubleshooting.
 - [`COLLECTION_CHECKLIST.md`](tools/COLLECTION_CHECKLIST.md) — the end-to-end
   run-sheet for a session, including the minimal-connect BLE workflow and
   sensor-placement guidance.

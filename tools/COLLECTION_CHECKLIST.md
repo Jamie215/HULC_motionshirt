@@ -14,8 +14,9 @@ the recording and do the movement with the laptop disconnected.
 **Blocks.** The nodes' battery and flash are limited, so a session is a series
 of **blocks**: record one or more takes, take the nodes off to charge, and
 **offload while they charge** into one folder per block. Each block is one
-mounting and is analyzed on its own. The recording procedure and the charging
-checkpoint are in [`COLLECTION_SOP.md`](COLLECTION_SOP.md).
+mounting and is analyzed on its own. The recording procedure is the one-page
+[recording card](COLLECTION_SOP.md); the charging checkpoint and the reasons
+behind each step are in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md).
 
 **Connections are the slow part.** Every BLE command connects to each node up
 front (slow, especially on a Windows central), so the flow keeps connects to the
@@ -167,36 +168,20 @@ python tools/multinode_test.py erase --count 2
 
 ## 3. Record the movement — laptop disconnected
 
-Nothing is connected. The full procedure — wake-up, the sync gesture per
-montage, exact pose, task pacing, rests, timings and the accept/redo checks —
-is in **[`COLLECTION_SOP.md`](COLLECTION_SOP.md)**. In short (**sync first, then
-the hold**):
+Nothing is connected. Follow the one-page **[recording card](COLLECTION_SOP.md)**
+(the reasons and numbers are in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md)):
 
-0. [ ] **Wake-up, ~15 s** — once every node is on and strapped (however long
-       that takes; nothing before the sync gesture is used), slow arm circles /
-       trunk turns, so every node is awake (nodes log nothing while IDLE) and
-       the heading has settled. Flow straight into the gesture.
-1. [ ] **Sync gesture, ~5 s** — a movement that turns **every** node together,
-       so reconcile has a shared motion to align the clocks on, and calibrate a
-       landmark to find the hold:
-       - arm-only montage (upper arm + forearm): 3–5 big **whole-arm** swings,
-         elbow locked, moving from the shoulder;
-       - montage with a **torso** node: 3–4 **trunk twists** (turn the upper
-         body left–right) with the arm held against the side — an arm swing
-         leaves the torso still, so it cannot sync it.
-2. [ ] **Neutral hold, ~5 s, right after** (settle 2–3 s first, start within
-       20 s of the gesture) — stand in the N-pose (arms straight at the sides,
-       **palms facing the thighs**), fully still. This is the calibration
-       window.
-3. [ ] **The movement of interest** — e.g. slow elbow flexion/extension reps
-       through the target range, ≤ ~1 rep/s, 5–8 s rests between sets.
-4. [ ] **Closing hold, ~5 s** in the same N-pose — **required**: the analysis
-       ends at it, so taking the nodes off afterwards is not analyzed. (Also
-       the second pose for the strap-slip check.)
-5. [ ] **End of block** — take the nodes off and lay them flat on the charger
-       (they drop to `IDLE` within ~8 s), then the charging checkpoint: offload
-       (step 4) → quick check → erase (step 2) → re-mount → next take from the
-       wake-up. See [`COLLECTION_SOP.md`](COLLECTION_SOP.md) §3b.
+1. [ ] **Strap on and switch on** every node — take as long as needed; nothing
+       before the sync movement is used.
+2. [ ] **Sync movement, ~10 s**, moving **every** node: trunk twists with the
+       hand on the hip (torso node), or straight-arm swings (arm only).
+3. [ ] **Freeze, ~5 s,** straight after — arms straight down, **palms to the
+       thighs**. This is the calibration.
+4. [ ] **The task** — smooth, ≤ ~1 rep/s, 5–8 s rests between sets.
+5. [ ] **Done** — nodes off, flat on the charger (they go `IDLE` within ~8 s;
+       the analysis ends where they came off). Then the charging checkpoint:
+       offload (step 4) → analyze, read the block check → erase (step 2) →
+       re-mount → next block from step 1.
 
 > Why the sync gesture: pure elbow flexion moves the forearm a lot but the upper
 > arm barely at all, so on its own it gives weak clock alignment. A whole-arm
@@ -262,23 +247,21 @@ neutral hold.
       (`n0 upper_arm_r ← …485C.bin`, `n1 forearm_r ← …B059.bin`).
 - [ ] reconcile sync is reliable (`sync_peak_ratio` ≥ 1.25 in
       `aligned.quality.json`; low = weak or wrong sync gesture).
-- [ ] calibrate reports a neutral window marked `[still ✓]` and offsets with a
-      small pose spread (a large one = the neutral hold wasn't still), and a
-      `closing hold: … — analysis ends here` line (missing = no closing N-pose;
-      the analysis then includes taking the nodes off).
-- [ ] The full accept/redo table is in [`COLLECTION_SOP.md`](COLLECTION_SOP.md) §5.
+- [ ] The run ends with **`BLOCK CHECK: OK`** (or `REDO` with what to change);
+      each line is explained in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md) §5
+      and saved as `block_check.json`.
 - [ ] Open the printed `file://…/elbow.html`, **Jump to neutral**, then flip
       **Raw ↔ Calibrated** — the two bars should snap to the neutral pose in
       Calibrated. That toggle *is* the calibration check.
 
-By default calibrate **auto-detects** the neutral window (the first
-deliberate hold — ≥ 3 s, ≤ 0.04 rad/s — after the sync gesture; still stretches
-before the gesture never count; a montage window is used only if it was
-actually still). Recordings made in the old order (hold before the gesture)
-need `--protocol hold-first` — calibrate prints a hint when one looks like that and the closing hold (the last
-still stretch with every node tilted as at neutral). If it picks the wrong
-opening span, pin it: read the still hold off `t_common_ms` in the emitted
-`aligned.csv` and re-run with `--window <t0>,<t1>`.
+By default calibrate **auto-detects** the freeze (the first still stretch —
+≥ 3 s, ≤ 0.04 rad/s — after the sync movement; still stretches before the
+movement never count; a montage window is used only if it was actually still)
+and **where the nodes came off** (the log's final rest in a pose no body holds).
+Recordings made in the old order (hold before the movement) need
+`--protocol hold-first` — calibrate prints a hint when one looks like that. If
+it picks the wrong span, pin it: read the times off `t_common_ms` in the
+emitted `aligned.csv` and re-run with `--window <t0>,<t1>` and/or `--end <t_ms>`.
 
 <details>
 <summary>Prefer to run the stages by hand?</summary>
@@ -339,7 +322,7 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 | Offload rejected / empty | Node not in `IDLE`, or nothing recorded | Hold the subject still; confirm motion actually happened in step 3 |
 | Low reconcile confidence / `sync_peak_ratio` < 1.25 | Weak or wrong sync gesture — the nodes didn't move together | Redo the sync gesture: whole-arm swings (arm only) or trunk twists (with a torso node), wide and moderate |
 | Neutral residual large in calibrate | Neutral hold wasn't still, or wrong window | Redo the hold; or pin `--window` from `t_common_ms` in aligned.csv |
-| `! no closing hold found` | Take ended without a still N-pose | End every take with the closing hold; this block's analysis includes the unstrapping |
+| Block check `Session end` NOTE: nodes not seen coming off | The log ended in motion or with the nodes still worn | Lay the nodes flat on the charger at the end; for this block, `--end <t_ms>` if the tail includes taking them off |
 | `clock restarted` warning | A node rebooted mid-block (battery died, then recharged before offload) | Only the larger clock segment is analyzed; charge before the battery runs out and offload at every charge |
 | Enroll: "N nodes advertising" | More than one board powered on | Power ON only the ONE node you're enrolling; others OFF |
 | Enroll: "no HULC node advertising" | Board off, or advert not up yet | Power it on, wait a few seconds, retry (a connected node stops advertising) |

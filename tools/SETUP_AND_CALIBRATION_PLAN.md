@@ -131,7 +131,7 @@ must not be conflated:
   A node that *did* reboot mid-log is caught by reconcile's clock-restart check.
 
 **Correction this supersedes:** the sync gesture is per-*block* (one mounting,
-one offload), not once-forever. See `COLLECTION_SOP.md` §3b.
+one offload), not once-forever. See `COLLECTION_REFERENCE.md` §4.
 
 ---
 
@@ -154,11 +154,11 @@ one offload), not once-forever. See `COLLECTION_SOP.md` §3b.
 > - **Facing sources** — torso node heading › elbow hinge axis (the facing
 >   that makes elbow motion a pure hinge; needs ≥30° of flexion in the
 >   recording) › `--facing-deg` › none (joints relative-only).
-> - **Closing hold** — the last still window ≥5 s after the opening one whose
->   nodes are tilted as at neutral (relative rotation reported, not required)
->   is stored as the `closing` block (with its slip deviations) and
->   ends the metrics analysis window. The SOP makes it required
->   (`COLLECTION_SOP.md`).
+> - **Session end** — no closing pose is asked for: the log's final rest in a
+>   pose no body holds (nodes lying on the charger) marks the nodes coming
+>   off, stored as the `end` block, and ends the metrics analysis window
+>   (`find_session_end`; `--end` by hand). An earlier version required a
+>   closing hold; it could not be guaranteed in practice.
 > - **Blocks** — nodes come off to charge between blocks, which ends the
 >   mounting: each block re-poses, so each block gets its own calibration.
 
@@ -319,7 +319,7 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    The remaining declared metrics now ship alongside ROM in the same tool: joint
    angular **velocity** (peak/mean/RMS) and **rep counting** (hysteretic midline
    crossings, calibration-free — since replaced by zig-zag rep **bouts**, and
-   joined by per-DOF **plausibility** flags and the opening→closing-hold
+   joined by per-DOF **plausibility** flags and the freeze → nodes-off
    analysis window; see `METRICS.md`); segment **angular travel** + active-time
    fraction, **elevation** from vertical, **smoothness** (SPARC spectral arc
    length), and a **posture-dwell** histogram (calibration-gated); and the full

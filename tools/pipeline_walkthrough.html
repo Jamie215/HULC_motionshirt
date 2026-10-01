@@ -341,11 +341,11 @@
           <span class="tool">calibrate_segments.py</span> uses the mag-referenced
           Rotation Vector — every node already in a shared world frame — so the
           one unknown left is how the sensor sits on the bone. A static
-          <b>neutral / N-pose</b> hold (found automatically: the first deliberate
-          still hold, not a warm-up pause) solves that offset and sets the anatomical zero;
+          <b>neutral / N-pose</b> hold (found automatically: the first
+          freeze right after the sync movement) solves that offset and sets the anatomical zero;
           the subject's facing (from the torso node, else the elbow's hinge axis)
           turns the world axes into anatomical ones (forward / up / right) for
-          the joint decomposition. A matching <b>closing hold</b> marks the end
+          the joint decomposition. Where the nodes <b>came off</b> marks the end
           of the protocol. Validity is <b>per-mounting</b> — re-mounting shifts
           the straps — so the
           result is <b>cached and verified</b>: reuse it if a quick still-pose
@@ -355,7 +355,7 @@
           <div class="lbl">emits · calibration.json (per segment)</div>
           <pre><span class="c"># sensor→segment offset + a staleness check for the next don</span>
 upper_arm_r → q_mount_offset,  neutral @ t_common_ms [36720,38720],  consistency_baseline
-closing hold @ [412300,414300]  (slip 2.1°),  facing −45° (elbow hinge)</pre>
+session end @ 414300 (nodes off the body),  facing −45° (elbow hinge)</pre>
         </div>
       </div>
     </div>
@@ -380,7 +380,7 @@ closing hold @ [412300,414300]  (slip 2.1°),  facing −45° (elbow hinge)</pre
           same honesty flag as the resolver: a joint without both nodes calibrated
           reads <b>relative-only</b>, a blocked joint names its missing node, and a
           physically implausible series is flagged. Only the protocol is analysed:
-          opening hold → closing hold.</p>
+          freeze → nodes coming off.</p>
         <div class="shape">
           <div class="lbl">emits · metrics.json (per joint / segment / derived)</div>
           <pre>elbow_r → flex_ext ROM 6.2…96.4° (range 90°),  peak 309°/s,  <span class="k">"clinical"</span>:true</pre>

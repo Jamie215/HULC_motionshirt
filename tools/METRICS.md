@@ -47,13 +47,13 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
   limits. A failing joint gets a `plausibility_warning` naming the likely causes
   (calibration pose, facing, sensor slip) rather than silently reporting it.
 - **Only the protocol is analysed.** By default the stream is trimmed to the
-  *analysis window*: from the opening neutral hold to the closing hold
-  (`trim_to_analysis`, both located by stage 5). Strapping on and the warm-up
-  before, and carrying the nodes to the charger after, never enter ROM, reps or
-  activity. Each end is cut only when its hold is this recording's own still
-  window (a calibration reused from another take cuts nothing); a missing
-  closing hold leaves the tail in and prints a warning. `--keep-pre-neutral`
-  analyses the whole stream.
+  *analysis window*: from the neutral hold (the freeze) to where the nodes come
+  off (`trim_to_analysis`, both located by stage 5). Strapping on and the sync
+  movement before, and taking the nodes off after, never enter ROM, reps or
+  activity. Nothing is cut unless the calibration's freeze is this recording's
+  own still window (a calibration reused from another take cuts nothing); when
+  the nodes are not seen coming off the tail stays in and the run says so.
+  `--keep-pre-neutral` analyses the whole stream.
 
 Session-level trust inputs from reconcile — `sync_confidence`, dropout — are **not**
 recomputed here; they travel alongside these numbers and should be surfaced with
@@ -222,10 +222,10 @@ All defined at the top of `metrics.py`:
   "subject": { ... }, "session": { ... },
   "calibration_used": true, "anatomical_axes": true,
   "sample_rate_hz": 50.0, "n_samples": 4000, "duration_s": 79.98,
-  "analysis_window_ms": [t0, t1],            // opening hold → closing hold
+  "analysis_window_ms": [t0, t1],            // freeze → nodes coming off
   "trimmed_before_neutral_s": 12.4 | null,   // setup dropped before the hold
-  "trimmed_after_closing_s": 8.1,            // tail dropped after the closing hold
-  "closing_hold_found": true,
+  "trimmed_after_end_s": 8.1,                // tail dropped (taking the nodes off)
+  "end_detected": true, "end_method": "pause_before_takeoff",
   "joints": [ { "key","name","clinical","decomposition",
                 "dofs": [ { "key","name","plane",
                             "rom": {min_deg,max_deg,range_deg,median_deg} | null,

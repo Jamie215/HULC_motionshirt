@@ -59,9 +59,10 @@ Honesty (the same contract the resolver prints)
 * Physically implausible series (a range over a full turn, huge sample jumps,
   or — with anatomical axes — time outside the DOF's physiological limits) are
   flagged with a `plausibility_warning`, not reported as if clean.
-* Only the protocol is analysed: the stream is trimmed to the opening neutral
-  hold → closing hold located by stage 5 (trim_to_analysis), each end only when
-  it is this recording's own still hold. `--keep-pre-neutral` disables it.
+* Only the protocol is analysed: the stream is trimmed to the neutral
+  hold → the session end (the nodes coming off) located by stage 5
+  (trim_to_analysis), only when the calibration is this recording's own.
+  `--keep-pre-neutral` disables it.
 
 Usage
 -----
@@ -903,12 +904,12 @@ def compute_derived(caps, joint_reports, joint_series, seg_activity, seg_series,
 # Top-level assembly
 # ---------------------------------------------------------------------------
 def trim_to_analysis(t_ms, seg_quats, calibration):
-    """Keep only the protocol: from the opening neutral hold to the closing one.
+    """Keep only the protocol: from the neutral hold to the session end.
 
-    Before the opening hold is setup (strapping on, warm-up); after the closing
-    hold the nodes are usually taken off and carried to the charger. Returns
-    (t_ms, seg_quats, start_ms or None). Each end is only cut when the
-    calibration's window for it is this recording's own still hold (a
+    Before the hold is setup (strapping on, the sync movement); after the end
+    the nodes were being taken off (calibrate_segments.find_session_end, or a
+    manual --end). Returns (t_ms, seg_quats, start_ms or None). Nothing is cut
+    unless the calibration's neutral hold is this recording's own still hold (a
     calibration reused from another session cuts nothing), and nothing is cut
     if too little would be left. `seg_quats` must be the RAW stream (the
     stillness check is mounting-invariant, so raw or calibrated both work)."""
@@ -929,12 +930,12 @@ def trim_to_analysis(t_ms, seg_quats, calibration):
 def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
     """Build the full metrics report from a loaded aligned stream + calibration.
 
-    With `trim` (default) the analysis runs from the opening neutral hold to
-    the closing hold, so setup before the protocol and taking the nodes off
-    after it never enter the ROM / rep / activity numbers."""
+    With `trim` (default) the analysis runs from the neutral hold to the
+    session end, so setup before the protocol and taking the nodes off after it
+    never enter the ROM / rep / activity numbers."""
     t_full0, t_full1 = float(t_ms[0]), float(t_ms[-1])
     start = None
-    has_closing = bool((calibration or {}).get("closing", {}).get("t_window_ms"))
+    end_info = (calibration or {}).get("end") or {}
     if trim:
         t_ms, seg_quats, start = trim_to_analysis(t_ms, seg_quats, calibration)
     q_seg, calibrated = apply_calibration(seg_quats, calibration)
@@ -1006,8 +1007,9 @@ def compute_metrics(montage, t_ms, seg_quats, seg_meta, calibration, trim=True):
         "analysis_window_ms": [round(float(t_ms[0]), 1), round(float(t_ms[-1]), 1)],
         "trimmed_before_neutral_s": (round((start - t_full0) / 1000.0, 2)
                                      if start is not None else 0.0),
-        "trimmed_after_closing_s": round((t_full1 - float(t_ms[-1])) / 1000.0, 2),
-        "closing_hold_found": has_closing,
+        "trimmed_after_end_s": round((t_full1 - float(t_ms[-1])) / 1000.0, 2),
+        "end_detected": end_info.get("t_end_ms") is not None,
+        "end_method": end_info.get("method"),
         "joints": joints_out,
         "blocked_joints": blocked_out,
         "segments": segments_out,
@@ -1032,13 +1034,13 @@ def print_report(rep):
         print(f"  analysis starts at the neutral hold "
               f"({rep['analysis_window_ms'][0]:.0f} ms) — dropped "
               f"{rep['trimmed_before_neutral_s']:.1f} s of pre-protocol setup")
-    if rep.get("trimmed_after_closing_s"):
-        print(f"  analysis ends at the closing hold "
+    if rep.get("trimmed_after_end_s"):
+        print(f"  analysis ends where the nodes come off "
               f"({rep['analysis_window_ms'][1]:.0f} ms) — dropped "
-              f"{rep['trimmed_after_closing_s']:.1f} s after it (nodes taken off)")
-    elif rep["calibration_used"] and not rep.get("closing_hold_found"):
-        print("  ! no closing hold found — analysis runs to the end of the log, "
-              "which may include taking the nodes off")
+              f"{rep['trimmed_after_end_s']:.1f} s after it")
+    elif rep["calibration_used"] and not rep.get("end_detected"):
+        print("  analysis runs to the end of the log (nodes not seen coming off; "
+              "`--end` sets it by hand)")
     if rep["calibration_used"] and not rep.get("anatomical_axes"):
         print("  ! anatomical axes unknown (no confident facing) — joint angles "
               "are RELATIVE-only")
@@ -1602,8 +1604,8 @@ def main():
                     help="also print the report as JSON to stdout")
     pc.add_argument("--keep-pre-neutral", action="store_true",
                     help="analyze the whole record, including the setup before "
-                         "the neutral hold and the tail after the closing hold "
-                         "(default: opening hold -> closing hold)")
+                         "the neutral hold and the tail after the session end "
+                         "(default: neutral hold -> nodes coming off)")
     pc.set_defaults(func=cmd_compute)
 
     ps = sub.add_parser("selftest", help="validate the math (no hardware)")
