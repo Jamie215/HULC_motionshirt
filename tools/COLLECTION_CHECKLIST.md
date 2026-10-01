@@ -250,7 +250,7 @@ neutral hold.
 - [ ] The run ends with **`BLOCK CHECK: OK`** (or `REDO` with what to change);
       each line is explained in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md) §5
       and saved as `block_check.json`.
-- [ ] Open the printed `file://…/elbow.html`, **Jump to neutral**, then flip
+- [ ] Open the printed `file://…/elbow.html`, **Neutral pose**, then flip
       **Raw ↔ Calibrated** — the two bars should snap to the neutral pose in
       Calibrated. That toggle *is* the calibration check.
 

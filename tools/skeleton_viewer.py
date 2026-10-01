@@ -192,6 +192,8 @@ SENSOR_SOLVER = {
 }
 # Short button labels for the OpenSense model profiles (opensense_ik.PROFILES).
 MODEL_SHORT = {"thoracoscapular": "Shoulder model", "rajagopal": "Rajagopal model"}
+# ... and on the footer's solver buttons, where space is tight
+MODEL_BUTTON = {"thoracoscapular": "Shoulder", "rajagopal": "Rajagopal"}
 
 
 TIMELINE_BIN_MS = 200.0          # session-timeline overview resolution
@@ -398,6 +400,7 @@ def load_solver_dir(solver_dir, montage, max_frames=DEFAULT_MAX_FRAMES):
     solver = {
         "key": f"opensense_{profile}", "kind": "model",
         "label": MODEL_SHORT.get(profile, ps.get("model_title", profile)),
+        "button": MODEL_BUTTON.get(profile, MODEL_SHORT.get(profile, profile)),
         "title": f"OpenSense on the {ps.get('model_title', profile)}",
         "note": ("The whole arm solved at once on a published musculoskeletal "
                  "model (OpenSim OpenSense): real joint axes and joint limits, "
@@ -926,7 +929,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .chip.warn{background:color-mix(in srgb,var(--planned) 18%,transparent);color:var(--planned)}
   .chip.muted{background:color-mix(in srgb,var(--faint) 16%,transparent);color:var(--muted)}
   .sub{color:var(--muted);font-size:13.5px;margin-top:4px}
-  main{flex:1;position:relative;min-height:0}
+  main{flex:1;position:relative;min-height:0;overflow:hidden}  /* clip the closed drawer */
   #view{position:absolute;inset:0;display:block;width:100%;height:100%;
     touch-action:none;cursor:grab}
   #view:active{cursor:grabbing}
@@ -954,7 +957,28 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .lv-na{color:var(--faint)}
   .lv-why{color:var(--faint);font-size:11px;margin-top:3px}
   footer{border-top:1px solid var(--line);background:var(--surface);
-    padding:11px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+    padding:8px 20px 10px;display:flex;flex-direction:column;gap:8px}
+  /* two deliberate rows: playback (scrubber full width), then the controls in
+     groups — panels | camera | how the pose is solved */
+  .frow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .frow.ctl{column-gap:22px;row-gap:8px}
+  .fgroup{display:flex;align-items:center;gap:8px;flex:none}
+  .fgroup:not(:has(> :not([hidden]))){display:none}  /* nothing shown in it */
+  .frow.ctl button,.frow.ctl .toggle button{padding:5px 11px;font-size:13.5px}
+  @media (max-width:640px){
+    footer{padding:6px 10px 8px;gap:6px}
+    /* phones: the controls are one row that scrolls sideways, not a stack */
+    .frow.ctl{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;
+      scrollbar-width:thin}
+    .frow.ctl>*{flex:none}
+    .frow.ctl{column-gap:16px}
+    .tlabel .fr{display:none}
+    .frow{gap:8px}
+    footer .tlabel{min-width:0;font-size:11px}
+    footer input[type=range]{min-width:60px}
+    footer #play{padding:6px 10px}
+    footer #speed button{padding:6px 9px}
+  }
   button{font:inherit;cursor:pointer;border:1px solid var(--line);
     background:var(--surface);color:var(--ink);border-radius:8px;
     padding:7px 13px;font-weight:500}
@@ -1096,28 +1120,38 @@ _HTML_TEMPLATE = r"""<!doctype html>
   </div>
 </main>
 <footer>
-  <button id="play" class="primary">&#9654; Play</button>
-  <div class="toggle" id="speed" title="Playback speed">
-    <button data-speed="1" class="on">1&times;</button>
-    <button data-speed="2">2&times;</button>
-    <button data-speed="5">5&times;</button>
+  <div class="frow">
+    <button id="play" class="primary">&#9654; Play</button>
+    <div class="toggle" id="speed" title="Playback speed">
+      <button data-speed="1" class="on">1&times;</button>
+      <button data-speed="2">2&times;</button>
+      <button data-speed="5">5&times;</button>
+    </div>
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1">
+    <div class="tlabel mono" id="tlabel">0 ms</div>
   </div>
-  <button id="mstoggle" hidden>&#9776; Metrics</button>
-  <button id="tltoggle" hidden title="The whole log: where the sync movement, the freeze and the end were found — drag to correct them">Timeline</button>
-  <div class="toggle" id="view3d" title="Snap the camera">
-    <button data-view="front">Front</button>
-    <button data-view="side">Side</button>
-    <button data-view="top">Top</button>
+  <div class="frow ctl">
+    <div class="fgroup" aria-label="Panels">
+      <button id="mstoggle" hidden>&#9776; Metrics</button>
+      <button id="tltoggle" hidden title="The whole log: where the sync movement, the freeze and the end were found — drag to correct them">Timeline</button>
+    </div>
+    <div class="fgroup" aria-label="Camera">
+      <div class="toggle" id="view3d" title="Snap the camera">
+        <button data-view="front">Front</button>
+        <button data-view="side">Side</button>
+        <button data-view="top">Top</button>
+      </div>
+      <button id="labels" title="Show the name of every body part">Labels</button>
+      <button id="neutral" title="Jump to the freeze the calibration used, in the calibrated view">Neutral pose</button>
+    </div>
+    <div class="fgroup" aria-label="How the pose is solved">
+      <div class="toggle" id="solver" hidden title="How the pose is solved"></div>
+      <div class="toggle" id="mode">
+        <button data-mode="raw">Raw</button>
+        <button data-mode="cal">Calibrated</button>
+      </div>
+    </div>
   </div>
-  <div class="toggle" id="solver" hidden title="How the pose is solved"></div>
-  <div class="toggle" id="mode">
-    <button data-mode="raw">Raw</button>
-    <button data-mode="cal">Calibrated</button>
-  </div>
-  <button id="labels" title="Show the name of every body part">Labels</button>
-  <button id="neutral">Go to neutral pose</button>
-  <input type="range" id="scrub" min="0" max="0" value="0" step="1">
-  <div class="tlabel mono" id="tlabel">0 ms</div>
 </footer>
 
 <script>
@@ -1759,7 +1793,7 @@ scrub.max=Math.max(0,N-1);
 const fmtS=ms=>(ms/1000).toFixed(2)+' s';
 function setFrame(i){
   frame=Math.max(0,Math.min(N-1,i|0)); scrub.value=frame;
-  tlabel.textContent=`${fmtS(DATA.t_ms[frame])} · f${frame+1}/${N}`;
+  tlabel.innerHTML=`${fmtS(DATA.t_ms[frame])}<span class="fr"> · f${frame+1}/${N}</span>`;
 }
 scrub.addEventListener('input',()=>{pause(); setFrame(+scrub.value);});
 function pause(){playing=false; playBtn.innerHTML='&#9654; Play';
@@ -1805,7 +1839,7 @@ if(SOLVERS.length>1){
   solverBox.innerHTML=SOLVERS.map((S,i)=>{
     const sv=S.meta.solver||{label:'Sensors'};
     return `<button data-i="${i}" class="${i===SOLVER_I?'on':''}" `+
-      `title="${esc(sv.title||sv.label)}\n\n${esc(sv.note||'')}">${esc(sv.label)}</button>`;
+      `title="${esc(sv.title||sv.label)}\n\n${esc(sv.note||'')}">${esc(sv.button||sv.label)}</button>`;
   }).join('');
   solverBox.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(b) switchSolver(+b.dataset.i);

@@ -44,7 +44,7 @@ repeat steps 2–3 first.
    ./capture/block1 --montage montage.json --description "what was done, when"`
    (see the README, "Changing the analysis safely").
 
-Open `out/block1/session.html` to review the movement; **Go to neutral pose**
+Open `out/block1/session.html` to review the movement; **Neutral pose**
 should show the arms hanging, palms to the legs. If the freeze or the end was
 found in the wrong place, click **Timeline**: drag the green freeze band or the
 end line to where they really were, **Copy command**, and run it.
