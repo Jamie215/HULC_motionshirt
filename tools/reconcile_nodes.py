@@ -16,13 +16,20 @@ latency-limited on some hosts), this tool recovers the clock relationship
 FROM THE MOTION:
 
   1. Decode each node's binary log (20-byte records).
-  2. Derive a mounting-invariant motion signal per node — angular speed, the
-     magnitude of the rotation rate between consecutive quaternions. Two sensors
-     on the same moving body see correlated angular speed regardless of how each
-     is oriented.
-  3. Cross-correlate the two angular-speed signals to find the time lag that
-     best aligns them = the clock offset. A start-window vs end-window lag
-     comparison estimates the (linear) clock drift.
+  2. Derive a mounting-invariant motion signal per node — its WORLD-frame
+     angular-velocity vector between consecutive quaternions. Every node's
+     Rotation Vector shares one world frame (gravity + magnetic north), and a
+     segment's world angular velocity does not depend on how the node sits on
+     it, so two nodes turning together show the same vector.
+  3. Cross-correlate the two vector signals (summed over x/y/z) to find the time
+     lag that best aligns them = the clock offset. Direction matters: a trunk
+     twist (about vertical) can only match a trunk twist, never an arm swing
+     (about a horizontal axis) — matching speed magnitudes alone could pair them
+     and miss by tens of seconds (tools/timing_bench.py). The match is trusted
+     when its peak clearly beats every other alignment (sync_peak_ratio); the
+     angular-SPEED cross-correlation remains as a fallback (--sync speed). A
+     start-window vs end-window lag comparison estimates the (linear) clock
+     drift.
   4. Apply offset + drift and resample every node's quaternions onto a shared
      time grid, emitting aligned per-node streams.
 
@@ -69,6 +76,9 @@ RECORD_SIZE = RECORD.size          # 20
 # spanning ~4.29e9 ms (hundreds of millions of samples) and the tool hangs. So
 # every log is sanitized on load.
 _ERASED_TS = 0xFFFFFFFF
+# A timestamp this far BELOW the previous one is a clock restart (reboot), not
+# a stray junk record.
+CLOCK_RESET_MS = 1000
 _RECORD_DT = np.dtype([("t", "<u4"), ("w", "<f4"), ("x", "<f4"),
                        ("y", "<f4"), ("z", "<f4")])
 
@@ -126,16 +136,41 @@ def load_log(path: str, stats=None):
     finite = np.isfinite(q).all(axis=1)
     nonzero = np.linalg.norm(q, axis=1) > 1e-6
     valid = finite & nonzero & (arr["t"] != _ERASED_TS)
-    # Keep only strictly-increasing timestamps (drops backward jumps / dupes).
+    # Clock restarts: a node that rebooted (e.g. its battery died and it was
+    # recharged before the log was offloaded) restarts millis() at 0, so its
+    # timestamps jump far backwards and a second, independent clock begins.
+    # The monotonic filter below would silently drop everything after such a
+    # jump. Split at restarts instead, keep the clock segment with the most
+    # samples, and say so loudly: the pieces cannot share one timeline.
+    vidx = np.flatnonzero(valid)
     tv = t[valid]
+    other_clock = 0
+    resets = np.flatnonzero(np.diff(tv) < -CLOCK_RESET_MS) + 1 if len(tv) else []
+    if len(resets):
+        bounds = np.concatenate(([0], resets, [len(tv)]))
+        sizes = np.diff(bounds)
+        k = int(np.argmax(sizes))
+        print(f"[warn] {path}: the node's clock restarted {len(resets)} time(s) "
+              f"(a reboot — battery died?). Clock segments hold "
+              f"{', '.join(str(int(n)) for n in sizes)} samples; keeping segment "
+              f"{k + 1} ({int(sizes[k])} samples). The others are on a different "
+              f"clock and are NOT analyzed — offload at every charge to avoid "
+              f"this, or split the log.")
+        other_clock = int(len(tv) - sizes[k])
+        vidx = vidx[bounds[k]:bounds[k + 1]]
+        tv = tv[bounds[k]:bounds[k + 1]]
+        if stats is not None:
+            stats["clock_restarts"] = int(len(resets))
+            stats["clock_segment_samples"] = [int(n) for n in sizes]
+    # Keep only strictly-increasing timestamps (drops backward jumps / dupes).
     if len(tv):
         rising = np.concatenate(([True], np.maximum.accumulate(tv)[1:]
                                  > np.maximum.accumulate(tv)[:-1]))
-        idx = np.flatnonzero(valid)[rising]
+        idx = vidx[rising]
     else:
         idx = np.array([], dtype=np.int64)
 
-    dropped = n - len(idx)
+    dropped = n - len(idx) - other_clock      # clock-restart pieces reported above
     if stats is not None:
         stats.update(n_records=int(n), n_valid=int(len(idx)))
     if dropped:
@@ -273,8 +308,80 @@ def lag_and_confidence(ya: np.ndarray, yb: np.ndarray, fs: float):
 DRIFT_RESOLVE_MS = 15.0
 
 
+def world_angular_velocity(t_ms, q):
+    """World-frame angular-velocity VECTORS (rad/s) between consecutive samples.
+
+    q_{k+1} = dq ⊗ q_k puts the increment dq in the WORLD frame, which every
+    node shares (the Rotation Vector is gravity + magnetic-north referenced).
+    A rigid segment has one world angular velocity whatever its mounting, so two
+    nodes that move together show the same vector — direction included, which
+    the speed magnitude throws away. Returns (t_mid_ms, w[N-1,3])."""
+    q = _hemisphere_continuous(np.asarray(q, dtype=float))
+    w, x, y, z = q[:-1].T
+    dq = _quat_mul(q[1:], np.stack([w, -x, -y, -z], axis=1))
+    dq = np.where(dq[:, :1] < 0, -dq, dq)
+    ang = 2.0 * np.arccos(np.clip(dq[:, 0], -1.0, 1.0))
+    sin_half = np.sqrt(np.clip(1.0 - dq[:, 0] ** 2, 0.0, 1.0))
+    axis = dq[:, 1:] / np.where(sin_half > 1e-9, sin_half, 1.0)[:, None]
+    dt = np.diff(np.asarray(t_ms, dtype=float)) / 1000.0
+    good = dt > 0
+    wv = axis * (ang / np.where(good, dt, 1.0))[:, None]
+    t_mid = (np.asarray(t_ms[:-1], float) + np.asarray(t_ms[1:], float)) / 2.0
+    return t_mid[good], wv[good]
+
+
+def vector_lag_and_confidence(tA, qA, tB, qB, fs):
+    """Clock lag from cross-correlating world angular-velocity vectors.
+
+    Returns (A0_ms, B0_ms, lag_s, confidence, distinctness): confidence is the
+    normalized vector correlation (sum of dot products over the overlap, / the
+    two signals' norms) at the best lag; distinctness is how far the best peak
+    stands above the best one more than VECTOR_PEAK_EXCLUDE_S away. Nodes that
+    mostly move on their own (a torso while the arm works) correlate weakly
+    overall, yet one shared gesture still makes a single, distinct peak."""
+    tsA, wA = world_angular_velocity(tA, qA)
+    tsB, wB = world_angular_velocity(tB, qB)
+    comps = []
+    for c in range(3):
+        A0, _, ua = resample_uniform(tsA, wA[:, c], fs)
+        B0, _, ub = resample_uniform(tsB, wB[:, c], fs)
+        comps.append((ua, ub))
+    corr = sum(_xcorr_full(ua, ub) for ua, ub in comps)
+    nb = len(comps[0][1])
+    lags = np.arange(-nb + 1, len(comps[0][0]))
+    k = int(np.argmax(corr))
+    delta = 0.0
+    if 0 < k < len(corr) - 1:
+        y0, y1, y2 = corr[k - 1], corr[k], corr[k + 1]
+        den = y0 - 2.0 * y1 + y2
+        if den != 0.0:
+            delta = 0.5 * (y0 - y2) / den
+    lag = int(lags[k])
+    num = na = nbb = 0.0
+    for ua, ub in comps:
+        if lag >= 0:
+            aa, bb = ua[lag:], ub[:len(ua) - lag]
+        else:
+            bb, aa = ub[-lag:], ua[:len(ub) + lag]
+        m = min(len(aa), len(bb))
+        num += float(np.dot(aa[:m], bb[:m]))
+        na += float(np.dot(aa[:m], aa[:m])); nbb += float(np.dot(bb[:m], bb[:m]))
+    conf = num / np.sqrt(na * nbb) if na > 0 and nbb > 0 else 0.0
+    far = np.abs(np.arange(len(corr)) - k) > VECTOR_PEAK_EXCLUDE_S * fs
+    runner_up = float(corr[far].max()) if far.any() else 0.0
+    distinct = float(corr[k] / runner_up) if runner_up > 0 else float("inf")
+    return A0, B0, (lag + delta) / fs, conf, distinct
+
+
+# Vector sync is trusted when its best alignment clearly beats every alignment
+# more than VECTOR_PEAK_EXCLUDE_S away (peak ratio), and it shares some motion.
+VECTOR_PEAK_EXCLUDE_S = 0.5
+VECTOR_PEAK_RATIO_MIN = 1.25
+VECTOR_CONFIDENCE_MIN = 0.10
+
+
 def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
-                          estimate_drift=False):
+                          estimate_drift=False, method="vector"):
     """Estimate B→A clock offset (ms) and drift (ppm) from shared motion.
 
     Returns dict with offset_ms, drift_ppm, drift_resolved, and diagnostics.
@@ -296,7 +403,20 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
     L = L_s * 1000.0                               # ms, A delayed vs B
     # Clock offset that maps B's timestamps onto A's clock.
     offset_ms = (A0 - B0) + L
-    offset_reliable = confidence >= CONFIDENCE_MIN
+    used, offset_reliable, distinct = "speed", confidence >= CONFIDENCE_MIN, None
+    if method == "vector":
+        # Preferred: world angular-velocity VECTORS. Speed magnitudes can pair
+        # a short shared burst (a trunk twist) with a bigger, unrelated burst
+        # elsewhere (an arm swing); directions cannot. Falls back to speed only
+        # when the vector peak is not distinct and the speed match is reliable
+        # (e.g. nodes that do not share a world frame).
+        vA0, vB0, vL_s, vconf, distinct = vector_lag_and_confidence(
+            tA, qA, tB, qB, fs)
+        v_ok = distinct >= VECTOR_PEAK_RATIO_MIN and vconf >= VECTOR_CONFIDENCE_MIN
+        if v_ok or not offset_reliable:
+            offset_ms, confidence, L = ((vA0 - vB0) + vL_s * 1000.0, vconf,
+                                        vL_s * 1000.0)
+            used, offset_reliable = "vector", v_ok
 
     # Drift: measure the lag in several windows across the record and linear-fit
     # lag-vs-time. Accept the slope as real drift only if it is statistically
@@ -307,7 +427,9 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
     drift_resolved = False
     diag = {}
     if estimate_drift:
-        win = _windowed_lags(uA, uB, fs, k=8, frac=window_frac)
+        # B's speed grid origin, mapped onto A's clock by the global offset
+        win = _windowed_lags(A0, uA, B0 + offset_ms, uB, fs, k=8,
+                             frac=window_frac)
         if win is not None:
             wt, wl = win                                # window-centre ms, lag ms
             slope, se = _lsq_slope(wt, wl)              # ms/ms, SE
@@ -323,21 +445,43 @@ def estimate_offset_drift(tA, qA, tB, qB, fs=100.0, window_frac=0.30,
     diag.update(global_lag_ms=L, A0=A0, B0=B0, fs=fs)
     return {"offset_ms": offset_ms, "drift_ppm": drift_ppm,
             "drift_resolved": drift_resolved, "confidence": confidence,
-            "offset_reliable": offset_reliable, "diag": diag}
+            "offset_reliable": offset_reliable, "method": used,
+            "peak_distinctness": distinct, "diag": diag}
 
 
-def _windowed_lags(uA, uB, fs, k=6, frac=0.3):
-    """Lag (ms) measured in k overlapping windows; returns (centre_ms, lag_ms)."""
-    n = min(len(uA), len(uB))
+def _aligned_overlap(A0, uA, B0_on_a, uB, fs):
+    """The two uniform signals cropped to their common time span, so index i
+    is the same instant (on A's clock) in both. B0_on_a = B's grid origin
+    expressed on A's clock."""
+    shift = int(round((B0_on_a - A0) * fs / 1000.0))
+    a, b = (uA[shift:], uB) if shift >= 0 else (uA, uB[-shift:])
+    m = min(len(a), len(b))
+    return a[:m], b[:m]
+
+
+def _windowed_lags(A0, uA, B0_on_a, uB, fs, k=6, frac=0.3):
+    """Residual lag (ms) of B vs A in k overlapping windows over their COMMON
+    time span; returns (centre_ms, lag_ms).
+
+    Only windows where the two signals actually share motion (correlation at
+    the best lag >= CONFIDENCE_MIN) are kept: in a window where one node is
+    still, the "best" lag is arbitrary and a trend fitted through it is noise
+    (it read +15.9 s on a real capture). None when fewer than 3 windows count."""
+    uA, uB = _aligned_overlap(A0, uA, B0_on_a, uB, fs)
+    n = len(uA)
     w = int(n * frac)
     if w < 8 or n - w < 1:
         return None
     starts = np.linspace(0, n - w, k).astype(int)
     t, lag = [], []
     for s in starts:
-        L = best_lag_seconds(uA[s:s + w], uB[s:s + w], fs) * 1000.0
+        L, conf = lag_and_confidence(uA[s:s + w], uB[s:s + w], fs)
+        if conf < CONFIDENCE_MIN:
+            continue
         t.append((s + w / 2.0) / fs * 1000.0)
-        lag.append(L)
+        lag.append(L * 1000.0)
+    if len(t) < 3:
+        return None
     return np.array(t), np.array(lag)
 
 
@@ -370,7 +514,7 @@ def residual_alignment_ms(tA, qA, tB_on_a, qB, fs=100.0):
     B0, _, uB = resample_uniform(tsB, spB, fs)
     systematic = (A0 - B0) + best_lag_seconds(uA, uB, fs) * 1000.0
     trend = 0.0
-    win = _windowed_lags(uA, uB, fs, k=6, frac=0.30)
+    win = _windowed_lags(A0, uA, B0, uB, fs, k=6, frac=0.30)
     if win is not None:
         wt, wl = win
         slope, _ = _lsq_slope(wt, wl)
@@ -396,6 +540,16 @@ def nlerp(q: np.ndarray, t_ms: np.ndarray, query_ms: np.ndarray) -> np.ndarray:
     q1[flip] *= -1.0
     out = q0 * (1.0 - frac) + q1 * frac
     return normalize_quats(out)
+
+
+def _hemisphere_continuous(q):
+    """Flip signs so consecutive quaternions sit in the same hemisphere
+    (q and -q are one orientation)."""
+    q = q.copy()
+    for i in range(1, len(q)):
+        if np.dot(q[i], q[i - 1]) < 0.0:
+            q[i] = -q[i]
+    return q
 
 
 def to_A_clock(tB, offset_ms, drift_ppm):
@@ -438,7 +592,14 @@ def quality_path(out_csv):
     return os.path.splitext(out_csv)[0] + ".quality.json"
 
 
-def align_and_emit(paths, out_csv, fs=None):
+def align_and_emit(paths, out_csv, fs=None, offsets=None, sync_method="vector"):
+    """Align the node logs onto node-0's clock and resample onto one grid.
+
+    sync_method  'vector' (world angular-velocity vectors, default) or 'speed'
+                 (angular-speed magnitude, the original cue)
+    offsets      test hook: [(offset_ms, drift_ppm), ...] per non-reference
+                 node, used instead of estimating them
+    """
     stats = [{} for _ in paths]
     logs = [load_log(p, st) for p, st in zip(paths, stats)]
     tA, qA = logs[0]
@@ -448,12 +609,20 @@ def align_and_emit(paths, out_csv, fs=None):
     mapped = [(tA.astype(float), qA)]
     sync = [{"reference": True, "offset_ms": 0.0, "sync_confidence": None,
              "sync_reliable": True}]
-    for p, (tB, qB) in zip(paths[1:], logs[1:]):
-        est = estimate_offset_drift(tA, qA, tB, qB)
-        sync.append({"reference": False,
-                     "offset_ms": round(float(est["offset_ms"]), 1),
-                     "sync_confidence": round(float(est["confidence"]), 3),
-                     "sync_reliable": bool(est["offset_reliable"])})
+    for j, (p, (tB, qB)) in enumerate(zip(paths[1:], logs[1:])):
+        est = estimate_offset_drift(tA, qA, tB, qB, method=sync_method)
+        if offsets is not None:
+            est["offset_ms"], est["drift_ppm"] = offsets[j]
+            est["drift_resolved"] = True
+        entry = {"reference": False,
+                 "offset_ms": round(float(est["offset_ms"]), 1),
+                 "sync_confidence": round(float(est["confidence"]), 3),
+                 "sync_reliable": bool(est["offset_reliable"]),
+                 "sync_method": est["method"],
+                 "sync_peak_ratio": (None if est.get("peak_distinctness") is None
+                                     else round(float(min(est["peak_distinctness"],
+                                                          99.0)), 2))}
+        sync.append(entry)
         drift_note = (f"drift {est['drift_ppm']:+.1f} ppm"
                       if est["drift_resolved"]
                       else "drift negligible/unresolved (not applied)")
@@ -465,8 +634,8 @@ def align_and_emit(paths, out_csv, fs=None):
               f"(confidence {est['confidence']:.2f}), "
               f"{drift_note}; residual alignment {systematic:+.1f} ms{trend_note}")
         if not est["offset_reliable"]:
-            print(f"  [!] LOW CONFIDENCE ({est['confidence']:.2f} < "
-                  f"{CONFIDENCE_MIN:.2f}) — the nodes shared little motion, so "
+            print(f"  [!] LOW CONFIDENCE ({est['method']} match "
+                  f"{est['confidence']:.2f}) — the nodes shared little motion, so "
                   f"this offset is unreliable. Add a start-of-session sync "
                   f"gesture (a shared whole-body move), or seed the offset from "
                   f"the BLE clock read.")
@@ -504,9 +673,13 @@ def align_and_emit(paths, out_csv, fs=None):
             nodes.append({"column": f"n{i}", "log": os.path.basename(p), **sy,
                           "n_records": st.get("n_records"),
                           "n_valid": st.get("n_valid"),
+                          "clock_restarts": st.get("clock_restarts", 0),
                           **gap_stats(tm, lo, hi)})
         qual = {"schema_version": "1.0", "confidence_min": CONFIDENCE_MIN,
-                "overlap_ms": round(float(hi - lo), 1), "nodes": nodes}
+                "overlap_ms": round(float(hi - lo), 1),
+                # where t_common_ms = 0 sits on node-0's own clock
+                "grid_origin_ms": round(float(grid[0]), 3),
+                "nodes": nodes}
         with open(quality_path(out_csv), "w") as f:
             json.dump(qual, f, indent=2)
         print(f"[reconcile] wrote sync / data-loss summary -> "
@@ -626,6 +799,63 @@ def selftest() -> int:
     print(f"[selftest] confidence (independent motion): "
           f"{est_ind['confidence']:.2f} -> reliable={est_ind['offset_reliable']}")
 
+    # Torso-style case: node A (trunk) shares ONE short twist (about vertical)
+    # with node B (arm), while B also makes bigger swings of its own (about a
+    # horizontal axis). Speed magnitudes can pair the twist with a swing; the
+    # world angular-velocity VECTORS must find the twist.
+    fs_t, n_t = 200.0, int(90 * 200)
+    tt = np.arange(n_t) / fs_t
+    twist = np.where((tt > 20) & (tt < 23), 1.5 * np.sin(2 * np.pi * (tt - 20) / 1.5), 0.0)
+    swing = np.zeros(n_t)
+    for c in (40, 55, 70):
+        swing += np.where(np.abs(tt - c) < 3, 3.0 * np.sin(2 * np.pi * (tt - c) / 3), 0.0)
+    w_trunk = np.column_stack([np.zeros(n_t), np.zeros(n_t), twist])
+    w_arm = w_trunk + np.column_stack([swing, np.zeros(n_t), np.zeros(n_t)])
+
+    def integrate_world(w):
+        q = np.zeros((n_t + 1, 4)); q[0] = [1, 0, 0, 0]
+        for i in range(n_t):
+            ang = np.linalg.norm(w[i]) / fs_t
+            ax = w[i] / (np.linalg.norm(w[i]) or 1.0)
+            dq = np.array([np.cos(ang / 2), *(np.sin(ang / 2) * ax)])
+            q[i + 1] = _quat_mul(dq[None], q[i][None])[0]       # world-frame step
+        return normalize_quats(q[:-1])
+    q_tr, q_arm = integrate_world(w_trunk), integrate_world(w_arm)
+    t_node = np.arange(0, 90, 0.12)
+    sel = np.round(t_node * fs_t).astype(int)
+    tA2 = t_node * 1000.0
+    tB2 = t_node[:-3] * 1000.0 + 0.037 * 1000 + 2500.0      # B clock ahead by 2537 ms
+    qA2 = _quat_mul(q_tr[sel], np.tile([0.7071, 0.7071, 0, 0], (len(sel), 1)))
+    qB2 = _quat_mul(q_arm[np.round((t_node[:-3] + 0.037) * fs_t).astype(int)],
+                    np.tile([0.5, 0.5, 0.5, 0.5], (len(sel) - 3, 1)))
+    ev = estimate_offset_drift(tA2, qA2, tB2, qB2, method="vector")
+    es = estimate_offset_drift(tA2, qA2, tB2, qB2, method="speed")
+    vec_err = abs(ev["offset_ms"] - (-2500.0))
+    vec_ok = vec_err < 30.0
+    print(f"[selftest] torso-style shared twist + independent arm swings: vector "
+          f"sync error {vec_err:.1f} ms (reliable={ev['offset_reliable']}), speed "
+          f"sync error {abs(es['offset_ms'] + 2500.0):.0f} ms "
+          f"{'OK' if vec_ok and ev['offset_reliable'] else 'FAIL'}")
+
+    # Clock restart: a log whose timestamps restart at ~0 midway (a reboot)
+    # must not silently lose the later part — split, keep the larger clock
+    # segment, and count the restart.
+    import tempfile
+    tmpd = tempfile.mkdtemp(prefix="hulc_reset_")
+    pth = os.path.join(tmpd, "reset.bin")
+    t_before = np.arange(50000, 60000, 100)             # 100 samples
+    t_after = np.arange(200, 25200, 100)                # 250 samples, new clock
+    with open(pth, "wb") as f:
+        for tt_ in np.concatenate([t_before, t_after]):
+            f.write(RECORD.pack(int(tt_), 1.0, 0.0, 0.0, 0.0))
+    st_r = {}
+    tr_, _ = load_log(pth, st_r)
+    reset_ok = (st_r.get("clock_restarts") == 1 and len(tr_) == 250
+                and tr_[0] == 200)
+    print(f"[selftest] clock restart mid-log: kept {len(tr_)} samples from the "
+          f"larger clock segment, restarts={st_r.get('clock_restarts')} "
+          f"{'OK' if reset_ok else 'FAIL'}")
+
     # Deliverable: recovered offset matches truth AND every aligned sample lands
     # within the design target (25-50 ms); AND shared motion reads reliable while
     # independent motion is correctly flagged unreliable.
@@ -641,9 +871,10 @@ def selftest() -> int:
           f"{'OK' if gaps_ok else 'FAIL'}")
     ok = (off_err < tol_ms and mean_err < tol_ms
           and est["offset_reliable"] and not est_ind["offset_reliable"]
-          and gaps_ok)
+          and gaps_ok and vec_ok and ev["offset_reliable"] and reset_ok)
     print(f"[selftest] {'PASS' if ok else 'FAIL'} "
-          f"(alignment < {tol_ms:.0f} ms; confidence gate correct; gap summary)")
+          f"(alignment < {tol_ms:.0f} ms; confidence gate correct; vector sync on "
+          f"a torso-style gesture; gap summary; clock-restart split)")
     return 0 if ok else 1
 
 
@@ -681,6 +912,9 @@ def main() -> None:
     ap.add_argument("--out", help="output CSV path for the aligned streams")
     ap.add_argument("--fs", type=float, default=None,
                     help="output sample rate Hz (default: node0 native rate)")
+    ap.add_argument("--sync", choices=["vector", "speed"], default="vector",
+                    help="clock-sync cue: world angular-velocity vectors "
+                         "(default) or angular-speed magnitude (the original)")
     ap.add_argument("--selftest", action="store_true",
                     help="run the synthetic recovery test (no hardware)")
     ap.add_argument("--inspect", action="store_true",
@@ -697,7 +931,7 @@ def main() -> None:
         return
     if len(args.logs) < 2:
         ap.error("need at least 2 log files to align (or use --selftest)")
-    align_and_emit(args.logs, args.out, args.fs)
+    align_and_emit(args.logs, args.out, args.fs, sync_method=args.sync)
 
 
 if __name__ == "__main__":

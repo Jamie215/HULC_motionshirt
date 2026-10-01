@@ -5,10 +5,18 @@ taking it all the way to a visual. Commands assume you run them from the repo
 root with the nodes flashed from `firmware/firmware.ino`.
 
 **Mental model:** each node logs to its own flash **autonomously**. When it
-senses motion it enters `ACTIVE_RECORDING` and writes quaternion records; when
-still it sits in `IDLE` (which logs nothing). **Offload works only while a node
-is `IDLE`**, so you connect the laptop *after* the recording, with the subject at
-rest, and do the actual movement with the laptop disconnected.
+senses motion it enters `ACTIVE_RECORDING` (~10 samples/s); after 10 s without
+motion it drops to `STATIC_POSTURE` (1 sample/s); after 60 s without motion —
+or ~8 s lying flat on a table — it sits in `IDLE`, which logs nothing.
+**Offload works only while a node is `IDLE`**, so you connect the laptop *after*
+the recording and do the movement with the laptop disconnected.
+
+**Blocks.** The nodes' battery and flash are limited, so a session is a series
+of **blocks**: record one or more takes, take the nodes off to charge, and
+**offload while they charge** into one folder per block. Each block is one
+mounting and is analyzed on its own. The recording procedure is the one-page
+[recording card](COLLECTION_SOP.md); the charging checkpoint and the reasons
+behind each step are in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md).
 
 **Connections are the slow part.** Every BLE command connects to each node up
 front (slow, especially on a Windows central), so the flow keeps connects to the
@@ -19,18 +27,17 @@ empty*, so it's just a quick check then) and the offload at the end:
 | Phase | BLE connect? |
 |---|---|
 | Enroll → montage (one-time) | **no** — scan only |
-| Erase to a clean start | **yes** — but skips the wipe if already empty |
+| Erase to a clean start (start of each block) | **yes** — but skips the wipe if already empty |
 | Strap + record | no — disconnected |
-| Offload | **yes** |
+| Offload (while charging, end of each block) | **yes** |
 | Sync/link check | only occasionally, not per session |
 
-**Why erase at the start, not after offload:** wiping before each recording
-(rather than with `offload --erase-after`) keeps the **previous session's raw
-capture on the node until you deliberately begin the next one** — a safety net if
-a transfer looked complete but wasn't, a file is lost, or an analysis needs
-redoing from raw. The smart-skip keeps the start-erase cheap when the node is
-already empty. (You erase over BLE while the node is `IDLE`; a strapped-on board
-never has to be unmounted to be wiped.)
+**Why erase as a separate step, not with the offload:** wiping only after
+you have checked the offloaded files (rather than with `offload --erase-after`)
+keeps the block's raw capture on the node until you deliberately begin the next
+block — a safety net if a transfer looked complete but wasn't or a file is lost.
+At a charging checkpoint that means: offload → quick check → erase → re-mount.
+The smart-skip keeps the erase cheap when a node is already empty.
 
 The worked example below is the 2-node **elbow** montage
 (upper_arm_r + forearm_r). For other placements, only the montage changes — the
@@ -143,11 +150,12 @@ differs — it is not two philosophies:
       way every wear*. A bony, roll-referenced spot is what makes `verify` reuse
       the cached calibration instead of demanding a fresh pose.
 
-## 2. Erase to a clean start (smart)
+## 2. Erase to a clean start (smart) — start of each block
 
-Connect once (over BLE — the boards stay strapped on) and wipe only what needs
-wiping, so this take starts clean. This is also the point where last session's
-raw is finally discarded — up to here it was still recoverable on the node.
+Connect once over BLE and wipe only what needs wiping, so this block starts
+clean. This is also the point where the previous block's raw is finally
+discarded — up to here it was still recoverable on the node. At a charging
+checkpoint, do it after the offload has been checked, before re-mounting.
 
 ```bash
 python tools/multinode_test.py erase --count 2
@@ -160,80 +168,111 @@ python tools/multinode_test.py erase --count 2
 
 ## 3. Record the movement — laptop disconnected
 
-Nothing is connected. Run this **4-beat protocol**. It satisfies two separate
-needs in one take: a *still* hold for calibration, and *shared* motion (both
-segments moving together) so reconcile can lock the clock from the motion alone.
+Nothing is connected. Follow the one-page **[recording card](COLLECTION_SOP.md)**
+(the reasons and numbers are in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md)):
 
-1. [ ] **Neutral hold, ~5 s** — stand in the N-pose, still. This is the
-       calibration window.
-2. [ ] **Sync gesture, ~5 s** — 3–5 big **whole-arm** swings (elbow locked, move
-       from the shoulder) so **both** nodes move together. This is what gives
-       reconcile a strong, correlated signal to align on.
-3. [ ] **The movement of interest** — e.g. slow elbow flexion/extension reps
-       through the target range.
-4. [ ] **Still, ~2 s** — so the nodes settle back to `IDLE`.
+1. [ ] **Strap on and switch on** every node — take as long as needed; nothing
+       before the sync movement is used.
+2. [ ] **Sync movement, ~10 s**, moving **every** node: trunk twists with the
+       hand on the hip (torso node), or straight-arm swings (arm only).
+3. [ ] **Freeze, ~5 s,** straight after — arms straight down, **palms to the
+       thighs**. This is the calibration.
+4. [ ] **The task** — smooth, ≤ ~1 rep/s, 5–8 s rests between sets.
+5. [ ] **Done** — nodes off, flat on the charger (they go `IDLE` within ~8 s;
+       the analysis ends where they came off). Then the charging checkpoint:
+       offload (step 4) → analyze, read the block check → erase (step 2) →
+       re-mount → next block from step 1.
 
 > Why the sync gesture: pure elbow flexion moves the forearm a lot but the upper
 > arm barely at all, so on its own it gives weak clock alignment. A whole-arm
-> swing moves both segments together → strong correlation. Keep it **wide and
-> moderate**, not frantic — very fast motion aliases at ~10 Hz logging.
+> swing (or, with a torso node, a trunk twist) turns every segment together →
+> one strong, shared motion. reconcile matches the nodes' **world angular
+> velocity** (direction as well as speed), so a single clear shared gesture is
+> enough even if the rest of the session is the arm moving on its own. Keep it
+> **wide and moderate**, not frantic — very fast motion aliases at ~10 Hz. The
+> sync result is in `aligned.quality.json` (`sync_peak_ratio` well above 1.25
+> = one clear match).
 
-## 4. Offload the logs
+## 4. Offload the logs — while the nodes charge, one folder per block
 
-Bring the subject to rest (nodes IDLE), then offload each log (the next session's
-clean start is handled by step 2, not here):
+With the nodes on the charger (IDLE), offload each log into **a new folder for
+this block** (the next block's clean start is step 2):
 
 ```bash
-python tools/multinode_test.py offload --count 2 --out-dir ./capture
+python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
 ```
 
 - [ ] Each node reports `COMPLETE — saved N bytes`.
-- [ ] Files land as `./capture/HULC-IMU-XXXX.bin` (auto-named by id), each with a
+- [ ] Files land as `./capture/block1/HULC-IMU-XXXX.bin` (auto-named by id), each with a
       `HULC-IMU-XXXX.seg.json` sidecar recording the node's own segment — so the
       capture dir is self-describing and `analyze_session` can cross-check it
       against the montage (it warns, but the montage stays authoritative).
 - [ ] If any records are reported missing, just re-run the same command — it
       re-requests only the holes.
+- [ ] Quick check before erasing: `python tools/reconcile_nodes.py --inspect
+      ./capture/block1/*.bin` — records present, ~10 Hz while moving, and **no
+      `clock restarted` warning** (a battery died mid-block).
 
-> `offload --count 2 --erase-after` exists (wipes each node once its offload
-> verifies COMPLETE, saving a connect), **but it discards the on-device raw
-> immediately** — so you lose the ability to re-offload if the transfer was
-> subtly bad or the files are lost. The default flow deliberately erases at the
-> *start* of the next session instead, keeping this capture recoverable until
-> then. Use `--erase-after` only when the on-device backup isn't worth the extra
-> start-of-session connect.
+> `offload --count 2 --erase-after` wipes each node once its offload verifies
+> COMPLETE — offload and erase in one connect, handy when a charging checkpoint
+> is short. **But it discards the on-device raw immediately**, so you lose the
+> ability to re-offload if the transfer was subtly bad or a file is lost. The
+> default flow erases as a separate step after the quick check.
 
 ## 5. Analyze — one command from logs to viewer
 
 `analyze_session.py` runs the whole post-offload chain
-(reconcile → capability → calibrate → render) and binds each `.bin` to its
+(reconcile → capability → calibrate → metrics → render, plus the optional
+OpenSense path with `--opensense-model`) and binds each `.bin` to its
 segment **in montage order automatically**, so there's no hand-ordering of logs:
 
 ```bash
-python tools/analyze_session.py run --montage montage.json --capture-dir ./capture --out elbow.html
+python tools/analyze_session.py run --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1 --out elbow.html
 ```
+
+**Body-model solves.** Once per machine: `pip install opensim` and
+`python tools/opensense_ik.py fetch-models` (downloads the Thoracoscapular
+and Rajagopal models into `models/opensense/`). From then on `analyze_session`
+solves every block on both models by itself (`--no-opensense` skips them,
+`--opensense-model PATH` picks others) and adds each to the same review page: a **Sensors / model** switch in the footer changes how the
+pose is solved (same moment, camera and graph), and the angle graph's
+**compare solvers** overlay draws the other solves over the current one.
+Stretches where a model lost the sensors are shaded and left out of that
+model's numbers.
+
+Run it once **per block folder** — each block is one mounting with its own
+neutral hold.
 
 - [ ] The binding table it prints matches your placement
       (`n0 upper_arm_r ← …485C.bin`, `n1 forearm_r ← …B059.bin`).
-- [ ] reconcile **confidence** is healthy (low = weak sync gesture; redo beat 2).
-- [ ] calibrate reports a neutral window marked `[still ✓]` and offsets with a
-      small pose spread (a large one = the neutral hold wasn't still).
-- [ ] Open the printed `file://…/elbow.html`, **Jump to neutral**, then flip
+- [ ] reconcile sync is reliable (`sync_peak_ratio` ≥ 1.25 in
+      `aligned.quality.json`; low = weak or wrong sync gesture).
+- [ ] The run ends with **`BLOCK CHECK: OK`** (or `REDO` with what to change);
+      each line is explained in [`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md) §5
+      and saved as `block_check.json`.
+- [ ] Open the printed `file://…/elbow.html`, **Neutral pose**, then flip
       **Raw ↔ Calibrated** — the two bars should snap to the neutral pose in
       Calibrated. That toggle *is* the calibration check.
 
-By default calibrate **auto-detects** the neutral window. If it picks the wrong
-span, pin it: read the opening still hold off `t_common_ms` in the emitted
-`aligned.csv` and re-run with `--window <t0>,<t1>`.
+By default calibrate **auto-detects** the freeze (the first still stretch —
+≥ 3 s, ≤ 0.04 rad/s — after the sync movement; still stretches before the
+movement never count; a montage window is used only if it was actually still)
+and **where the nodes came off** (the log's final rest in a pose no body holds).
+Recordings made in the old order (hold before the movement) need
+`--protocol hold-first` — calibrate prints a hint when one looks like that. If
+it picks the wrong span, open **Timeline** on the review page, drag the freeze
+band / end line to the right place and run the command it gives (it adds
+`--window <t0>,<t1>` and/or `--end <t_ms>`).
 
 <details>
-<summary>Prefer to run the four stages by hand?</summary>
+<summary>Prefer to run the stages by hand?</summary>
 
 ```bash
 python tools/reconcile_nodes.py ./capture/<n0-id>.bin ./capture/<n1-id>.bin --out aligned.csv
 python tools/motion_capabilities.py montage.json
 python tools/calibrate_segments.py calibrate aligned.csv montage.json --window <t0>,<t1> --out calibration.json --update-montage
-python tools/skeleton_viewer.py render aligned.csv montage.json --calibration calibration.json --out elbow.html
+python tools/metrics.py compute aligned.csv montage.json --calibration calibration.json --out metrics.json
+python tools/skeleton_viewer.py render aligned.csv montage.json --calibration calibration.json --metrics metrics.json --out elbow.html
 ```
 Pass the logs to reconcile in montage-column order (`n0` first).
 </details>
@@ -257,10 +296,12 @@ python tools/multinode_test.py check --count 2 --duration 30
 
 ## Optional: re-don verification
 
-Taking the shirt off and back on breaks the mounting offset (a charge cycle does
-not). To confirm the cached calibration still holds after a re-don, record a
-fresh short still hold, offload it (step 4) into `./redon`, reconcile that
-capture to a CSV, then verify against the cached calibration:
+Taking the shirt off and back on — or taking a node out and putting it back,
+e.g. to charge it — can change the mounting offset (a charge cycle with the node
+left in place does not). Every block has its own neutral hold anyway, so this
+is only needed to confirm a cached calibration still holds: record a fresh short
+still hold, offload it (step 4) into `./redon`, reconcile that capture to a CSV,
+then verify against the cached calibration:
 
 ```bash
 python tools/reconcile_nodes.py ./redon/<n0-id>.bin ./redon/<n1-id>.bin --out redon.csv
@@ -280,8 +321,10 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 | Many `pass 2: re-requesting …` lines | Weak link / distance / body blocking 2.4 GHz | Node close and line-of-sight to the central; re-run offload to fill holes |
 | `json ... Expecting value: line 1 column 1 (char 0)` | `montage.json` has a BOM or is empty/UTF-16 | Re-save as UTF-8 **without BOM**; check first 3 bytes are not `239 187 191` |
 | Offload rejected / empty | Node not in `IDLE`, or nothing recorded | Hold the subject still; confirm motion actually happened in step 3 |
-| Low reconcile confidence | Weak/absent sync gesture — the two segments didn't move together | Redo beat 2 (whole-arm swings), wide and moderate |
-| Neutral residual large in calibrate | Neutral hold wasn't still, or wrong window | Redo beat 1; or pin `--window` from `t_common_ms` in aligned.csv |
+| Low reconcile confidence / `sync_peak_ratio` < 1.25 | Weak or wrong sync gesture — the nodes didn't move together | Redo the sync gesture: whole-arm swings (arm only) or trunk twists (with a torso node), wide and moderate |
+| Neutral residual large in calibrate | Neutral hold wasn't still, or wrong window | Redo the hold; or pin `--window` from `t_common_ms` in aligned.csv |
+| Block check `Session end` NOTE: nodes not seen coming off | The log ended in motion or with the nodes still worn | Lay the nodes flat on the charger at the end; for this block, `--end <t_ms>` if the tail includes taking them off |
+| `clock restarted` warning | A node rebooted mid-block (battery died, then recharged before offload) | Only the larger clock segment is analyzed; charge before the battery runs out and offload at every charge |
 | Enroll: "N nodes advertising" | More than one board powered on | Power ON only the ONE node you're enrolling; others OFF |
 | Enroll: "no HULC node advertising" | Board off, or advert not up yet | Power it on, wait a few seconds, retry (a connected node stops advertising) |
 | `analyze: node log not found` | `--capture-dir` wrong, or a node didn't offload COMPLETE | Point at the offload dir; re-run offload to finish the missing node |

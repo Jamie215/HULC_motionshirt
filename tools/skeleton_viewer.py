@@ -49,6 +49,16 @@ undefined stretches shaded, min / max marked. The series is computed in the page
 from the baked quaternions with metrics.py's chain (unwrapped, then shifted by a
 multiple of 360° so its middle reads within ±180°, as the panel does).
 
+Solver switch
+-------------
+One page can carry the same session solved several ways: the direct sensor
+chain (default, with its raw <-> calibrated toggle) and OpenSense on one or
+more published models (--solver-dir). A footer switch picks the solver; the
+page reloads onto that scene at the same moment, camera and graph (state rides
+in the URL hash). The angle graph can overlay the other solvers' series. A
+model solve has no raw view, and the frames where it lost the sensors (fit
+error over opensense_ik.FIT_LOST_DEG) are shaded and warned about.
+
 Facing (heading) auto-correction
 --------------------------------
 The mag-referenced world gives orientation but not how the subject's forward
@@ -92,6 +102,12 @@ Usage
     python tools/skeleton_viewer.py render aligned.csv montage.json \
         --calibration calibration.json --metrics metrics.json --out review.html
 
+    # + OpenSense solves (opensense_ik.py output folders) -> a Sensors / model
+    # switch in the footer and a "compare solvers" overlay on the angle graph:
+    python tools/skeleton_viewer.py render aligned.csv montage.json \
+        --calibration calibration.json --metrics metrics.json \
+        --solver-dir out/opensense/thoracoscapular --out review.html
+
     # validate end-to-end with no hardware (synth a session, bake, check):
     python tools/skeleton_viewer.py selftest
 """
@@ -110,10 +126,13 @@ except ImportError:  # pragma: no cover
 # loader from the calibration stage; reuse the body model for segment names.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calibrate_segments import (  # noqa: E402
-    load_aligned, load_montage, qmul, qnorm, _q_list,
+    load_aligned, load_montage, qmul, qnorm, _q_list, find_sync_bursts,
+    DEFAULT_WIN_MS,
 )
 from motion_capabilities import SEGMENTS, JOINTS  # noqa: E402
-from metrics import resolve_anatomical_frame  # noqa: E402
+from metrics import (  # noqa: E402
+    resolve_anatomical_frame, trim_to_analysis, joint_frame_deg,
+)
 from reconcile_nodes import quality_path  # noqa: E402
 
 SCHEMA_VERSION = "1.0"
@@ -165,8 +184,68 @@ def _anat_chain():
     return chain
 
 
+SENSOR_SOLVER = {
+    "key": "sensor", "kind": "sensor", "label": "Sensors",
+    "title": "Direct from the sensors (no body model)",
+    "note": "Each joint angle comes straight from its two calibrated sensors. "
+            "Nothing is constrained, so every sensor reading is kept as measured.",
+}
+# Short button labels for the OpenSense model profiles (opensense_ik.PROFILES).
+MODEL_SHORT = {"thoracoscapular": "Shoulder model", "rajagopal": "Rajagopal model"}
+# ... and on the footer's solver buttons, where space is tight
+MODEL_BUTTON = {"thoracoscapular": "Shoulder", "rajagopal": "Rajagopal"}
+
+
+TIMELINE_BIN_MS = 200.0          # session-timeline overview resolution
+
+
+def build_timeline(t_ms, seg_quats, calibration, rerun=None):
+    """The whole log at a glance, for the review page's Timeline strip: each
+    node's angular speed in TIMELINE_BIN_MS bins, the detected sync movement,
+    freeze and session end, and the command that re-runs the analysis (the
+    page appends --window / --end when they are dragged)."""
+    t = np.asarray(t_ms, dtype=float)
+    edges = np.arange(t[0], t[-1] + TIMELINE_BIN_MS, TIMELINE_BIN_MS)
+    centre = (edges[:-1] + edges[1:]) / 2.0
+    speeds = {}
+    for seg, q in seg_quats.items():
+        dot = np.clip(np.abs(np.sum(q[:-1] * q[1:], axis=1)), 0.0, 1.0)
+        dt = np.diff(t) / 1000.0
+        sp = np.where(dt > 0, 2.0 * np.arccos(dot) / np.where(dt > 0, dt, 1.0), np.nan)
+        mid = (t[:-1] + t[1:]) / 2.0
+        idx = np.clip(np.searchsorted(edges, mid, side="right") - 1, 0, len(centre) - 1)
+        tot = np.bincount(idx, weights=np.nan_to_num(sp), minlength=len(centre))
+        cnt = np.bincount(idx, weights=np.isfinite(sp).astype(float),
+                          minlength=len(centre))
+        speeds[seg] = [round(float(v), 3) if c else None
+                       for v, c in zip(tot / np.maximum(cnt, 1), cnt)]
+    cal = calibration or {}
+    nw = cal.get("neutral", {}).get("t_window_ms")
+    end = cal.get("end") or {}
+    sync = None
+    if nw:
+        before = [b for b in find_sync_bursts(t, seg_quats)
+                  if b[1] - DEFAULT_WIN_MS <= nw[0]]
+        sync = [round(before[-1][0], 1), round(before[-1][1], 1)] if before else None
+    return {
+        "bin_ms": TIMELINE_BIN_MS,
+        "t0_ms": round(float(centre[0]), 1), "log_ms": [float(t[0]), float(t[-1])],
+        "speeds": speeds,
+        "freeze_ms": nw, "freeze_len_ms": (nw[1] - nw[0]) if nw else DEFAULT_WIN_MS,
+        "freeze_how": cal.get("neutral", {}).get("found_by"),
+        # set by hand (--window / --end): the page keeps them in the command
+        "freeze_manual": str(cal.get("neutral", {}).get("found_by", "")
+                             ).startswith("using --window"),
+        "end_manual": end.get("method") == "manual",
+        "end_ms": end.get("t_end_ms"), "end_how": end.get("method") or end.get("note"),
+        "end_node": end.get("first_node_off"),
+        "sync_ms": sync,
+        "rerun": rerun,
+    }
+
+
 def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAMES,
-                metrics=None, quality=None):
+                metrics=None, quality=None, trim=True, solver=None, rerun=None):
     """Bake a viewer-ready scene dict from the aligned stream.
 
     Bakes RAW world-from-sensor quaternions per segment plus, per segment, the
@@ -180,8 +259,20 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
 
     `quality` (the reconcile sidecar, aligned.quality.json) carries per-node sync
     confidence, shown as a header chip and per-card warnings.
+
+    With `trim` (default) playback runs from the neutral hold to the session
+    end (the nodes coming off) — the same analysis window metrics.py uses.
+
+    `solver` describes how the orientations were obtained (SENSOR_SOLVER by
+    default; a model solve from opensense_ik.py via load_solver_dir). A page can
+    carry several scenes, one per solver, switched in the viewer (build_page).
     """
     t_ms, seg_quats, seg_meta = load_aligned(csv_path, montage)
+    # the whole log for the Timeline strip (the direct sensor scene only)
+    timeline = (build_timeline(t_ms, seg_quats, calibration, rerun)
+                if calibration and not solver else None)
+    if trim:
+        t_ms, seg_quats, _ = trim_to_analysis(t_ms, seg_quats, calibration)
     n = len(t_ms)
     stride = _stride_for(n, max_frames)
     keep = slice(0, n, stride)
@@ -257,6 +348,8 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
             "heading": heading,
             "anatomical_frame_quat": (None if q_wa is None
                                       else [round(float(v), 8) for v in q_wa]),
+            "solver": dict(solver or SENSOR_SOLVER),
+            "timeline": timeline,
         },
         "parents": parents,
         "anat_chain": _anat_chain(),
@@ -268,6 +361,7 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
         # with the same body model (and conventions) as metrics.py
         "joint_defs": {k: {"proximal": j.proximal, "distal": j.distal,
                            "seq": j.decomposition.split()[0],
+                           "frame_y_deg": joint_frame_deg(j),
                            "dofs": [{"key": d.key, "seq_index": d.seq_index}
                                     for d in j.dofs]}
                        for k, j in JOINTS.items()},
@@ -281,13 +375,76 @@ def build_scene(csv_path, montage, calibration=None, max_frames=DEFAULT_MAX_FRAM
     }
 
 
+def load_solver_dir(solver_dir, montage, max_frames=DEFAULT_MAX_FRAMES):
+    """Bake the scene of an opensense_ik.py output folder (the pose solved on a
+    published model), for the viewer's solver switch.
+
+    The folder holds opensense_aligned.csv (segment orientations from the
+    solved skeleton), opensense_calibration.json (identity offsets, the
+    original facing / neutral window) and opensense_metrics.json. The stream
+    is already cut to the analysis window, so it is not trimmed again."""
+    def f(name):
+        path = os.path.join(solver_dir, name)
+        if not os.path.exists(path):
+            raise SystemExit(f"[viewer] {solver_dir}: missing {name} — is this an "
+                             f"opensense_ik.py output folder?")
+        return path
+    csv_path = f("opensense_aligned.csv")
+    calibration = _load_calibration(f("opensense_calibration.json"))
+    metrics = _load_json(f("opensense_metrics.json"))
+    ps = metrics.get("pose_solver", {})
+    profile = ps.get("profile", "model")
+    res = ps.get("residual_deg") or {}
+    meds = [r.get("median_deg") for r in res.values()
+            if r.get("median_deg") is not None]
+    solver = {
+        "key": f"opensense_{profile}", "kind": "model",
+        "label": MODEL_SHORT.get(profile, ps.get("model_title", profile)),
+        "button": MODEL_BUTTON.get(profile, MODEL_SHORT.get(profile, profile)),
+        "title": f"OpenSense on the {ps.get('model_title', profile)}",
+        "note": ("The whole arm solved at once on a published musculoskeletal "
+                 "model (OpenSim OpenSense): real joint axes and joint limits, "
+                 "so each pose is one the model's skeleton can make. Sensor "
+                 "readings the model cannot follow are smoothed over."),
+        "model": ps.get("model"),
+        "free_coordinates": ps.get("free_coordinates"),
+        "residual_median_deg": (round(float(np.median(meds)), 1) if meds else None),
+        "residual_deg": res,
+    }
+    qpath = quality_path(csv_path)
+    quality = _load_json(qpath) if os.path.exists(qpath) else None
+    scene = build_scene(csv_path, montage, calibration, max_frames,
+                        metrics=metrics, quality=quality, trim=False, solver=solver)
+    # Per-frame fit (opensense_fit.csv): frames the model could not follow are
+    # shaded and warned about in the page, never shown as trustworthy motion.
+    fit_path = os.path.join(solver_dir, "opensense_fit.csv")
+    if os.path.exists(fit_path):
+        fit = np.loadtxt(fit_path, delimiter=",", skiprows=1, ndmin=2)
+        t = np.asarray(scene["t_ms"], dtype=float)
+        fl = ps.get("fit_lost") or {}
+        sv = scene["meta"]["solver"]
+        sv["fit_err_deg"] = [round(float(v), 1)
+                             for v in np.interp(t, fit[:, 0], fit[:, 1])]
+        sv["fit_lost_deg"] = float(fl.get("threshold_deg", 30.0))
+        sv["fit_lost_s"] = float(fl.get("seconds", 0.0))
+        sv["fit_lost_stretches_ms"] = fl.get("stretches_ms", [])
+    return scene
+
+
+def build_page(scenes):
+    """One page, several scenes (one per solver). The first is shown first."""
+    return scenes[0] if len(scenes) == 1 else {"solvers": list(scenes)}
+
+
 # ---------------------------------------------------------------------------
 # HTML emit
 # ---------------------------------------------------------------------------
 def render_html(scene):
+    """`scene` is one build_scene() dict, or build_page()'s {"solvers": [...]}."""
     data_json = json.dumps(scene, separators=(",", ":"))
-    title = (f"Skeleton review — {scene['meta']['subject']} / "
-             f"{scene['meta']['session']}")
+    first = scene["solvers"][0] if "solvers" in scene else scene
+    title = (f"Skeleton review — {first['meta']['subject']} / "
+             f"{first['meta']['session']}")
     return (_HTML_TEMPLATE
             .replace("__TITLE__", _html_escape(title))
             .replace("/*__FBD_DATA__*/null", data_json))
@@ -320,8 +477,10 @@ def cmd_render(args):
     qpath = args.quality or quality_path(args.aligned_csv)
     quality = _load_json(qpath) if os.path.exists(qpath) else None
     scene = build_scene(args.aligned_csv, montage, calibration, args.max_frames,
-                        metrics=metrics, quality=quality)
-    html = render_html(scene)
+                        metrics=metrics, quality=quality, rerun=args.rerun)
+    extra = [load_solver_dir(d, montage, args.max_frames)
+             for d in (args.solver_dir or [])]
+    html = render_html(build_page([scene] + extra))
     # UTF-8 always: the page is <meta charset="utf-8"> and carries non-ASCII glyphs
     # (↔, °, ·, —). Without this, Python on Windows defaults to cp1252 and the
     # write dies with a UnicodeEncodeError.
@@ -366,6 +525,10 @@ def cmd_render(args):
     else:
         print("[viewer] no sync summary found (re-run reconcile_nodes.py to write "
               "aligned.quality.json) — the page shows 'Sync not recorded'.")
+    if extra:
+        print("[viewer] solver switch: " + " | ".join(
+            sc["meta"]["solver"]["label"] for sc in [scene] + extra)
+            + " — same session, pick how the pose is solved in the page footer.")
     print(f"[viewer] open it in a browser: file://{os.path.abspath(args.out)}")
 
 
@@ -481,6 +644,37 @@ def selftest():
             {"column": "n1", "reference": False, "sync_confidence": 0.2,
              "sync_reliable": False, "gap_frac": 0.0, "longest_gap_ms": 0.0}]}
         scene_q = build_scene(csv, montage, cal, max_frames=50, quality=qual)
+
+        # A model solve next to the direct one (the layout opensense_ik.py
+        # writes): the solved segment orientations with identity offsets.
+        osd = os.path.join(d, "opensense")
+        os.makedirs(osd)
+        solved = {sg: qnorm(qmul(q, np.array(
+            cal["segments"][sg]["mounting_offset_quat"]))) for sg, q in seg_quats.items()}
+        with open(os.path.join(osd, "opensense_aligned.csv"), "w") as f:
+            np.savetxt(f, np.column_stack([t_ms] + [solved[sg][:, k]
+                       for sg in true_bone for k in range(4)]), delimiter=",",
+                       header=",".join(header), comments="", fmt="%.6f")
+        cal_os = json.loads(json.dumps(cal))
+        for e in cal_os["segments"].values():
+            e["mounting_offset_quat"] = list(IDENTITY_Q)
+        with open(os.path.join(osd, "opensense_calibration.json"), "w") as f:
+            json.dump(cal_os, f)
+        rep_os = json.loads(json.dumps(metrics_report))
+        rep_os["pose_solver"] = {
+            "profile": "thoracoscapular", "model": "tsm.osim",
+            "model_title": "Thoracoscapular Shoulder Model (Seth et al. 2019)",
+            "free_coordinates": ["shoulder_elv"],
+            "residual_deg": {"upper_arm_r": {"median_deg": 4.0, "p95_deg": 9.0},
+                             "forearm_r": {"median_deg": 5.0, "p95_deg": 11.0}}}
+        with open(os.path.join(osd, "opensense_metrics.json"), "w") as f:
+            json.dump(rep_os, f)
+        scene_os = load_solver_dir(osd, montage, max_frames=200)
+        scene_tl = build_scene(csv, montage, cal, max_frames=200,
+                               rerun="python tools/analyze_session.py run --montage m.json")
+        html_tl = render_html(scene_tl)
+        page = build_page([scene, scene_os])
+        html_page = render_html(page)
 
     ok = True
 
@@ -607,10 +801,44 @@ def selftest():
           and ac.get("torso") is None,
           f"middle-gap chain: parents={scene_gap['parents']} anat={ac}")
 
+    # (9) Solver switch: one page carries the direct scene and the model solve,
+    #     the model's offsets are identity and the two agree at every frame
+    #     (the synthetic "solve" is the calibrated stream itself).
+    sv = scene_os["meta"]["solver"]
+    same = all(np.allclose(np.abs(np.sum(
+        qmul(np.array(scene["frames"][sg]), np.array(
+            next(x for x in scene["segments"] if x["segment"] == sg)["offset"]))
+        * np.array(scene_os["frames"][sg]), axis=1)), 1.0, atol=1e-3)
+        for sg in true_bone)
+    check(list(page) == ["solvers"] and len(page["solvers"]) == 2
+          and scene["meta"]["solver"]["kind"] == "sensor"
+          and sv["kind"] == "model" and sv["label"] == "Shoulder model"
+          and sv["residual_median_deg"] == 4.5
+          and all(x["offset"] == IDENTITY_Q for x in scene_os["segments"])
+          and same and '"solvers":[' in html_page
+          and build_page([scene]) is scene,
+          f"solver switch: sensor + {sv['label']} on one page, model offsets "
+          f"identity, poses agree frame for frame")
+
+    # (10) Session timeline: the WHOLE log's speed per node, the detected
+    #      freeze, and the re-run command are baked; model scenes carry none.
+    tl = scene_tl["meta"]["timeline"]
+    n_bins = int(np.ceil((t_ms[-1] - t_ms[0]) / TIMELINE_BIN_MS))
+    check(tl is not None and set(tl["speeds"]) == set(true_bone)
+          and all(abs(len(v) - n_bins) <= 1 for v in tl["speeds"].values())
+          and tl["freeze_ms"] == cal["neutral"]["t_window_ms"]
+          and tl["rerun"].endswith("--montage m.json")
+          and not tl["freeze_manual"]
+          and scene_os["meta"]["timeline"] is None
+          and 'id="tline"' in html_tl and "function drawTimeline" in html_tl,
+          f"session timeline baked: {len(tl['speeds'])} node(s) x "
+          f"{len(next(iter(tl['speeds'].values())))} bins, freeze {tl['freeze_ms']}, "
+          f"re-run command; model scenes carry none")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — bake pipeline, the "
           f"raw↔calibrated promise, the stage-7 metrics panel, the skeleton "
-          f"chain, the no-torso bilateral fallback, and the missing-middle ghost "
-          f"chain.")
+          f"chain, the no-torso bilateral fallback, the missing-middle ghost "
+          f"chain, and the solver switch.")
     return 0 if ok else 1
 
 
@@ -635,6 +863,13 @@ def main():
                     "stage-7 review panel: ROM / velocity / reps / derived)")
     pr.add_argument("--out", default="skeleton.html",
                     help="output HTML file (default: skeleton.html)")
+    pr.add_argument("--rerun", metavar="CMD",
+                    help="the command that re-runs this analysis (analyze_session "
+                         "passes it); the Timeline strip appends --window/--end")
+    pr.add_argument("--solver-dir", action="append", metavar="DIR",
+                    help="an opensense_ik.py output folder: adds that model "
+                         "solve to the page, switchable against the direct "
+                         "sensor view (repeat for several models)")
     pr.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
                     help=f"cap baked frames by striding (default "
                          f"{DEFAULT_MAX_FRAMES})")
@@ -694,7 +929,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .chip.warn{background:color-mix(in srgb,var(--planned) 18%,transparent);color:var(--planned)}
   .chip.muted{background:color-mix(in srgb,var(--faint) 16%,transparent);color:var(--muted)}
   .sub{color:var(--muted);font-size:13.5px;margin-top:4px}
-  main{flex:1;position:relative;min-height:0}
+  main{flex:1;position:relative;min-height:0;overflow:hidden}  /* clip the closed drawer */
   #view{position:absolute;inset:0;display:block;width:100%;height:100%;
     touch-action:none;cursor:grab}
   #view:active{cursor:grabbing}
@@ -722,7 +957,28 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .lv-na{color:var(--faint)}
   .lv-why{color:var(--faint);font-size:11px;margin-top:3px}
   footer{border-top:1px solid var(--line);background:var(--surface);
-    padding:11px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+    padding:8px 20px 10px;display:flex;flex-direction:column;gap:8px}
+  /* two deliberate rows: playback (scrubber full width), then the controls in
+     groups — panels | camera | how the pose is solved */
+  .frow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .frow.ctl{column-gap:22px;row-gap:8px}
+  .fgroup{display:flex;align-items:center;gap:8px;flex:none}
+  .fgroup:not(:has(> :not([hidden]))){display:none}  /* nothing shown in it */
+  .frow.ctl button,.frow.ctl .toggle button{padding:5px 11px;font-size:13.5px}
+  @media (max-width:640px){
+    footer{padding:6px 10px 8px;gap:6px}
+    /* phones: the controls are one row that scrolls sideways, not a stack */
+    .frow.ctl{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;
+      scrollbar-width:thin}
+    .frow.ctl>*{flex:none}
+    .frow.ctl{column-gap:16px}
+    .tlabel .fr{display:none}
+    .frow{gap:8px}
+    footer .tlabel{min-width:0;font-size:11px}
+    footer input[type=range]{min-width:60px}
+    footer #play{padding:6px 10px}
+    footer #speed button{padding:6px 9px}
+  }
   button{font:inherit;cursor:pointer;border:1px solid var(--line);
     background:var(--surface);color:var(--ink);border-radius:8px;
     padding:7px 13px;font-weight:500}
@@ -778,10 +1034,21 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .row.plot.sel{background:color-mix(in srgb,var(--accent) 13%,transparent)}
   .row.plot .k::after{content:"  graph";font-size:11px;color:var(--faint);opacity:0}
   .row.plot:hover .k::after{opacity:1}
-  #graph{position:absolute;left:0;right:0;bottom:0;height:210px;z-index:4;
+  #graph,#tline{position:absolute;left:0;right:0;bottom:0;height:210px;z-index:4;
     background:var(--surface);border-top:1px solid var(--line);
     box-shadow:0 -6px 18px rgba(22,32,43,.06);display:flex;flex-direction:column}
-  #graph[hidden]{display:none}
+  #tline{height:250px}
+  #graph[hidden],#tline[hidden]{display:none}
+  #tltitle{font-weight:650;font-size:14px}
+  #tlreset{margin-left:auto;padding:3px 11px;font-size:12.5px}
+  #tlclose{padding:3px 11px;font-size:12.5px}
+  #tlcv{flex:1;width:100%;min-height:0;display:block;cursor:crosshair;touch-action:none}
+  .tlfoot{display:flex;align-items:center;gap:8px;padding:2px 14px 8px;font-size:12px;
+    flex-wrap:wrap}
+  #tlinfo{color:var(--muted);flex-basis:100%}
+  #tlcmd{flex:1;min-width:200px;font:12px ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--paper);
+    color:var(--ink)}
   .ghead{display:flex;align-items:center;gap:14px;padding:7px 14px 0;font-size:13px;
     flex-wrap:wrap}
   #gtitle{font-weight:650;font-size:14px}
@@ -789,11 +1056,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .gleg i{display:inline-block;width:16px;height:0;border-top:2.5px solid;vertical-align:middle;
     margin-right:5px}
   .gleg i.dash{border-top-style:dashed}
+  .gleg i.dot{border-top-style:dotted}
   .gopt{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px}
   #gclose{margin-left:auto;padding:3px 11px;font-size:12.5px}
   #gcv{flex:1;width:100%;min-height:0;display:block;cursor:crosshair;touch-action:none}
   /* relative-only numbers dim while the view shows RAW (anatomical zero off) */
   body[data-mode="raw"] .clin-gated{opacity:.5}
+  .lv-why.lv-lost{color:var(--planned);font-weight:600;font-size:12px}
   @media (max-width:640px){.legend{display:none}
     #metrics{width:100%;max-width:100%;top:auto;height:60%}
     #metrics.hidden{transform:translateY(102%)}}
@@ -816,9 +1085,25 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <span class="gleg" id="gleg"></span>
       <label class="gopt" id="gotherwrap"><input type="checkbox" id="gother" checked>
         compare other side</label>
+      <label class="gopt" id="gsolvwrap" hidden><input type="checkbox" id="gsolv" checked>
+        compare solvers</label>
       <button id="gclose" title="Close the graph">Close</button>
     </div>
     <canvas id="gcv"></canvas>
+  </div>
+  <div id="tline" hidden aria-label="Session timeline">
+    <div class="ghead">
+      <span id="tltitle">Session timeline</span>
+      <span class="gleg" id="tlleg"></span>
+      <button id="tlreset" title="Back to what the analysis detected">Reset</button>
+      <button id="tlclose" title="Close the timeline">Close</button>
+    </div>
+    <canvas id="tlcv"></canvas>
+    <div class="tlfoot">
+      <span id="tlinfo"></span>
+      <input id="tlcmd" readonly aria-label="Re-run command">
+      <button id="tlcopy">Copy command</button>
+    </div>
   </div>
   <div class="legend">
     <div class="live" id="live" hidden></div>
@@ -835,31 +1120,56 @@ _HTML_TEMPLATE = r"""<!doctype html>
   </div>
 </main>
 <footer>
-  <button id="play" class="primary">&#9654; Play</button>
-  <div class="toggle" id="speed" title="Playback speed">
-    <button data-speed="1" class="on">1&times;</button>
-    <button data-speed="2">2&times;</button>
-    <button data-speed="5">5&times;</button>
+  <div class="frow">
+    <button id="play" class="primary">&#9654; Play</button>
+    <div class="toggle" id="speed" title="Playback speed">
+      <button data-speed="1" class="on">1&times;</button>
+      <button data-speed="2">2&times;</button>
+      <button data-speed="5">5&times;</button>
+    </div>
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1">
+    <div class="tlabel mono" id="tlabel">0 ms</div>
   </div>
-  <button id="mstoggle" hidden>&#9776; Metrics</button>
-  <div class="toggle" id="view3d" title="Snap the camera">
-    <button data-view="front">Front</button>
-    <button data-view="side">Side</button>
-    <button data-view="top">Top</button>
+  <div class="frow ctl">
+    <div class="fgroup" aria-label="Panels">
+      <button id="mstoggle" hidden>&#9776; Metrics</button>
+      <button id="tltoggle" hidden title="The whole log: where the sync movement, the freeze and the end were found — drag to correct them">Timeline</button>
+    </div>
+    <div class="fgroup" aria-label="Camera">
+      <div class="toggle" id="view3d" title="Snap the camera">
+        <button data-view="front">Front</button>
+        <button data-view="side">Side</button>
+        <button data-view="top">Top</button>
+      </div>
+      <button id="labels" title="Show the name of every body part">Labels</button>
+      <button id="neutral" title="Jump to the freeze the calibration used, in the calibrated view">Neutral pose</button>
+    </div>
+    <div class="fgroup" aria-label="How the pose is solved">
+      <div class="toggle" id="solver" hidden title="How the pose is solved"></div>
+      <div class="toggle" id="mode">
+        <button data-mode="raw">Raw</button>
+        <button data-mode="cal">Calibrated</button>
+      </div>
+    </div>
   </div>
-  <div class="toggle" id="mode">
-    <button data-mode="raw">Raw</button>
-    <button data-mode="cal">Calibrated</button>
-  </div>
-  <button id="labels" title="Show the name of every body part">Labels</button>
-  <button id="neutral">Go to neutral pose</button>
-  <input type="range" id="scrub" min="0" max="0" value="0" step="1">
-  <div class="tlabel mono" id="tlabel">0 ms</div>
 </footer>
 
 <script>
 "use strict";
-const DATA = /*__FBD_DATA__*/null;
+const PAGE = /*__FBD_DATA__*/null;
+// One page can carry the same session solved several ways (the direct sensor
+// chain, and OpenSense on one or more models). The URL hash picks the scene
+// (#s=index), so switching reloads the page onto the other scene with the
+// playhead, camera and open graph carried over in the hash.
+const SOLVERS = PAGE.solvers || [PAGE];
+const HASH = new URLSearchParams(location.hash.slice(1));
+const SOLVER_I = Math.max(0, Math.min(SOLVERS.length-1, parseInt(HASH.get('s')||'0',10)||0));
+const DATA = SOLVERS[SOLVER_I];
+const SOLVER = DATA.meta.solver || {key:'sensor',kind:'sensor',label:'Sensors'};
+// model solves: per-frame worst sensor-to-skeleton error; above the threshold
+// the model lost the sensors and the pose is not trustworthy
+const lostIn=(S,i)=>{const sv=S.meta.solver||{}, f=sv.fit_err_deg;
+  return !!(f&&f[i]>(sv.fit_lost_deg||30));};
 
 // ---- anthropometry: one body, sized from a standard ----
 // Every segment's length AND breadth is a fraction of the subject's stature,
@@ -1016,7 +1326,7 @@ function updateCamera(){
   // centre the figure in the part of the canvas the metrics drawer leaves free
   const mEl=document.getElementById('metrics');
   const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
-  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  const gh=bottomH();
   focal=((H-gh)/2)/Math.tan(FOV/2); ccx=(W+cover)/2; ccy=(H-gh)/2;
 }
 function project(P){
@@ -1108,7 +1418,9 @@ function liveAngles(jk){
 function jointAngles(J, qp, qd, qwa){
   let q=qmul(qconj(qp),qd);
   if(qwa){
-    q=qmul(qmul(qconj(qwa),q),qwa);
+    // the joint's own neutral frame (the wrist turns with the palms-in forearm)
+    const h=(J.frame_y_deg||0)*D2R/2, f=qmul(qwa,[Math.cos(h),0,Math.sin(h),0]);
+    q=qmul(qmul(qconj(f),q),f);
     if(J.distal.endsWith('_l')) q=[q[0],-q[1],-q[2],q[3]];
   }
   const R=rotm(q), cl=v=>Math.max(-1,Math.min(1,v));
@@ -1129,28 +1441,52 @@ function jointAngles(J, qp, qd, qwa){
   return out;
 }
 // A whole-session angle series for one movement, matching metrics.py: the
-// calibrated stream (whatever the view toggle shows), unwrapped so a sweep past
-// ±180° stays continuous, then shifted by a multiple of 360° so its middle
-// reads within -180…180° (the same shift the panel applies). Undefined samples
+// calibrated stream (whatever the view toggle shows), unwrapped within each
+// defined run so a sweep past ±180° stays continuous, each run shifted by a
+// multiple of 360° so its middle reads within -180…180° (the same shift the
+// panel applies). Undefined samples
 // (near the decomposition's singularity) are null. Cached per movement.
 const _series={};
 function angleSeries(jk, dk){
   const key=jk+'.'+dk; if(key in _series) return _series[key];
-  const J=JDEF[jk], bp=J&&bodyOf(J.proximal), bd=J&&bodyOf(J.distal);
-  if(!bp||!bd) return (_series[key]=null);
-  const out=new Array(N); let prev=null;
-  for(let i=0;i<N;i++){
-    const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), QWA);
+  return (_series[key]=sceneSeries(DATA, jk, dk));
+}
+// the same series computed from any baked scene (another solver on the page)
+function sceneSeries(S, jk, dk){
+  const J=JDEF[jk]; if(!J) return null;
+  const bone=seg=>{const sg=S.segments.find(x=>x.segment===seg);
+    return sg&&S.frames[seg]?{frames:S.frames[seg],offset:sg.offset}:null;};
+  const bp=bone(J.proximal), bd=bone(J.distal);
+  if(!bp||!bd) return null;
+  const qwa=S.meta.anatomical_frame_quat, n=S.t_ms.length;
+  const out=new Array(n); let prev=null;
+  for(let i=0;i<n;i++){
+    const a=jointAngles(J, qmul(bp.frames[i],bp.offset), qmul(bd.frames[i],bd.offset), qwa);
     let v=a?a[dk]:null;
     if(v!=null&&prev!=null) v+=360*Math.round((prev-v)/360);   // unwrap
-    out[i]=v; if(v!=null) prev=v;
+    out[i]=v; prev=v;        // an undefined sample ends the run: never unwrap through it
   }
-  const def=out.filter(v=>v!=null).sort((x,y)=>x-y);
-  if(def.length){
-    const k=360*Math.round(def[def.length>>1]/360);
-    if(k) for(let i=0;i<N;i++) if(out[i]!=null) out[i]-=k;
+  // each defined run shifted by whole turns so its middle reads within ±180°
+  // (metrics.py unwrap_runs_deg)
+  for(let i=0;i<n;){
+    if(out[i]==null){i++;continue;}
+    let j=i; while(j<n&&out[j]!=null) j++;
+    const run=out.slice(i,j).sort((x,y)=>x-y), k=360*Math.round(run[run.length>>1]/360);
+    if(k) for(let q=i;q<j;q++) out[q]-=k;
+    i=j;
   }
-  return (_series[key]=out);
+  return out;
+}
+// the other solvers' series for the graph overlay, cached per movement
+const _cmp={};
+function solverSeries(jk, dk){
+  const key=jk+'.'+dk; if(key in _cmp) return _cmp[key];
+  return (_cmp[key]=SOLVERS.map((S,i)=>{
+    if(i===SOLVER_I) return null;
+    const ser=sceneSeries(S,jk,dk);
+    if(ser) for(let k=0;k<ser.length;k++) if(lostIn(S,k)) ser[k]=null;
+    return ser?{S,i,ser}:null;
+  }).filter(Boolean));
 }
 // kept for existing callers: the forearm's pronation (+) / supination (-)
 function proSup(side){ const a=liveAngles('elbow_'+side); return a?a.pro_sup:null; }
@@ -1177,7 +1513,11 @@ function updateLive(){
     return `<div class="lv-j"><div class="n">${nameOf(k)}</div>`+
       `<div class="v">${vals.length?vals.join(' · '):'<span class="lv-na">—</span>'}</div></div>`;
   }).join('');
-  liveEl.innerHTML=`<h2>Live angles</h2>${rows}`+(why?`<div class="lv-why">${why}</div>`:'');
+  const lost=lostIn(DATA,frame)
+    ?`<div class="lv-why lv-lost">The model lost the sensors here (fit off by `+
+      `${Math.round(SOLVER.fit_err_deg[frame])}°), so this pose is not trustworthy. `+
+      `Compare with Sensors.</div>`:'';
+  liveEl.innerHTML=`<h2>Live angles</h2>${rows}`+(why?`<div class="lv-why">${why}</div>`:'')+lost;
 }
 
 // ---- the renderer ----
@@ -1453,7 +1793,7 @@ scrub.max=Math.max(0,N-1);
 const fmtS=ms=>(ms/1000).toFixed(2)+' s';
 function setFrame(i){
   frame=Math.max(0,Math.min(N-1,i|0)); scrub.value=frame;
-  tlabel.textContent=`${fmtS(DATA.t_ms[frame])} · f${frame+1}/${N}`;
+  tlabel.innerHTML=`${fmtS(DATA.t_ms[frame])}<span class="fr"> · f${frame+1}/${N}</span>`;
 }
 scrub.addEventListener('input',()=>{pause(); setFrame(+scrub.value);});
 function pause(){playing=false; playBtn.innerHTML='&#9654; Play';
@@ -1478,13 +1818,81 @@ if(!DATA.meta.has_calibration){
   modeBox.querySelector('[data-mode="cal"]').disabled=true;
   neutralBtn.disabled=true;
 }
+// A model solve has no raw view: its orientations ARE the fitted skeleton.
+if(SOLVER.kind==='model'){
+  const rb=modeBox.querySelector('[data-mode="raw"]');
+  rb.disabled=true;
+  rb.title='A model solve has no raw view. Switch to Sensors to see the raw sensor orientation.';
+}
+// solver switch: always shown, so the option is visible even when this page
+// was built without model solves (the model button then says how to add them)
+const solverBox=document.getElementById('solver');
+if(SOLVERS.length===1&&SOLVER.kind!=='model'){
+  solverBox.hidden=false;
+  solverBox.innerHTML=`<button class="on" title="${esc(SOLVER.title||'')}">Sensors</button>`+
+    `<button disabled title="No body-model solve in this page. To add one: pip install opensim, `+
+    `then python tools/opensense_ik.py fetch-models, then re-run analyze_session.py `+
+    `(it finds the models by itself).">Body model</button>`;
+}
+if(SOLVERS.length>1){
+  solverBox.hidden=false;
+  solverBox.innerHTML=SOLVERS.map((S,i)=>{
+    const sv=S.meta.solver||{label:'Sensors'};
+    return `<button data-i="${i}" class="${i===SOLVER_I?'on':''}" `+
+      `title="${esc(sv.title||sv.label)}\n\n${esc(sv.note||'')}">${esc(sv.button||sv.label)}</button>`;
+  }).join('');
+  solverBox.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(b) switchSolver(+b.dataset.i);
+  });
+}
+function switchSolver(i){
+  if(i===SOLVER_I) return;
+  const h=new URLSearchParams({s:i, t:DATA.t_ms[frame], m:mode, x:SPEED,
+    az:az.toFixed(4), el:el.toFixed(4), r:rad.toFixed(3), p:playing?1:0,
+    mo:metricsEl.classList.contains('hidden')?0:1});
+  if(GRAPH) h.set('g',GRAPH.jk+'.'+GRAPH.dk);
+  if(TL&&!tlEl.hidden) h.set('tl',`${TLS.f0},${TLS.end==null?'':TLS.end}`);
+  const on=viewBox.querySelector('button.on'); if(on) h.set('v',on.dataset.view);
+  location.hash=h.toString(); location.reload();
+}
+function nearestFrame(t){
+  let lo=0,hi=N-1; while(hi-lo>1){const m=(lo+hi)>>1; if(DATA.t_ms[m]<t) lo=m; else hi=m;}
+  return Math.abs(DATA.t_ms[lo]-t)<=Math.abs(DATA.t_ms[hi]-t)?lo:hi;
+}
+// after a switch: land on the same moment, camera, view and graph
+function restoreFromHash(){
+  if(!HASH.has('s')) return;
+  const num=k=>{const v=parseFloat(HASH.get(k)); return isFinite(v)?v:null;};
+  if(num('t')!=null) setFrame(nearestFrame(num('t')));
+  if(HASH.get('m')==='raw'&&SOLVER.kind!=='model') setMode('raw');
+  if(num('az')!=null) az=num('az');
+  if(num('el')!=null) el=num('el');
+  if(num('r')!=null) rad=num('r');
+  const v=HASH.get('v'); if(v&&VIEWS[v]) setView(v);
+  const sb=speedBox.querySelector(`[data-speed="${HASH.get('x')}"]`); if(sb) sb.click();
+  if(MET&&HASH.has('mo')&&(HASH.get('mo')==='1')===metricsEl.classList.contains('hidden'))
+    msToggle.click();
+  const g=HASH.get('g');
+  if(g&&MET){const [jk,dk]=g.split('.'); if(JDEF[jk]) openGraph(jk,dk);}
+  if(HASH.get('p')==='1') playBtn.click();
+  if(TL&&HASH.has('tl')){
+    const [f,e]=HASH.get('tl').split(',');
+    if(isFinite(parseFloat(f))) TLS.f0=parseFloat(f);
+    TLS.end=isFinite(parseFloat(e))?parseFloat(e):null;
+    openTimeline();
+  }
+}
 // front-direction status (header chip tooltip)
 const FACING=FRONT_KNOWN
   ? (HEADING.source==='manual'
       ? `Front direction entered by hand (${FACE_DEG.toFixed(0)}° from north).`
-      : `Front direction found from the chest sensor (${FACE_DEG.toFixed(0)}° from north).`)
+      : HEADING.source==='elbow_hinge'
+        ? `Front direction found from how the elbow bends (${FACE_DEG.toFixed(0)}° from north).`
+        : `Front direction found from the chest sensor (${FACE_DEG.toFixed(0)}° from north).`)
   : HEADING.source==='torso_auto'
     ? 'The chest sensor could not tell which way the person faced, so the FRONT arrow is a guess.'
+    : HEADING.source==='elbow_hinge'
+    ? 'The elbow did not bend enough to tell which way the person faced, so the FRONT arrow is a guess.'
     : 'No chest sensor, so the FRONT arrow is a guess. Enter the facing at calibration to fix this.';
 const labelsBtn=document.getElementById('labels');
 labelsBtn.addEventListener('click',()=>{
@@ -1552,7 +1960,23 @@ document.getElementById('chips').innerHTML=
       ? chip('warn',`${ncal} of ${DATA.segments.length} calibrated`,'Some sensors were not calibrated; their angles are relative only.')
       : chip('warn','Not calibrated','No calibration: angles are relative only.'))+
   chip(FRONT_KNOWN?'good':'warn', FRONT_KNOWN?'Front known':'Front unknown', FACING)+
-  syncChips();
+  syncChips()+solverChip();
+// How the pose was solved: shown whenever it is a model, or a choice exists.
+function solverChip(){
+  if(SOLVER.kind!=='model') return SOLVERS.length>1
+    ? chip('muted','Direct from sensors',SOLVER.note||'') : '';
+  const r=SOLVER.residual_median_deg, lostS=SOLVER.fit_lost_s||0;
+  const fit=lostS>0?` · fit lost ${lostS.toFixed(0)} s`:r==null?'':` · fit ${r.toFixed(1)}°`;
+  const per=Object.entries(SOLVER.residual_deg||{}).map(([k,v])=>
+    `${k}: median ${v.median_deg}°, p95 ${v.p95_deg}°`).join('\n');
+  return chip(lostS>0||(r!=null&&r>10)?'warn':'good',`${esc(SOLVER.label)}${fit}`,
+    `${SOLVER.title||''}\n\n${SOLVER.note||''}`+
+    (lostS>0?`\n\nFor ${lostS.toFixed(1)} s the model could not follow the sensors `+
+      `(a sensor more than ${SOLVER.fit_lost_deg}° from the solved skeleton). Those `+
+      `stretches are shaded on the graph and left out of this model's metrics.`:'')+
+    (per?`\n\nHow far each sensor sits from the solved skeleton:\n${per}`:'')+
+    (SOLVER.free_coordinates?`\n\nModel joints solved: ${SOLVER.free_coordinates.join(', ')}`:''));
+}
 // Sync: did every sensor's clock line up with the first one (enough shared
 // motion)?
 function syncChips(){
@@ -1755,17 +2179,29 @@ if(MET){
 // the playhead synced to playback; click or drag on it to seek. Shaded: the
 // neutral-pose window (green) and stretches where the angle is undefined.
 const gcv=document.getElementById('gcv'), gctx=gcv.getContext('2d');
-const gOther=document.getElementById('gother');
+const gOther=document.getElementById('gother'), gSolv=document.getElementById('gsolv');
+if(SOLVERS.length>1){
+  document.getElementById('gsolvwrap').hidden=false;
+  gSolv.addEventListener('change',drawGraph);
+}
 const otherSide=jk=>jk.endsWith('_r')?jk.slice(0,-2)+'_l':jk.slice(0,-2)+'_r';
+// height of whichever bottom strip is open (angle graph or session timeline)
+function bottomH(){
+  const tl=document.getElementById('tline');
+  if(tl&&!tl.hidden) return tl.offsetHeight;
+  return (GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+}
 function layoutOverlays(){
   const mEl=document.getElementById('metrics');
   const cover=(mEl&&!mEl.classList.contains('hidden')&&W>640)?mEl.offsetWidth:0;
   graphEl.style.left=cover+'px';
-  const gh=(GRAPH&&!graphEl.hidden)?graphEl.offsetHeight:0;
+  document.getElementById('tline').style.left=cover+'px';
+  const gh=bottomH();
   const lg=document.querySelector('.legend');
   if(lg) lg.style.maxHeight=`calc(100% - ${24+gh}px)`;
 }
 function openGraph(jk,dk){
+  if(!document.getElementById('tline').hidden) closeTimeline();
   GRAPH={jk,dk}; graphEl.hidden=false;
   const J=(MET&&MET.joints||[]).find(j=>j.key===jk);
   const info=DOF_INFO[dk]||{name:dk};
@@ -1809,13 +2245,19 @@ function drawGraph(){
   const main=angleSeries(jk,dk), osk=otherSide(jk);
   const showOther=gOther.checked&&document.getElementById('gotherwrap').style.display!=='none';
   const other=showOther?angleSeries(osk,dk):null;
+  const cmp=(SOLVERS.length>1&&gSolv.checked)?solverSeries(jk,dk):[];
   const t0=DATA.t_ms[0], tEnd=DATA.t_ms[N-1], tspan=Math.max(1,tEnd-t0);
   const X=t=>G_PAD.l+(t-t0)/tspan*(GW-G_PAD.l-G_PAD.r);
-  const vals=[...(main||[]),...(other||[])].filter(v=>v!=null);
+  const inView=(c,i)=>c.S.t_ms[i]>=t0&&c.S.t_ms[i]<=tEnd;
+  const vals=[...(main||[]),...(other||[]),
+    ...cmp.flatMap(c=>c.ser.filter((v,i)=>inView(c,i)))].filter(v=>v!=null);
+  const CMP_DASH=[[2,3],[9,3,2,3],[1,5]];
   const leg=document.getElementById('gleg');
   const colOf=k=>rgb((SEG[(JDEF[k]||{}).distal]||{color:[120,120,120]}).color);
   leg.innerHTML=`<span><i style="border-color:${colOf(jk)}"></i>${esc(nameOf(jk))}</span>`+
-    (other?`<span><i class="dash" style="border-color:${colOf(osk)}"></i>${esc(nameOf(osk))}</span>`:'');
+    (other?`<span><i class="dash" style="border-color:${colOf(osk)}"></i>${esc(nameOf(osk))}</span>`:'')+
+    cmp.map(c=>`<span><i class="dot" style="border-color:${colOf(jk)}"></i>`+
+      `${esc(c.S.meta.solver.label)}</span>`).join('');
   if(!vals.length){
     g.fillStyle=cssVar('--faint'); g.font='13px system-ui,sans-serif'; g.textAlign='center';
     g.fillText('This angle is undefined for the whole session.',GW/2,GH/2); return;
@@ -1833,6 +2275,17 @@ function drawGraph(){
     g.fillStyle=cssVar('--built'); g.globalAlpha=.10;
     g.fillRect(X(Math.max(t0,nw[0])),plotT,X(Math.min(tEnd,nw[1]))-X(Math.max(t0,nw[0])),plotB-plotT);
     g.globalAlpha=.8; g.textAlign='left'; g.fillText('neutral pose',X(Math.max(t0,nw[0]))+4,plotT+11);
+    g.globalAlpha=1;
+  }
+  // stretches where this model solve lost the sensors
+  if(SOLVER.fit_lost_stretches_ms&&SOLVER.fit_lost_stretches_ms.length){
+    g.fillStyle=cssVar('--planned');
+    for(const [a,b] of SOLVER.fit_lost_stretches_ms){
+      const xa=X(Math.max(t0,a)), xb=Math.max(xa+2,X(Math.min(tEnd,b)));
+      g.globalAlpha=.13; g.fillRect(xa,plotT,xb-xa,plotB-plotT);
+      if(xb-xa>70){ g.globalAlpha=.9; g.textAlign='left';
+        g.fillText('model lost the sensors',xa+4,plotT+11); }
+    }
     g.globalAlpha=1;
   }
   // undefined stretches of the main series
@@ -1862,20 +2315,22 @@ function drawGraph(){
     g.fillText(`↑ ${info.pos}`,4,plotT); g.textBaseline='bottom'; g.fillText(`↓ ${info.neg}`,4,plotB);
   }
   // series
-  const line=(ser,color,dash,w)=>{
+  const line=(ser,color,dash,w,T=DATA.t_ms)=>{
     if(!ser) return; g.strokeStyle=color; g.lineWidth=w; g.setLineDash(dash); g.beginPath();
     let pen=false;
-    for(let i=0;i<N;i++){ const v=ser[i];
-      if(v==null){pen=false;continue;}
-      const x=X(DATA.t_ms[i]), y=Y(v);
+    for(let i=0;i<ser.length;i++){ const v=ser[i];
+      if(v==null||T[i]<t0||T[i]>tEnd){pen=false;continue;}
+      const x=X(T[i]), y=Y(v);
       if(pen) g.lineTo(x,y); else {g.moveTo(x,y); pen=true;} }
     g.stroke(); g.setLineDash([]);
   };
   line(other,colOf(osk),[6,4],1.6);
+  cmp.forEach((c,k)=>line(c.ser,colOf(jk),CMP_DASH[k%CMP_DASH.length],1.6,c.S.t_ms));
   line(main,colOf(jk),[],2.4);
-  // min / max of the main series
-  if(main){
-    const d=main.filter(v=>v!=null), mn=Math.min(...d), mx=Math.max(...d);
+  // min / max of the main series (a model's lost frames excluded, as in its metrics)
+  const good=main&&main.filter((v,i)=>v!=null&&!lostIn(DATA,i));
+  if(good&&good.length){
+    const mn=Math.min(...good), mx=Math.max(...good);
     g.strokeStyle=colOf(jk); g.globalAlpha=.45; g.setLineDash([3,4]); g.lineWidth=1;
     for(const v of [mn,mx]){ g.beginPath(); g.moveTo(plotL,Y(v)); g.lineTo(plotR,Y(v)); g.stroke(); }
     g.setLineDash([]); g.globalAlpha=1; g.fillStyle=colOf(jk); g.textAlign='right';
@@ -1910,6 +2365,180 @@ gcv.addEventListener('pointerdown',e=>{gdrag=true; gcv.setPointerCapture(e.point
 gcv.addEventListener('pointermove',e=>{if(gdrag) gseek(e);});
 gcv.addEventListener('pointerup',()=>{gdrag=false;});
 
+// ---- session timeline: the whole log, the detected events, drag to correct ----
+// Shows every node's angular speed over the WHOLE log (the 3-D view and the
+// graph only cover the analysis window), with the sync movement, the freeze
+// and the session end the analysis found. Dragging the freeze band (it snaps
+// to the quietest stretch nearby) or the end line builds the command that
+// re-runs the analysis with --window / --end — corrections need no code.
+const TL=(SOLVERS[0].meta||{}).timeline||null;
+const tlEl=document.getElementById('tline'), tlcv=document.getElementById('tlcv'),
+  tlctx=tlcv.getContext('2d'), tlBtn=document.getElementById('tltoggle');
+let TLS=null, TW=0, TH=0, tlDrag=null;
+const TL_PAD={l:58,r:18,t:18,b:24};
+const tlDefault=()=>({f0:TL.freeze_ms?TL.freeze_ms[0]:TL.log_ms[0], end:TL.end_ms});
+const TL_LEN=TL?TL.freeze_len_ms:2000;
+// mean speed of all nodes per bin (nulls skipped), for snapping the freeze
+const TL_COMB=TL?Object.values(TL.speeds)[0].map((_,i)=>{
+  const v=Object.values(TL.speeds).map(a=>a[i]).filter(x=>x!=null);
+  return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;}):[];
+const TL_MAX=TL?Math.min(6,Math.max(1,...TL_COMB.filter(v=>v!=null))):1;
+if(TL){
+  TLS=tlDefault(); tlBtn.hidden=false;
+  tlBtn.addEventListener('click',()=>tlEl.hidden?openTimeline():closeTimeline());
+}
+function openTimeline(){
+  if(GRAPH) closeGraph();
+  tlEl.hidden=false; tlBtn.classList.add('primary');
+  layoutOverlays(); resizeTimeline(); tlText();
+}
+function closeTimeline(){
+  tlEl.hidden=true; tlBtn.classList.remove('primary'); layoutOverlays();
+}
+document.getElementById('tlclose').addEventListener('click',closeTimeline);
+document.getElementById('tlreset').addEventListener('click',()=>{TLS=tlDefault(); tlText();});
+function resizeTimeline(){
+  TW=tlcv.clientWidth; TH=tlcv.clientHeight; tlcv.width=TW*DPR; tlcv.height=TH*DPR;
+}
+window.addEventListener('resize',()=>{ if(TL&&!tlEl.hidden) resizeTimeline(); });
+const tlX=t=>TL_PAD.l+(t-TL.log_ms[0])/Math.max(1,TL.log_ms[1]-TL.log_ms[0])*(TW-TL_PAD.l-TL_PAD.r);
+const tlT=x=>TL.log_ms[0]+(x-TL_PAD.l)/Math.max(1,TW-TL_PAD.l-TL_PAD.r)*(TL.log_ms[1]-TL.log_ms[0]);
+const sec=ms=>(ms/1000).toFixed(1);
+function tlEdited(){
+  const d=tlDefault();
+  return {f:Math.abs(TLS.f0-d.f0)>50, e:(TLS.end==null)!==(d.end==null)
+          ||(TLS.end!=null&&Math.abs(TLS.end-d.end)>50)};
+}
+function tlCommand(){
+  const ed=tlEdited();
+  let c=TL.rerun||'python tools/analyze_session.py run --montage montage.json --capture-dir <block folder>';
+  // a value set by hand last time stays in the command even when not moved
+  if(ed.f||TL.freeze_manual) c+=` --window ${Math.round(TLS.f0)},${Math.round(TLS.f0+TL_LEN)}`;
+  if((ed.e||TL.end_manual)&&TLS.end!=null) c+=` --end ${Math.round(TLS.end)}`;
+  return c;
+}
+function tlText(){
+  if(!TL) return;
+  const ed=tlEdited();
+  document.getElementById('tlinfo').innerHTML=
+    `Freeze <b>${sec(TLS.f0)}–${sec(TLS.f0+TL_LEN)} s</b>${ed.f?' (moved)':''} · `+
+    `end <b>${TLS.end==null?'end of the log':sec(TLS.end)+' s'}</b>${ed.e?' (moved)':''}`+
+    (ed.f||ed.e?' — copy the command and run it to re-analyze with these.'
+     :TL.freeze_manual||TL.end_manual?' — as set by hand last time (kept in the command).'
+     :' — as detected. Drag the green freeze band or the end line if they are wrong.');
+  document.getElementById('tlcmd').value=tlCommand();
+}
+document.getElementById('tlcopy').addEventListener('click',()=>{
+  const inp=document.getElementById('tlcmd'), btn=document.getElementById('tlcopy');
+  const done=()=>{btn.textContent='Copied'; setTimeout(()=>btn.textContent='Copy command',1500);};
+  const fallback=()=>{inp.select(); try{document.execCommand('copy'); done();}catch(e){}};
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(inp.value).then(done,fallback);
+  else fallback();
+});
+document.getElementById('tlleg').innerHTML=TL?Object.keys(TL.speeds).map(sg=>
+  `<span><i style="border-color:${rgb((SEG[sg]||{color:[120,120,120]}).color)}"></i>${esc(nameOf(sg))}</span>`).join('')
+  +'<span>speed, whole log</span>':'';
+function tlHit(x){
+  const fx0=tlX(TLS.f0), fx1=tlX(TLS.f0+TL_LEN), ex=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  if(Math.abs(x-ex)<=8) return 'end';
+  if(x>=fx0-6&&x<=fx1+6) return 'freeze';
+  return null;
+}
+tlcv.addEventListener('pointerdown',e=>{
+  if(!TL) return;
+  const x=e.clientX-tlcv.getBoundingClientRect().left, t=tlT(x), hit=tlHit(x);
+  if(hit){ tlDrag={kind:hit, off:t-TLS.f0}; tlcv.setPointerCapture(e.pointerId); return; }
+  if(t>=DATA.t_ms[0]&&t<=DATA.t_ms[N-1]){ pause(); setFrame(nearestFrame(t)); }
+});
+tlcv.addEventListener('pointermove',e=>{
+  if(!TL) return;
+  const x=e.clientX-tlcv.getBoundingClientRect().left, t=tlT(x);
+  if(!tlDrag){ tlcv.style.cursor=tlHit(x)?'ew-resize':'crosshair'; return; }
+  const [L0,L1]=TL.log_ms;
+  if(tlDrag.kind==='freeze') TLS.f0=Math.max(L0,Math.min(L1-TL_LEN,t-tlDrag.off));
+  else TLS.end=Math.max(TLS.f0+TL_LEN,Math.min(L1,t));
+  tlText();
+});
+tlcv.addEventListener('pointerup',()=>{
+  if(tlDrag&&tlDrag.kind==='freeze'){
+    // snap to the quietest stretch within ±2 s of where it was dropped
+    const b=TL.bin_ms, k=Math.max(1,Math.round(TL_LEN/b));
+    let best=TLS.f0, bv=Infinity;
+    for(let c=TLS.f0-2000;c<=TLS.f0+2000;c+=b){
+      const i0=Math.round((c-TL.t0_ms)/b); if(i0<0||i0+k>TL_COMB.length) continue;
+      const v=TL_COMB.slice(i0,i0+k).filter(x=>x!=null);
+      if(v.length<k/2) continue;
+      const m=v.reduce((a,x)=>a+x,0)/v.length;
+      if(m<bv){bv=m; best=c;}
+    }
+    TLS.f0=Math.max(TL.log_ms[0],Math.min(TL.log_ms[1]-TL_LEN,best));
+    tlText();
+  }
+  tlDrag=null;
+});
+function drawTimeline(){
+  if(!TL||tlEl.hidden||!TW) return;
+  const g=tlctx, P=TL_PAD; g.setTransform(DPR,0,0,DPR,0,0); g.clearRect(0,0,TW,TH);
+  const plotL=P.l, plotR=TW-P.r, plotT=P.t, plotB=TH-P.b;
+  const Y=v=>plotB-Math.min(v,TL_MAX)/TL_MAX*(plotB-plotT);
+  const faint=cssVar('--faint'), grid=cssVar('--line');
+  g.font='11px system-ui,sans-serif';
+  // outside the analysis window: dimmed
+  const a0=tlX(TLS.f0), a1=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  g.fillStyle=faint; g.globalAlpha=.10;
+  g.fillRect(plotL,plotT,a0-plotL,plotB-plotT); g.fillRect(a1,plotT,plotR-a1,plotB-plotT);
+  g.globalAlpha=1;
+  // y grid + labels
+  g.strokeStyle=grid; g.fillStyle=faint; g.textAlign='right'; g.textBaseline='middle';
+  const ys=niceStep(TL_MAX,3);
+  for(let v=0;v<=TL_MAX+1e-9;v+=ys){
+    g.beginPath(); g.moveTo(plotL,Y(v)); g.lineTo(plotR,Y(v)); g.stroke();
+    g.fillText(`${v.toFixed(v<1?1:0)}`,plotL-8,Y(v));
+  }
+  g.save(); g.translate(14,(plotT+plotB)/2); g.rotate(-Math.PI/2); g.textAlign='center';
+  g.fillText('rad/s',0,0); g.restore();
+  // time axis
+  const span=(TL.log_ms[1]-TL.log_ms[0])/1000, xs=niceStep(span,10);
+  g.textAlign='center'; g.textBaseline='top';
+  for(let s=Math.ceil(TL.log_ms[0]/1000/xs)*xs; s<=TL.log_ms[1]/1000; s+=xs)
+    g.fillText(`${s.toFixed(xs<1?1:0)} s`,tlX(s*1000),plotB+6);
+  // sync movement
+  if(TL.sync_ms){
+    const s0=tlX(TL.sync_ms[0]), s1=tlX(TL.sync_ms[1]);
+    g.fillStyle=cssVar('--accent'); g.globalAlpha=.14; g.fillRect(s0,plotT,s1-s0,plotB-plotT);
+    g.globalAlpha=.9; g.textAlign='left'; g.textBaseline='bottom';
+    g.fillText('sync',s0+3,plotB-2);              // bottom: the freeze / end labels sit on top
+    g.globalAlpha=1;
+  }
+  // speed traces
+  for(const [sg,arr] of Object.entries(TL.speeds)){
+    g.strokeStyle=rgb((SEG[sg]||{color:[120,120,120]}).color); g.lineWidth=1.2; g.beginPath();
+    let pen=false;
+    arr.forEach((v,i)=>{ if(v==null){pen=false;return;}
+      const x=tlX(TL.t0_ms+i*TL.bin_ms), y=Y(v);
+      if(pen) g.lineTo(x,y); else {g.moveTo(x,y); pen=true;} });
+    g.stroke();
+  }
+  // freeze band (draggable)
+  const f0=tlX(TLS.f0), f1=tlX(TLS.f0+TL_LEN);
+  g.fillStyle=cssVar('--built'); g.globalAlpha=.28; g.fillRect(f0,plotT,Math.max(3,f1-f0),plotB-plotT);
+  g.globalAlpha=1; g.strokeStyle=cssVar('--built'); g.lineWidth=1.5;
+  g.strokeRect(f0,plotT,Math.max(3,f1-f0),plotB-plotT);
+  g.fillStyle=cssVar('--built'); g.textAlign='left'; g.textBaseline='top';
+  g.font='600 11px system-ui,sans-serif'; g.fillText('freeze',f1+3,2);
+  // end line (draggable)
+  const ex=tlX(TLS.end==null?TL.log_ms[1]:TLS.end);
+  g.strokeStyle=cssVar('--planned'); g.lineWidth=2; g.setLineDash([5,3]);
+  g.beginPath(); g.moveTo(ex,plotT); g.lineTo(ex,plotB); g.stroke(); g.setLineDash([]);
+  g.fillStyle=cssVar('--planned'); g.textAlign=ex>plotR-30?'right':'left';
+  g.fillText('end',ex+(ex>plotR-30?-4:4),2);
+  // playhead
+  const px=tlX(DATA.t_ms[frame]);
+  g.strokeStyle=cssVar('--accent'); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(px,plotT); g.lineTo(px,plotB); g.stroke();
+}
+
 // ---- animation loop (real-time playback keyed on baked t_ms) ----
 let last=performance.now(), acc=0;
 function tick(now){
@@ -1921,11 +2550,11 @@ function tick(now){
     }
     if(frame>=N-1) pause();
   }
-  render(); drawGraph();
+  render(); drawGraph(); drawTimeline();
   requestAnimationFrame(tick);
 }
 
-resize(); setMode(mode); setFrame(0);
+resize(); setMode(mode); setFrame(0); restoreFromHash();
 requestAnimationFrame(tick);
 </script>
 </body>

@@ -60,7 +60,7 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
   "calibration": {
     "neutral_pose": "N-pose",
     "captured": true,
-    "t_window_ms": [1000, 4000],
+    "protocol": "sync-first",
     "functional": []
   },
   "nodes": [
@@ -79,7 +79,8 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
 | `session.aligned_csv` | The reconcile output this montage annotates. |
 | `calibration.neutral_pose` | The static zeroing pose captured at session start (e.g. `N-pose`). |
 | `calibration.captured` | Whether that pose was actually recorded this session. |
-| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. |
+| `calibration.protocol` | *Optional.* Order of the recording: `sync-first` (default — sync gesture, then the neutral hold) or `hold-first` (recordings made before that order). Calibration looks for the hold after the gesture, or the first hold of the log; `--protocol` overrides. `enroll` writes `sync-first`. |
+| `calibration.t_window_ms` | *Optional, normally absent.* A known neutral window `[t0, t1]` in the aligned stream's time; used only if the data there is actually still. Calibration finds the freeze itself (the first still stretch after the sync movement), and `--window` overrides both. `[1000, 4000]` — the placeholder `enroll` used to write — is ignored. Where the session ends (the nodes coming off) is found automatically and lands in `calibration.json`'s `end` block. |
 | `calibration.functional` | Optional functional-calibration movements captured (e.g. a known elbow flexion to fix a joint axis). |
 | `nodes[].node_id` | The board's advertised id (`HULC-IMU-XXXX`), for traceability. |
 | `nodes[].column` | **The bridge to reconcile output** — the per-node prefix in the aligned CSV header (`n0`, `n1`, …). |
@@ -186,7 +187,8 @@ resting quaternion" step. A static **neutral / N-pose** does three jobs at once:
 
 The pose zeroes each segment, but its axes stay on the world compass. To tie
 joint axes to the body (X anterior, Y superior, Z right), calibration also needs
-the subject's **facing** — recovered from the torso node, or stated with
+the subject's **facing** — recovered from the torso node, else from the elbow
+hinge axis (when the recording has enough elbow flexion), or stated with
 `--facing-deg` — and records the result as `anatomical_frame` in
 `calibration.json`. Joint angles are clinical only when it is present.
 
@@ -197,10 +199,10 @@ When either is false the resolver still lists the metric but attaches a
 clinical number. Uncalibrated segments propagate: an uncalibrated `forearm_r`
 flags both `elbow_r` and `wrist_r`.
 
-**Validity is per-don, and cached-with-verify** — the mounting offset is a
-property of *this* wear, so it must be refreshed each time the garment is put
-back on (re-donning shifts the straps; a power cycle for charging alone does
-**not** invalidate it). It is cacheable: reuse the last calibration if a quick
+**Validity is per-mounting, and cached-with-verify** — the mounting offset is a
+property of *this* mounting, so it must be refreshed each time a node is put
+back on (re-mounting shifts the straps — including taking nodes off to charge
+between blocks; a power cycle alone does **not** invalidate it). It is cacheable: reuse the last calibration if a quick
 still-pose consistency check passes, re-pose only when it drifts. This is
 distinct from the **time offset**, a different quantity with a different
 lifetime — see `SETUP_AND_CALIBRATION_PLAN.md` §3.
@@ -238,7 +240,7 @@ Every metric also declares its **quality inputs** — the trust gates a UI must
 surface alongside the value, never hide:
 
 - `dropout` — gaps in the aligned stream (a gap is not stillness; the firmware's
-  0.2 Hz STATIC_POSTURE heartbeat lets `stillness_confirmed` distinguish them).
+  ~1 Hz STATIC_POSTURE heartbeat lets `stillness_confirmed` distinguish them).
 - `sensor_cal` — the BNO's own calibration status.
 - `sync_confidence` — the Pearson `r` from `reconcile_nodes.py` (joint metrics
   combine two nodes, so a weak alignment weakens every joint number).
