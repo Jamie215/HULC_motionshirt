@@ -179,6 +179,10 @@ DEFAULT_PAIR_ANGLE_DEG = 10.0    # per-pair relative-orientation drift
 STILL_MAX_RAD_S = 0.30
 
 DEFAULT_WIN_MS = 2000.0          # auto-detected still-window length
+# What `enroll` used to write as calibration.t_window_ms in every montage. It is
+# not a hold: on a real capture it was still (the torso node lying on the table
+# before strapping) and calibrated the torso ~85° off, so it is ignored.
+ENROLL_PLACEHOLDER_MS = [1000.0, 4000.0]
 # Auto-detection looks for the protocol's neutral HOLD, which is much quieter
 # than STILL_MAX_RAD_S (a deliberate hold sits around 0.01–0.05 rad/s); the
 # stricter bar keeps a slow setup fidget from passing for it.
@@ -196,15 +200,21 @@ NEUTRAL_MIN_HOLD_MS = 3000.0
 # length, possibly with still stretches as long as a hold. The SOP therefore
 # runs wake-up -> sync gesture -> neutral hold, and the hold is the first
 # deliberate hold that starts within SYNC_TO_HOLD_MAX_MS after a stretch of
-# shared fast motion: every node above SYNC_MIN_RAD_S (2 s mean) for at least
-# SYNC_MIN_MS. On real captures the sync gesture held every node at 1.8–2.3
-# rad/s; a warm-up is not followed by a hold, so it is passed over.
+# SHARED motion: every node moving (2 s mean >= SYNC_MIN_RAD_S) and turning
+# TOGETHER — the coherence of their world angular-velocity vectors >=
+# SYNC_MIN_COHERENCE — for at least SYNC_MIN_MS (gaps up to SYNC_JOIN_GAP_MS
+# bridged). Speed alone is not enough: real trunk twists ran the torso at only
+# 0.4–0.8 rad/s (coherence 0.84–0.96), while strapping a node on moves the
+# nodes independently (coherence 0.2–0.7). Motion with no hold after it (a
+# warm-up) is passed over.
 # "hold-first" (recordings made before this order) takes the first deliberate
 # hold of the log instead.
 PROTOCOLS = ("sync-first", "hold-first")
 DEFAULT_PROTOCOL = "sync-first"
-SYNC_MIN_RAD_S = 1.0
+SYNC_MIN_RAD_S = 0.4
+SYNC_MIN_COHERENCE = 0.8
 SYNC_MIN_MS = 3000.0
+SYNC_JOIN_GAP_MS = 1500.0
 SYNC_TO_HOLD_MAX_MS = 20000.0
 # A deliberate hold ending within this of the gesture's start is how a
 # hold-first recording looks (on real ones: 0.2 s apart) -> calibrate hints at
@@ -392,22 +402,63 @@ def _window_means(t_ms, seg_quats, win_ms):
     return starts, mean
 
 
+def _world_rates(t_ms, seg_quats):
+    """Per segment, world angular-velocity vectors on the shared grid:
+    (t_mid, {seg: w[N-1, 3]})."""
+    from reconcile_nodes import world_angular_velocity
+    out, t_mid = {}, None
+    for seg, q in seg_quats.items():
+        tm, w = world_angular_velocity(t_ms, q)
+        if t_mid is None:
+            t_mid = tm
+        out[seg] = (w if len(tm) == len(t_mid) else
+                    np.column_stack([np.interp(t_mid, tm, w[:, k]) for k in range(3)]))
+    return t_mid, out
+
+
 def find_sync_bursts(t_ms, seg_quats, win_ms=DEFAULT_WIN_MS):
-    """Stretches of shared fast motion — the sync gesture and anything like it:
-    every node's 2 s mean angular speed >= SYNC_MIN_RAD_S for >= SYNC_MIN_MS.
+    """Stretches of SHARED motion — the sync gesture and anything like it: in
+    every 2 s window each node's mean angular speed >= SYNC_MIN_RAD_S and every
+    node's world angular velocity coherent with the first's (normalised
+    correlation of the vectors >= SYNC_MIN_COHERENCE), for >= SYNC_MIN_MS with
+    gaps up to SYNC_JOIN_GAP_MS bridged. One node: speed only.
     Returns [(t0_ms, t1_ms), ...] in time order."""
     if len(t_ms) < 3 or t_ms[-1] - t_ms[0] <= win_ms:
         return []
-    per = []
-    for seg, q in seg_quats.items():
-        starts, mean = _window_means(t_ms, {seg: q}, win_ms)
-        per.append(mean)
-    low = np.min(per, axis=0)
+    t_mid, w = _world_rates(t_ms, seg_quats)
+    if t_mid is None or len(t_mid) < 3:
+        return []
+    starts = t_ms[:-1][t_ms[:-1] + win_ms <= t_ms[-1]]
+    lo = np.searchsorted(t_mid, starts, side="left")
+    hi = np.searchsorted(t_mid, starts + win_ms, side="right")
+    n = np.maximum(hi - lo, 1)
+
+    def wsum(x):
+        c = np.concatenate([[0.0], np.cumsum(np.nan_to_num(x))])
+        return c[hi] - c[lo]
+    segs = list(w)
+    ok = (hi - lo) >= 2
+    for seg in segs:
+        ok &= wsum(np.linalg.norm(w[seg], axis=1)) / n >= SYNC_MIN_RAD_S
+    ref = w[segs[0]]
+    for seg in segs[1:]:
+        num = wsum(np.sum(ref * w[seg], axis=1))
+        den = np.sqrt(wsum(np.sum(ref * ref, axis=1)) * wsum(np.sum(w[seg] * w[seg], axis=1)))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ok &= np.where(den > 0, num / den, 0.0) >= SYNC_MIN_COHERENCE
+    idx = np.flatnonzero(ok)
     out = []
-    for i, j in _runs(low >= SYNC_MIN_RAD_S):
-        b0, b1 = float(starts[i]), float(starts[j] + win_ms)
-        if b1 - b0 >= SYNC_MIN_MS:
-            out.append((b0, b1))
+    if idx.size:
+        groups = [[idx[0], idx[0]]]
+        for k in idx[1:]:
+            if starts[k] - starts[groups[-1][1]] <= SYNC_JOIN_GAP_MS:
+                groups[-1][1] = k
+            else:
+                groups.append([k, k])
+        for i, j in groups:
+            b0, b1 = float(starts[i]), float(starts[j] + win_ms)
+            if b1 - b0 >= SYNC_MIN_MS:
+                out.append((b0, b1))
     return out
 
 
@@ -492,6 +543,11 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
         return float(t0), float(t1), f"using --window {t0:.0f}–{t1:.0f} ms"
     cal_win = montage.get("calibration", {}).get("t_window_ms")
     note = ""
+    if cal_win and [float(v) for v in cal_win] == ENROLL_PLACEHOLDER_MS:
+        # enroll used to write this into every montage; it is not a hold
+        note = (f"montage window {cal_win[0]:.0f}–{cal_win[1]:.0f} ms is the enroll "
+                f"placeholder — ignoring it; ")
+        cal_win = None
     if cal_win and len(cal_win) == 2:
         t0, t1 = float(cal_win[0]), float(cal_win[1])
         s = window_stillness(t_ms, seg_quats, t0, t1)
@@ -513,9 +569,18 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
         # a deliberate hold that ENDS right at the gesture is what a hold-first
         # recording looks like: say so instead of silently taking a later rest
         starts, mean = _window_means(t_ms, seg_quats, win_ms)
-        prior = [(h0, h1) for h0, _, h1 in _deliberate_holds(starts, mean, win_ms)
+        holds = _deliberate_holds(starts, mean, win_ms)
+        chosen = next(((h0, h1) for h0, k, h1 in holds if k == t0), None)
+        q_of = lambda h0, h1: float(np.min(mean[(starts >= h0) & (starts + win_ms <= h1)]))
+        # a hold right at the gesture that is ALSO longer and stiller than the
+        # one after it is what an old-order recording looks like; a shorter,
+        # looser one is just standing still before the movement
+        prior = [(h0, h1) for h0, _, h1 in holds
                  for g0, _ in before
-                 if h1 <= t0 and g0 - HOLD_FIRST_HINT_GAP_MS <= h1 <= g0 + win_ms]
+                 if h1 <= t0 and g0 - HOLD_FIRST_HINT_GAP_MS <= h1 <= g0 + win_ms
+                 and chosen is not None
+                 and h1 - h0 > chosen[1] - chosen[0]
+                 and q_of(h0, h1) <= q_of(*chosen)]
         if prior:
             note += (f"a still hold ({prior[-1][0]:.0f}–{prior[-1][1]:.0f} ms) ends "
                      f"right before the sync gesture — if this recording held the "
@@ -525,8 +590,9 @@ def choose_neutral_window(montage, t_ms, seg_quats, win_ms=DEFAULT_WIN_MS,
                          f"({sync})",
            "first_hold": "freeze found (first of the log; protocol hold-first)",
            "first_hold_no_sync": "! no freeze right after a sync movement (every "
-                                 f"node ≥ {SYNC_MIN_RAD_S} rad/s together) — "
-                                 "using the first freeze of the log",
+                                 "node turning together for ≥ "
+                                 f"{SYNC_MIN_MS / 1000:.0f} s) — using the first "
+                                 "freeze of the log",
            "first_still": "! no clean freeze (≥ "
                           f"{NEUTRAL_MIN_HOLD_MS / 1000:.0f} s, ≤ {NEUTRAL_QUIET_RAD_S} "
                           "rad/s) — using the first still moment",
@@ -592,44 +658,60 @@ def _pose_deviation(t_ms, seg_quats, segments, t0, t1):
     return seg_dev, pair_dev
 
 
+def _segment_tilt_deg(t_ms, q, ref_quat, t0, t1):
+    """Angle between gravity in the sensor frame over [t0, t1] and at neutral."""
+    m = window_mask(t_ms, t0, t1)
+    if m.sum() < 1 or ref_quat is None:
+        return 0.0
+    g_ref = qrotate(qconj(np.asarray(ref_quat, float)), WORLD_UP)
+    g_now = qrotate(qconj(quat_average(q[m])), WORLD_UP)
+    c = np.dot(g_ref, g_now) / (np.linalg.norm(g_ref) * np.linalg.norm(g_now))
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+
+
 def find_session_end(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS):
     """Where the session stops being body motion: the nodes are taken off.
 
-    The log ends when the nodes, laid on the charger, go IDLE — so its LAST
-    still stretch is that rest. If some node is tilted more than
-    OFF_BODY_TILT_DEG from its neutral there (gravity in the sensor frame, as
-    in `verify`), the nodes are off the body: the analysis ends at the last
-    still pause (one quiet window) within HANDLING_MAX_MS before the rest —
-    the subject stopping before reaching for the straps — or, with none,
-    HANDLING_MARGIN_MS before the rest. Never before `after_ms`.
+    A node laid on the charger rests still, in a pose no body holds, until the
+    log ends (it goes IDLE). So each node's own LAST still stretch is checked:
+    if it reaches the end of the log with the node tilted more than
+    OFF_BODY_TILT_DEG from its neutral (gravity in the sensor frame, as in
+    `verify`), that node is off the body. Nodes come off one at a time — the
+    others may still be moving when the log ends — so the FIRST node off marks
+    the take-off. The analysis ends where the handling began: the last pause
+    of the whole body (one quiet window) within HANDLING_MAX_MS before it, or
+    HANDLING_MARGIN_MS before it. Never before `after_ms`.
     Returns the `end` block: t_end_ms (None = keep to the end of the log), how
-    it was found, and the off-body rest."""
+    it was found, the off-body rest and the node."""
     if len(t_ms) < 3 or t_ms[-1] - after_ms < 2 * win_ms:
         return {"t_end_ms": None, "note": "log too short after the neutral hold"}
-    starts, mean = _window_means(t_ms, seg_quats, win_ms)
-    still = mean <= NEUTRAL_MAX_RAD_S
-    if not still[-1]:
+    off = []
+    for seg, q in seg_quats.items():
+        starts, mean = _window_means(t_ms, {seg: q}, win_ms)
+        still = mean <= NEUTRAL_MAX_RAD_S
+        if not len(still) or not still[-1]:
+            continue
+        i = len(still) - 1
+        while i > 0 and still[i - 1]:
+            i -= 1
+        if starts[i] <= after_ms:
+            continue
+        k = i + int(np.argmin(mean[i:]))
+        tilt = _segment_tilt_deg(t_ms, q, segments.get(seg, {}).get("neutral_mean_quat"),
+                                 float(starts[k]), float(starts[k]) + win_ms)
+        if tilt > OFF_BODY_TILT_DEG:
+            off.append((float(starts[i]), seg, tilt))
+    if not off:
+        starts, mean = _window_means(t_ms, seg_quats, win_ms)
         return {"t_end_ms": None,
-                "note": "the log ends in motion (nodes not seen coming off) — "
-                        "analysis runs to the end of the log"}
-    i = len(still) - 1
-    while i > 0 and still[i - 1]:
-        i -= 1
-    rest0 = float(starts[i])
-    if rest0 <= after_ms:
-        return {"t_end_ms": None, "note": "no motion after the neutral hold"}
-    k = i + int(np.argmin(mean[i:]))
-    dev = _pose_deviation(t_ms, seg_quats, segments, float(starts[k]),
-                          float(starts[k]) + win_ms)
-    tilt = dev[0] if dev else 0.0
-    rest = [round(rest0, 1), round(float(t_ms[-1]), 1)]
-    if tilt <= OFF_BODY_TILT_DEG:
-        return {"t_end_ms": None, "final_rest_ms": rest,
-                "tilt_dev_deg": round(tilt, 1),
-                "note": "the log ends at rest in a body pose (nodes still worn?) — "
-                        "analysis runs to the end of the log"}
-    # walk back over the handling to the last pause before it
-    pause = [j for j in np.flatnonzero(still[:i])
+                "note": ("the log ends at rest in a body pose (nodes still worn?)"
+                         if mean[-1] <= NEUTRAL_MAX_RAD_S else
+                         "the log ends in motion (no node seen lying off the body)")
+                        + " — analysis runs to the end of the log"}
+    rest0, seg, tilt = min(off)
+    # walk back over the handling to the last whole-body pause before it
+    starts, mean = _window_means(t_ms, seg_quats, win_ms)
+    pause = [j for j in np.flatnonzero(mean <= NEUTRAL_MAX_RAD_S)
              if rest0 - HANDLING_MAX_MS <= starts[j] + win_ms <= rest0
              and starts[j] >= after_ms]
     if pause:
@@ -638,7 +720,8 @@ def find_session_end(t_ms, seg_quats, segments, after_ms, win_ms=DEFAULT_WIN_MS)
         t_end, how = max(after_ms + win_ms, rest0 - HANDLING_MARGIN_MS), \
             "margin_before_takeoff"
     return {"t_end_ms": round(t_end, 1), "method": how,
-            "off_body_rest_ms": rest, "tilt_dev_deg": round(tilt, 1),
+            "off_body_rest_ms": [round(rest0, 1), round(float(t_ms[-1]), 1)],
+            "first_node_off": seg, "tilt_dev_deg": round(tilt, 1),
             "handling_s": round((rest0 - t_end) / 1000.0, 1)}
 
 
@@ -1097,9 +1180,9 @@ def print_calibrate_report(cal):
         else:
             how = ("at the last pause before it" if e["method"] == "pause_before_takeoff"
                    else f"{HANDLING_MARGIN_MS / 1000:.0f} s before it")
-            print(f"  session end:    {e['t_end_ms']:.0f} ms — nodes off the body from "
-                  f"{e['off_body_rest_ms'][0]:.0f} ms (tilted {e['tilt_dev_deg']:.0f}°); "
-                  f"analysis ends {how}")
+            print(f"  session end:    {e['t_end_ms']:.0f} ms — {e.get('first_node_off', 'a node')} "
+                  f"off the body from {e['off_body_rest_ms'][0]:.0f} ms (lying "
+                  f"{e['tilt_dev_deg']:.0f}° from its freeze); analysis ends {how}")
     else:
         print(f"  session end:    end of the log — {e.get('note', 'not detected')}")
     print(f"\nSEGMENT mounting offsets ({len(cal['segments'])})")
@@ -1473,7 +1556,7 @@ def selftest():
     #     HANDLING_MARGIN_MS before the rest. A log that ends at rest in the
     #     body pose (the original elbow session) keeps to its end, and a
     #     calibration from another recording cuts nothing.
-    def take_off(pause):
+    def take_off(pause, arm_keeps_moving=False):
         keep = t_e < 25000
         t_a = t_e[keep]
         t_p = np.arange(25000, 25000 + pause, 50.0)
@@ -1489,14 +1572,23 @@ def selftest():
             hand = np.stack([qmul(last, _axis_angle(axis, full * f + w))
                              for f, w in zip(frac, wig)])
             off = qmul(last, _axis_angle(axis, full))
+            rest = np.tile(off, (len(t_r), 1))
+            if arm_keeps_moving and seg == "upper_arm_r":   # still being handled
+                rest = np.stack([qmul(last, _axis_angle(axis, 40 * np.sin(x / 300.0)))
+                                 for x in t_r])
             out[seg] = qnorm(np.vstack([q[keep], np.tile(last, (len(t_p), 1)), hand,
-                                        np.tile(off, (len(t_r), 1))]))
+                                        rest]))
         return np.concatenate([t_a, t_p, t_h, t_r]), out
     t_p2, q_p2 = take_off(2000)
     end_p = find_session_end(t_p2, q_p2, segs_e, n1)
     t_p0, q_p0 = take_off(0)
     end_m = find_session_end(t_p0, q_p0, segs_e, n1)
     end_worn = find_session_end(t_e, elbow_q, segs_e, n1)
+    t_p1, q_p1 = take_off(2000, arm_keeps_moving=True)
+    end_one = find_session_end(t_p1, q_p1, segs_e, n1)
+    # the enroll placeholder over a still stretch is never used as the hold
+    _, _, pmsg = choose_neutral_window({"calibration": {"t_window_ms": [1000, 4000]}},
+                                       t_e, elbow_q)
     cal_p = {"neutral": {"t_window_ms": [n0, n1]}, "end": end_p}
     foreign = {"neutral": {"t_window_ms": [n0 + 200000, n1 + 200000]}, "end": end_p}
     end_ok = (end_p.get("method") == "pause_before_takeoff"
@@ -1505,6 +1597,9 @@ def selftest():
               and end_m.get("method") == "margin_before_takeoff"
               and end_m["t_end_ms"] < end_m["off_body_rest_ms"][0]
               and end_worn["t_end_ms"] is None
+              and end_one.get("first_node_off") == "forearm_r"
+              and 26500 <= end_one["t_end_ms"] <= 27500
+              and "enroll placeholder" in pmsg
               and analysis_end_ms(cal_p, t_p2, q_p2) == end_p["t_end_ms"]
               and analysis_end_ms(foreign, t_p2, q_p2) is None
               and analysis_end_ms({"neutral": {"t_window_ms": [n0, n1]},
@@ -1513,7 +1608,9 @@ def selftest():
     print(f"[selftest] session end: take-off after a pause -> {end_p.get('t_end_ms')} "
           f"({end_p.get('method')}, want ~27000), straight from motion -> "
           f"{end_m.get('t_end_ms')} ({end_m.get('method')}), still worn at the end -> "
-          f"{end_worn['t_end_ms']} (want None), foreign calibration cuts nothing, "
+          f"{end_worn['t_end_ms']} (want None), one node off while the other still "
+          f"moves -> {end_one.get('t_end_ms')}, enroll placeholder ignored, "
+          f"foreign calibration cuts nothing, "
           f"old closing block honoured {'OK' if end_ok else 'FAIL'}")
 
     # (10) A warm-up pause is not the neutral hold: a 2.5 s pause at 0.07 rad/s
@@ -1533,13 +1630,14 @@ def selftest():
           f"(hold 8000–14000, pause at 3000–5500) "
           f"{'OK' if pause_ok else 'FAIL'}")
 
-    # (11) Sync-first order: a 10 s still wait while nodes start (as still as a
-    #      hold), a warm-up, the sync gesture (both nodes ~2 rad/s), THEN the
+    # (11) Sync-first order: a 10 s still wait while nodes start (still enough
+    #      to pass for a hold), a warm-up, the sync gesture (both nodes ~2 rad/s), THEN the
     #      neutral hold. sync-first must skip the wait and take the hold after
     #      the gesture; hold-first takes the wait (the old order's answer).
     t_s = np.arange(0, 40000, 100.0)
     rate = np.full(len(t_s), 0.6)                         # warm-up / task
-    rate[t_s < 10000] = 0.003                             # waiting for nodes
+    rate[t_s < 10000] = 0.02                              # waiting for nodes
+    #                                       (as still as the real wait: 0.021)
     rate[(t_s >= 16000) & (t_s < 22000)] = 2.0            # sync gesture
     rate[(t_s >= 24000) & (t_s < 30000)] = 0.003          # neutral hold
     ang = np.concatenate([[0.0], np.cumsum(rate[:-1] * 0.1)])

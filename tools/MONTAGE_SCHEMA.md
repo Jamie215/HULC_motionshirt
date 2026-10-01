@@ -61,7 +61,6 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
     "neutral_pose": "N-pose",
     "captured": true,
     "protocol": "sync-first",
-    "t_window_ms": [1000, 4000],
     "functional": []
   },
   "nodes": [
@@ -81,7 +80,7 @@ A montage is JSON. `motion_capabilities.py --example` prints a fillable one.
 | `calibration.neutral_pose` | The static zeroing pose captured at session start (e.g. `N-pose`). |
 | `calibration.captured` | Whether that pose was actually recorded this session. |
 | `calibration.protocol` | *Optional.* Order of the recording: `sync-first` (default — sync gesture, then the neutral hold) or `hold-first` (recordings made before that order). Calibration looks for the hold after the gesture, or the first hold of the log; `--protocol` overrides. `enroll` writes `sync-first`. |
-| `calibration.t_window_ms` | Where in the aligned stream the neutral pose sits — the window a downstream step averages to define each segment's anatomical zero. *Optional hint:* calibration uses it only if the data there is actually still; otherwise (a placeholder like the example's `[1000, 4000]`, or a mistimed window) it auto-locates the neutral hold: the first deliberate hold (≥ 3 s still) after the sync gesture, or for `hold-first` the first of the log. `--window` overrides both. Where the session ends (the nodes coming off) is found automatically and lands in `calibration.json`'s `end` block, not here. |
+| `calibration.t_window_ms` | *Optional, normally absent.* A known neutral window `[t0, t1]` in the aligned stream's time; used only if the data there is actually still. Calibration finds the freeze itself (the first still stretch after the sync movement), and `--window` overrides both. `[1000, 4000]` — the placeholder `enroll` used to write — is ignored. Where the session ends (the nodes coming off) is found automatically and lands in `calibration.json`'s `end` block. |
 | `calibration.functional` | Optional functional-calibration movements captured (e.g. a known elbow flexion to fix a joint axis). |
 | `nodes[].node_id` | The board's advertised id (`HULC-IMU-XXXX`), for traceability. |
 | `nodes[].column` | **The bridge to reconcile output** — the per-node prefix in the aligned CSV header (`n0`, `n1`, …). |

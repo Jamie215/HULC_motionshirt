@@ -23,7 +23,7 @@ goes wrong. If you change one of the named settings, update both pages.
 
 | Step | Min / target / max | Why (the setting) |
 |---|---|---|
-| Sync movement | 4 / 10 / — s, 3–5 cycles of ~1–1.5 s | Clocks are aligned by matching the nodes' world angular-velocity vectors; one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognises it as every node above **1 rad/s for ≥ 3 s** (`SYNC_MIN_RAD_S`, `SYNC_MIN_MS`); real twists ran ~2 rad/s. Faster than ~2 cycles/s aliases at 10 Hz. 10 s lets a node that wakes late still catch most of it. |
+| Sync movement | 4 / 10 / — s, 3–5 cycles of ~1–1.5 s | Clocks are aligned by matching the nodes' world angular-velocity vectors; one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognises it as every node moving (≥ 0.4 rad/s) **and turning together** (coherence of their rotation vectors ≥ 0.8) for ≥ 3 s (`SYNC_MIN_RAD_S`, `SYNC_MIN_COHERENCE`, `SYNC_MIN_MS`). Real twists ran the torso at only 0.4–0.8 rad/s but at coherence 0.84–0.96; strapping a node on moves the nodes independently (coherence 0.2–0.7), so it never counts. Faster than ~2 cycles/s aliases at 10 Hz. 10 s lets a node that wakes late still catch most of it. |
 | Freeze | 3 / 5 / 8 s, starting within 20 s of the movement | The freeze is the **first still stretch after the sync movement lasting ≥ 3 s whose quietest 2 s averages ≤ 0.04 rad/s (~2°/s)** (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`) — pauses in motion only slow to ~0.06–0.09 rad/s, so **really freeze**. Over 10 s still, a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`): usable, but 5 s keeps 10 Hz. |
 | Rests in the task | 5–8 s | ≥ 5 s separates sets in the rep count (`REP_PAUSE_S`); ≤ 8 s keeps the nodes at 10 Hz. |
 | Still in the task | < 60 s | After 60 s without motion a node goes IDLE and stops logging until moved (`NOT_MOTION_TO_IDLE_MS`); the first moments after waking can be lost. After a long break, repeat steps 2–3. |
@@ -93,11 +93,13 @@ capture folder. The analysis of a block runs from the first freeze after the
 sync movement to where the nodes came off.
 
 **Where it ends.** No closing pose is needed. `calibrate_segments.find_session_end`
-reads the end of the log: the nodes, laid on the charger, rest still in a pose
-no body holds (some node tilted more than 60° from the freeze,
-`OFF_BODY_TILT_DEG`) and then stop logging. The analysis ends where taking them
-off began — at the last still pause within 10 s before that rest
-(`HANDLING_MAX_MS`), otherwise 5 s before it (`HANDLING_MARGIN_MS`). If the log
+reads the end of the log node by node: a node laid on the charger rests still,
+in a pose no body holds (tilted more than 60° from the freeze,
+`OFF_BODY_TILT_DEG`), until the log ends. Nodes come off one at a time, so the
+**first** node found lying off the body marks the take-off, even while the
+other is still being handled. The analysis ends where taking them off began —
+at the last whole-body pause within 10 s before that (`HANDLING_MAX_MS`),
+otherwise 5 s before it (`HANDLING_MARGIN_MS`). If the log
 ends in motion or with the nodes still worn, the analysis runs to its end and
 the block check says so; `--end <t_ms>` sets the end by hand (read the time off
 `t_common_ms` in `aligned.csv` or the review page).
@@ -173,3 +175,8 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
   still hold ending right as the movement starts.
 - **Closing hold:** no longer needed or looked for. Calibrations written while
   it was are still honoured: their `closing` window ends the analysis.
+- **`t_window_ms: [1000, 4000]` in the montage:** the placeholder `enroll` used
+  to write. It is ignored (on one capture it was still — the torso node lying
+  on the table before strapping — and calibrated the torso ~85° off, drawing
+  the trunk face-down). `enroll` no longer writes it; delete it from older
+  montages if you like.

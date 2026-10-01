@@ -54,7 +54,7 @@ Montage schema (see tools/MONTAGE_SCHEMA.md for the full write-up)
       "subject":  {"id": "S01"},
       "session":  {"id": "2026-09-04-A", "aligned_csv": "aligned.csv"},
       "calibration": {"neutral_pose": "N-pose", "captured": true,
-                      "t_window_ms": [1000, 4000], "functional": []},
+                      "protocol": "sync-first", "functional": []},
       "nodes": [
         {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "calibrated": true},
         {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "calibrated": true},
@@ -643,7 +643,7 @@ def example_montage() -> dict:
         "subject": {"id": "S01", "notes": ""},
         "session": {"id": "2026-09-04-A", "aligned_csv": "aligned.csv"},
         "calibration": {"neutral_pose": "N-pose", "captured": True,
-                        "t_window_ms": [1000, 4000], "functional": []},
+                        "protocol": "sync-first", "functional": []},
         "nodes": [
             {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "landmark": "sternum",        "calibrated": True},
             {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "landmark": "right humerus",  "calibrated": True},

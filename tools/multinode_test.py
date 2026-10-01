@@ -856,7 +856,8 @@ def build_montage(assignments, subject_id="S01", session_id="", notes=""):
         "session": {"id": session_id, "aligned_csv": "aligned.csv"},
         "calibration": {"neutral_pose": "N-pose", "captured": True,
                         "protocol": "sync-first",
-                        "t_window_ms": [1000, 4000], "functional": []},
+                        # no t_window_ms: calibration finds the freeze itself
+                        "functional": []},
         "nodes": nodes,
     }
 
