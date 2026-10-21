@@ -17,7 +17,7 @@ neutral), so every error is a solver error, not a convention mismatch.
 
 Conditions
   clean      60 Hz, ~1° RMS slow sensor error per node
-  realistic  8.3 Hz (today's firmware), ~3° RMS slow error per strap (sensor
+  realistic  8.3 Hz (the firmware of 2026-09; ~10 Hz now), ~3° RMS slow error per strap (sensor
              + soft-tissue wobble), 50 ms clock offset on the distal nodes
 Montages
   full_right  torso + upper arm + forearm + hand (facing from the torso)

@@ -49,9 +49,9 @@ The harness scans, connects to both nodes simultaneously, syncs each with an
 ms-resolution timestamp, then reads `A005` from both in a round-robin for the
 duration and reports the cross-node offset and its drift.
 
-The tool uses subcommands (`check`, `erase`, `offload`, `enroll`, `selftest`);
-the older flag form (`--count`, `--offload`, `--erase`, ...) still works as a
-deprecated alias.
+The tool uses subcommands (`check`, `erase`, `offload`, `enroll`,
+`read-segments`, `selftest`); the older flag form (`--offload`, `--erase`, …)
+was retired.
 
 Other modes:
 * `check --count 1` — single-node latency diagnostic (isolates per-link latency
@@ -115,7 +115,7 @@ Reading the output:
 * `[!] INCOMPLETE after 4 attempts …` → still missing after all retries. The
   file is saved with holes **zero-filled** (reconcile drops zero-norm records,
   so survivors keep their true timestamps rather than collapsing into a fake,
-  undetectable gap), and a warning lists the missing offsets. Re-run `--offload`
+  undetectable gap), and a warning lists the missing offsets. Re-run `offload`
   to recover the rest (the log is still on the node).
 
 If a particular central drops heavily, raise `OFFLOAD_MAX_ATTEMPTS`, or switch

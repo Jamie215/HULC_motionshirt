@@ -58,7 +58,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calibrate_segments import (  # noqa: E402
-    qmul, qconj, qnorm, anatomical_frame_quat, build_calibration,
+    qmul, qnorm, anatomical_frame_quat, build_calibration,
     choose_neutral_window, load_aligned,
 )
 from metrics import (  # noqa: E402

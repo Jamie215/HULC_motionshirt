@@ -359,7 +359,7 @@ There is a single underlying function
 — the true clock difference between node $B$ and node $A$ at every instant, and
 its local slope. Every shared-motion event (the don-time sync gesture of §3, or
 incidental everyday motion, §11.2) is a **noisy sample** of this function:
-cross-correlating the two nodes' angular-speed windows around the event yields
+cross-correlating the two nodes' motion windows (vector, or speed as fallback) around the event yields
 one measurement $\bigl(t_j,\ \widehat{\text{offset}}_j\bigr)$ via Eq. (6), with a
 confidence $r_j$ (Eq. 8). Reconciliation **reconstructs the curve** by
 fitting/interpolating through these samples.

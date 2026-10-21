@@ -7,24 +7,18 @@ venv/
 __pycache__/
 *.pyc
 
-# Captured / aligned recording data — never commit real recordings
+# Recordings and everything generated from them — never commit real data.
+# Offloaded logs and capture folders:
 capture*/
 *.bin
+regress_data/
+# Pipeline outputs (aligned stream, per-session JSON, review pages):
 aligned.csv
 redon.csv
-
-# Per-session generated JSON. Listed by name (not *.json) so intended files
-# like tools/montage.example.json stay tracked.
-montage.json
-nodes_registry.json
-calibration.json
-
-# Generated HTML viewers (analyze_session / skeleton_viewer --out). Broad because
-# the output name varies; the tracked doc pages are un-ignored just below.
-*.html
-!tools/pipeline_walkthrough.html
-metrics.json
 *.json
-# Regression library: the case files are tracked, the real recordings are not
+*.html
+
+# ...except the tracked files that share those extensions:
+!tools/montage.example.json
 !tools/regress_cases/*.json
-regress_data/
+!tools/pipeline_walkthrough.html

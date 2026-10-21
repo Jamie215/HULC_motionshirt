@@ -33,16 +33,18 @@ hex of its MAC), so boards never collide and need no per-board reflash.
 
 ## Firmware (`firmware/firmware.ino`)
 
-Phase 3e build. An adaptive-power state machine that records autonomously and
+An adaptive-power state machine that records autonomously and
 serves data over a BLE GATT service:
 
 - **State machine** — `IDLE` → `STATIC_POSTURE` → `ACTIVE_RECORDING`. It sleeps
-  between IMU interrupts when no central is connected, and only records
-  quaternions while moving. IDLE logs nothing.
+  between IMU interrupts when no central is connected, and logs quaternions at
+  ~10 Hz while moving and ~1 Hz while still (STATIC). IDLE logs nothing.
 - **Adaptive power** — DC/DC regulator, cheap IDLE-only advertising, and
   interrupt-driven sleep. Baseline ≈12 mA IDLE / ≈22 mA active recording; see
   [`firmware/POWER_OPTIMIZATION.md`](firmware/POWER_OPTIMIZATION.md).
 - **QSPI flash log** — simple sequential append-only store of 20-byte records.
+- **Segment in the header** — each node stores which body part it is on (set
+  at enroll, command `0x07`), so every offloaded log says what it measured.
 - **BLE offload** — a central connects while the node is `IDLE`, time-syncs it,
   and streams the flash log off in 200-byte chunks, with byte-range re-send for
   gap recovery.
@@ -57,7 +59,7 @@ serves data over a BLE GATT service:
 |-------|--------------------|---------|------------------------------------|
 | A001  | Quaternion stream  | NOTIFY  | 20 B, debug only                   |
 | A002  | Control            | WRITE   | 9 B, command byte + payload        |
-| A003  | Status             | READ    | 4 B, state / flags / log size      |
+| A003  | Status             | READ    | 6 B, state / flags / log size / segment |
 | A004  | Log offload        | NOTIFY  | 200 B chunks                       |
 | A005  | Time Info          | READ    | 16 B, for cross-node clock skew    |
 
@@ -222,31 +224,41 @@ the safer a threshold change.
   OpenSense (two models) on synthetic ground truth and a real capture, with a
   draft methods paragraph; [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)
   — what OpenSense can and cannot recover for each montage.
-- `montage.example.json` — a filled-in montage to copy.
+- [`METRICS.md`](tools/METRICS.md) — every metric, its definition and the
+  plausibility limits.
+- [`montage.example.json`](tools/montage.example.json) — a filled-in montage to copy.
 
 ---
 
 ## Repository layout
 
 ```
+.github/workflows/selftest.yml   CI: every selftest + the regression library
 firmware/
-  firmware.ino               Phase 3e node firmware (state machine + BLE + QSPI)
-  *.md                       design/testing/power docs
+  firmware.ino               node firmware (state machine + BLE + QSPI log)
+  *.md                       design / testing / power docs
   state_machine_test/        BNO086 IDLE-reset investigation harness + findings
 tools/
-  multinode_test.py          BLE central: enroll / offload / sync-check (needs bleak)
+  multinode_test.py          BLE central: enroll / offload / erase / sync check (needs bleak)
   reconcile_nodes.py         stage 3 — motion-based time alignment
   motion_capabilities.py     stage 4 — montage schema + capability resolver
-  calibrate_segments.py      stage 5 — sensor→segment mounting solve
+  calibrate_segments.py      stage 5 — freeze, facing, session end, mounting solve
   metrics.py                 stage 6 — joint angles, ROM, and metric tiers
-  skeleton_viewer.py            stage 7 — skeleton HTML viewer
-  analyze_session.py         stages 3–7 orchestrated in one command
-  *.md, *.html, *.json       pipeline docs + example montage
+  skeleton_viewer.py         stage 7 — review page (skeleton, Timeline, metrics)
+  analyze_session.py         stages 3–7 in one command, plus the block check
+  opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
+  regress.py                 regression library runner; cases in regress_cases/
+  timing_bench.py            evaluation: what clock sync and sampling cost
+  compare_paths.py           evaluation: default chain vs OpenSense (needs opensim)
+  opensense_feasibility.py   evaluation: OpenSense on partial montages (needs opensim)
+  montage.example.json       a filled-in montage to copy
+  *.md, *.html               pipeline docs
 ```
 
 ## Data & privacy
 
-Real recordings and per-session generated files (captures, `aligned.csv`,
-`montage.json`, `calibration.json`, generated viewers) are **git-ignored** by
-design — see `.gitignore`. Only source, docs, and the example montage are
+Real recordings and per-session generated files (capture folders, `.bin`
+logs, `aligned.csv`, every per-session `.json`, generated review pages) are
+**git-ignored** by design — see `.gitignore`. Only source, docs, the example
+montage and the regression case files (expectations, no recordings) are
 tracked; never commit real recording data.

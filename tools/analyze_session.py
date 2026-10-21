@@ -108,7 +108,7 @@ def resolve_montage(montage_arg, capture_dir, outdir):
         raise SystemExit(
             f"[analyze] no montage: {capture_dir} has no {CAPTURE_MONTAGE} and "
             f"cannot describe itself — " + "; ".join(problems) + ".\n"
-            f"    Pass --montage (a montage.json listing each node's segment).")
+            "    Pass --montage (a montage.json listing each node's segment).")
     os.makedirs(outdir, exist_ok=True)
     path = os.path.join(outdir, CAPTURE_MONTAGE)
     with open(path, "w", encoding="utf-8", newline="\n") as f:

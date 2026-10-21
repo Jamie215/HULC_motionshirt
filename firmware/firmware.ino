@@ -28,7 +28,7 @@
 //   Service  : IMU Motion Service         (UUID A0010000-...)
 //   Char A001: Quaternion stream          NOTIFY  20 bytes   (debug only)
 //   Char A002: Control                    WRITE    9 bytes
-//   Char A003: Status                     READ     4 bytes
+//   Char A003: Status                     READ     6 bytes
 //   Char A004: Log offload                NOTIFY  200 bytes
 //   Char A005: Time Info                  READ    16 bytes
 //
@@ -36,6 +36,8 @@
 //   Byte 0  : Device state (0=IDLE, 1=STATIC_POSTURE, 2=ACTIVE_RECORDING)
 //   Byte 1  : Flags (bit 0 = streaming, bit 1 = time synced)
 //   Byte 2-3: Log size in KB (little-endian uint16)
+//   Byte 4  : Segment config tag (0x01 = byte 5 is a valid assignment)
+//   Byte 5  : Segment code (0=torso … 6=hand_r; 0xFF = unassigned)
 //
 // Time Info characteristic (A005) layout (little-endian) — for skew measurement:
 //   Byte 0-3   : node millis() at the moment of the read (live)
@@ -57,6 +59,8 @@
 //   0x04  begin log offload over A004 (IDLE only — rejected in other states)
 //   0x06  re-send a byte range over A004 for gap recovery (IDLE only) —
 //         payload: [0x06, offset_b0..b3, length_b0..b3]  (uint32 LE each)
+//   0x07  set this node's segment assignment — payload: [0x07, code 0..6]
+//         (stored in the log header; survives power cycles and erases)
 //
 // Offload protocol:
 //   Phone connects → reads A003 → if state == IDLE, sends a time sync (0x05,
@@ -115,7 +119,8 @@
 //   STATIC_POSTURE   — RV @ ~1Hz (slow) + Classifier @ 500ms, every RV report logged (~1Hz)
 //   ACTIVE_RECORDING — RV @ ~10Hz + Classifier @ 500ms, writes gated to activeHz
 //
-// Phase 3 complete. Next: Phase 4 (mobile app), Phase 5 (data pipeline).
+// The offline analysis pipeline (alignment, calibration, joint angles, review
+// page) is in tools/; see the README.
 // =============================================================================
 
 

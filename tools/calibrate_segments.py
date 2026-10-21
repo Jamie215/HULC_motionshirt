@@ -625,39 +625,6 @@ def analysis_start_ms(calibration, t_ms=None, seg_quats=None):
     return t0
 
 
-def _pose_deviation(t_ms, seg_quats, segments, t0, t1):
-    """How far the pose in [t0, t1] is from the calibration's neutral pose.
-
-    Heading-independent, like `verify`: per segment, the angle between where
-    gravity points in the SENSOR frame now vs at neutral; per adjacent pair, the
-    angle of their relative rotation now vs at neutral. Returns
-    (max_segment_deg, max_pair_deg), or None if the window holds < 2 samples."""
-    m = window_mask(t_ms, t0, t1)
-    if m.sum() < 2:
-        return None
-    now = {seg: quat_average(q[m]) for seg, q in seg_quats.items()}
-    seg_dev = 0.0
-    for seg, qn in now.items():
-        ref = segments.get(seg, {}).get("neutral_mean_quat")
-        if ref is None:
-            continue
-        g_ref = qrotate(qconj(np.asarray(ref, float)), WORLD_UP)
-        g_now = qrotate(qconj(qn), WORLD_UP)
-        c = np.clip(np.dot(g_ref, g_now) / (np.linalg.norm(g_ref) * np.linalg.norm(g_now)),
-                    -1.0, 1.0)
-        seg_dev = max(seg_dev, float(np.degrees(np.arccos(c))))
-    pair_dev = 0.0
-    for prox, dist in _adjacent_pairs(now).values():
-        ra, rb = segments.get(prox), segments.get(dist)
-        if not ra or not rb:
-            continue
-        rel_ref = qmul(qconj(np.asarray(ra["neutral_mean_quat"], float)),
-                       np.asarray(rb["neutral_mean_quat"], float))
-        rel_now = qmul(qconj(now[prox]), now[dist])
-        pair_dev = max(pair_dev, float(np.degrees(angle_between_quats(rel_ref, rel_now))))
-    return seg_dev, pair_dev
-
-
 def _segment_tilt_deg(t_ms, q, ref_quat, t0, t1):
     """Angle between gravity in the sensor frame over [t0, t1] and at neutral."""
     m = window_mask(t_ms, t0, t1)

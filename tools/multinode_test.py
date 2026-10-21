@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-HULC Motion Shirt — multi-node BLE sync test harness.
+HULC Motion Shirt — the laptop BLE central for the nodes.
 
-Acts as the *central* for testing the synced connection across multiple IMU
-nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
+Enrolls boards to body segments, offloads each node's flash log into a
+block's capture folder (with its montage), erases nodes, and checks the synced
+connection. `check`:
 
   1. Scans for nodes advertising as "HULC-IMU-XXXX" (unique per board).
   2. Connects to N nodes simultaneously.
@@ -11,13 +12,14 @@ nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
   4. Reads each node's Time Info characteristic (A005) repeatedly and computes
      the cross-node clock offset and its drift over time.
 
-This is a laptop-side test tool — no phone app required. BLE actions need
+This is laptop-side — no phone app required. BLE actions need
 `bleak` (pip install bleak); the offline `enroll` bookkeeping and `selftest` do
 not.
 
-Subcommands (preferred)
------------------------
-    python tools/multinode_test.py enroll  --segments upper_arm_r,forearm_r [--erase] [--reuse]
+Subcommands
+-----------
+    python tools/multinode_test.py enroll  --segments upper_arm_r,forearm_r [--reuse] [--no-erase]
+    python tools/multinode_test.py read-segments                       # montage from the nodes' own headers
     python tools/multinode_test.py check   --count 2 --duration 60     # sync + offset/drift
     python tools/multinode_test.py erase   --count 2                   # wipe flash (destructive)
     python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 [--subject S01] [--erase-after]
@@ -30,11 +32,8 @@ Enroll also stores each node's segment ON the node, so `offload` writes a
 montage.json into every capture folder from the nodes themselves: a block's
 folder is all `analyze_session` needs.
 
-The legacy flag form still works as a deprecated alias:
-    --count/--duration (check) · --erase · --offload/--out-dir/--erase-after-offload
-
-What to look for
-----------------
+What to look for (`check`)
+------------------------
 * CONNECT: both nodes should connect and stay connected.
 * OFFSET (initial): right after sync, pairwise offset should be a few ms
   (bounded by BLE write latency + the firmware's millis() capture).
@@ -62,8 +61,8 @@ from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import (  # noqa: E402
-    CAPTURE_MONTAGE, SEGMENTS, SEGMENT_CODES, SEGMENT_CONFIG_TAG,
-    SEGMENT_UNASSIGNED, build_montage, montage_from_capture,
+    CAPTURE_MONTAGE, SEGMENTS, SEGMENT_CODES, build_montage,
+    montage_from_capture,
     segment_from_header, validate_montage,
 )
 
@@ -610,7 +609,7 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
                   f"{miss} bytes / {miss // RECORD_SIZE} records still missing "
                   f"at offsets {[(o, n) for o, n in holes]}.")
             print(f"           Saved {size} bytes with holes zero-filled "
-                  f"(reconcile drops them) -> {save_path}. Re-run --offload to "
+                  f"(reconcile drops them) -> {save_path}. Re-run offload to "
                   f"recover the rest (the node has NOT erased its log).")
     elif not received:
         print(f"[{node.name}] no data received. Is there a log to offload "
@@ -1163,9 +1162,8 @@ def enroll_selftest():
 
 
 # ---------------------------------------------------------------------------
-# CLI: unified subcommands, with the legacy flag form kept as a back-compat alias
+# CLI
 # ---------------------------------------------------------------------------
-_SUBCOMMANDS = {"check", "erase", "offload", "enroll", "selftest"}
 
 
 def _main_sub(argv) -> None:
@@ -1259,59 +1257,13 @@ def _main_sub(argv) -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
-    if argv and argv[0] in _SUBCOMMANDS:
-        _main_sub(argv)
-        return
-    # ---- legacy flag form (deprecated but still supported) ----
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--count", type=int, default=2,
-                    help="number of nodes to connect (default 2)")
-    ap.add_argument("--duration", type=float, default=60.0,
-                    help="offset-sampling duration in seconds (default 60)")
-    ap.add_argument("--interval", type=float, default=0.5,
-                    help="delay between sampling rounds in seconds (default 0.5)")
-    ap.add_argument("--scan-timeout", type=float, default=8.0,
-                    help="BLE scan timeout in seconds (default 8)")
-    ap.add_argument("--offload", action="store_true",
-                    help="offload one node's flash log (measure throughput) "
-                         "instead of the sync-offset test")
-    ap.add_argument("--save", metavar="PATH",
-                    help="with --offload and a SINGLE node: write the log to this "
-                         "exact .bin path (overrides the auto name)")
-    ap.add_argument("--out-dir", metavar="DIR", default=".",
-                    help="with --offload: directory for the auto-named per-node "
-                         ".bin files (default: current dir)")
-    ap.add_argument("--name", metavar="SUFFIX",
-                    help="only connect to the node whose name contains SUFFIX "
-                         "(e.g. --name D067). Use with --offload/--erase to pick "
-                         "exactly which node.")
-    ap.add_argument("--erase", action="store_true",
-                    help="WIPE each connected node's flash log (control 0x03), "
-                         "then exit. Use before a clean capture. Destructive.")
-    ap.add_argument("--erase-after-offload", action="store_true",
-                    help="with --offload: after each node's offload is verified "
-                         "COMPLETE, wipe its flash so the next capture starts "
-                         "clean (avoids reboot-seam / stale-record buildup). "
-                         "An incomplete offload is never erased.")
-    args = ap.parse_args()
-    if args.save and not args.offload:
-        ap.error("--save requires --offload")
-    if args.erase and args.offload:
-        ap.error("--erase and --offload are separate steps; run them separately")
-    if args.erase_after_offload and not args.offload:
-        ap.error("--erase-after-offload requires --offload")
-    hint = ("erase" if args.erase else "offload" if args.offload else "check")
-    print(f"[note] the flag form is deprecated; prefer: "
-          f"multinode_test.py {hint} ...\n", file=sys.stderr)
-
-    try:
-        asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir, args.erase, args.erase_after_offload,
-                        erase_yes=args.erase))   # legacy --erase = unconditional
-    except KeyboardInterrupt:
-        print("\n[ABORT] Interrupted.")
+    if argv and argv[0].startswith("--") and argv[0] not in ("-h", "--help"):
+        # the old flag form (--offload, --erase, --count ...) was retired
+        raise SystemExit("[multinode] use a subcommand: check | erase | offload "
+                         "| enroll | read-segments | selftest  (e.g. "
+                         "multinode_test.py offload --count 2 --out-dir "
+                         "./capture/block1)")
+    _main_sub(argv)
 
 
 if __name__ == "__main__":

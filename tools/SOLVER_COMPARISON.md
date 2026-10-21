@@ -53,8 +53,9 @@ all angles go through the same `metrics.py` ISB definitions.
 
 **Conditions:**
 - **clean:** 60 Hz, ~1° RMS slow sensor error
-- **realistic:** 8.3 Hz (today's firmware), ~3° RMS slow error per strap
-  (sensor + soft tissue), 50 ms clock offset on distal nodes
+- **realistic:** 8.3 Hz (the firmware when this was run; it logs ~10 Hz now),
+  ~3° RMS slow error per strap (sensor + soft tissue), 50 ms clock offset on
+  distal nodes
 
 RMS error, degrees. Each solver column sits next to its own run's
 default-chain column; the random draws differ slightly between runs.
@@ -69,7 +70,7 @@ default-chain column; the random draws differ slightly between runs.
 | elbow pro/sup | 1.5 | 1.0 | 1.5 | 1.5 | 2.1 | 3.1 | 2.0 | 2.0 |
 | wrist flex / dev | 0.6 / 0.5 | 1.0 / 0.4 | — | — | 2.1 / 5.1 | 2.3 / 5.3 | — | — |
 
-**Torso + upper arm (the planned 2-node montage):**
+**Torso + upper arm (the 2-node shoulder montage):**
 
 | DOF | clean: default | clean: Rajagopal | clean: TSM | realistic: default | realistic: Rajagopal | realistic: TSM |
 |---|---|---|---|---|---|---|
