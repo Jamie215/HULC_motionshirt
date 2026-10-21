@@ -30,28 +30,28 @@ repeat steps 2–3 first.
 
 ## At the charger
 
-`hulc` below is the HULC command: `hulc` in a Command Prompt in the HULC or
-repository folder on Windows, `python3 hulc.py` from the repository on macOS /
+`hulc-ms` below is the HULC-MS command: `hulc-ms` in a Command Prompt in the hulc-ms or
+repository folder on Windows, `python3 hulc-ms.py` from the repository on macOS /
 Linux (the README's table has every case).
 
 1. **Offload** into a new folder for this block:
-   `hulc nodes offload --count 2 --out-dir ./capture/block1 --subject S01`
+   `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01`
    The folder now holds everything about the block: each node's log, which
    body part it was on, and a `montage.json` built from that. Keep the folder
    together; there is no separate montage file to save.
 2. **Analyse** it, in either of the two ways:
-   - **The HULC app:** double-click **HULC**, type the subject and drop
+   - **The HULC-MS app:** double-click **hulc-ms**, type the subject and drop
      `./capture/block1` on the page.
-   - **The command:** `hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1`
+   - **The command:** `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1`
 3. **Read the `BLOCK CHECK`** (top of the app page, or the end of the output):
    - **OK** — keep going (read any NOTE lines).
    - **REDO** — do what the line under it says when you record the block again.
-4. **Erase** the nodes: `hulc nodes erase --count 2`
+4. **Erase** the nodes: `hulc-ms nodes erase --count 2`
 5. **Re-mount** and start the next block at step 1.
 6. *Optional, but it is how the analysis gets better:* if the block was new in
    some way (new person, montage, room) or the analysis got it wrong, keep it as
    a test case: **Keep as test case…** in the app, or
-   `hulc regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"`.
+   `hulc-ms regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"`.
 
 Review the movement on the review page (in the app, or
 `out/block1/session.html`); **Neutral pose** should show the arms hanging,

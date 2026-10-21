@@ -4,15 +4,15 @@ HULC Motion Shirt — one command for everything (and the standalone app's entry
 
 Two ways to analyse a session, with the same commands either way:
 
-  * the app:      `python hulc.py` (or double-click HULC.bat / HULC.command,
-                  or the standalone HULC app) — drop a block's folder on the page
-  * commands:     `python hulc.py <command> …` from the repository, or
-                  `HULC <command> …` / `HULC.exe <command> …` with the
+  * the app:      `python hulc-ms.py` (or double-click hulc-ms.bat / hulc-ms.command,
+                  or the standalone HULC-MS app) — drop a block's folder on the page
+  * commands:     `python hulc-ms.py <command> …` from the repository, or
+                  `hulc-ms <command> …` / `hulc-ms.exe <command> …` with the
                   standalone app (Python built in)
 
 Commands
 --------
-  app                        the HULC app (the default with no command)
+  app                        the HULC-MS app (the default with no command)
   nodes enroll|offload|erase|check|read-segments …
                              talk to the nodes over BLE
   analyze --capture-dir DIR --outdir OUT [options]
@@ -21,7 +21,7 @@ Commands
   opensense fetch-models     download the OpenSim models (Python install only)
   selftest                   every tool's selftest (checks an install or a build)
 
-`hulc <command> --help` lists a command's options. The individual pipeline
+`hulc-ms <command> --help` lists a command's options. The individual pipeline
 stages (tools/reconcile_nodes.py, calibrate_segments.py, …) stay runnable on
 their own for development; see docs/COLLECTION_REFERENCE.md §5.
 """
@@ -92,7 +92,7 @@ def main():
         import subprocess
         bad = [m for m, a in SELFTESTS
                if subprocess.run([*tool_process(m), a]).returncode != 0]
-        print(f"\n[hulc] selftests: {len(SELFTESTS) - len(bad)}/{len(SELFTESTS)} "
+        print(f"\n[hulc-ms] selftests: {len(SELFTESTS) - len(bad)}/{len(SELFTESTS)} "
               f"passed" + (f" — failed: {', '.join(bad)}" if bad else ""))
         sys.exit(1 if bad else 0)
     if args and args[0] in COMMANDS:
@@ -100,12 +100,12 @@ def main():
         # `analyze --capture-dir …` reads better than `analyze run --capture-dir …`
         if cmd == "analyze" and rest[:1] not in (["run"], ["selftest"]):
             rest = ["run"] + rest
-        sys.exit(run_module(COMMANDS[cmd], rest, prog=f"hulc {cmd}"))
+        sys.exit(run_module(COMMANDS[cmd], rest, prog=f"hulc-ms {cmd}"))
     if args and not args[0].startswith("-"):
-        print(f"hulc: unknown command {args[0]!r}. Commands: "
-              f"{', '.join(COMMANDS)}, selftest  (`hulc --help`; no command = the app)")
+        print(f"hulc-ms: unknown command {args[0]!r}. Commands: "
+              f"{', '.join(COMMANDS)}, selftest  (`hulc-ms --help`; no command = the app)")
         sys.exit(2)
-    sys.exit(run_module("app", args, prog="hulc app"))
+    sys.exit(run_module("app", args, prog="hulc-ms app"))
 
 
 if __name__ == "__main__":

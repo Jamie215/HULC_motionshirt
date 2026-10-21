@@ -12,7 +12,7 @@ The repository has two halves:
 - **`firmware/`** — the node firmware (Arduino / nRF52840) that records motion
   and offloads it over BLE.
 - **The analysis** — offloading the nodes and turning their logs into a block
-  check and a review page, done **either in the HULC app or with `hulc`
+  check and a review page, done **either in the HULC-MS app or with `hulc-ms`
   commands** (see [Analysing sessions](#analysing-sessions)). The code is in
   `tools/`, the documentation in `docs/`.
 
@@ -26,25 +26,25 @@ capture folder, and analysing that folder gives a **block check** (OK / REDO
 and what to change) and a **review page** (3-D movement, joint angles, range of
 motion). There are two ways to do it; both run the same analysis.
 
-| | **1. The HULC app** | **2. `hulc` commands** |
+| | **1. The HULC-MS app** | **2. `hulc-ms` commands** |
 |---|---|---|
 | For | analysing and reviewing blocks without a terminal | offloading the nodes, scripting, batches |
-| How | drop a block's folder on a page in the browser | `hulc analyze --capture-dir …` in a terminal |
+| How | drop a block's folder on a page in the browser | `hulc-ms analyze --capture-dir …` in a terminal |
 | Get it | the standalone app (no Python), or the repository + Python | the same two installs |
 
-### Getting HULC
+### Getting hulc-ms
 
 **Standalone app — no Python needed.** One program holding Python and every
 tool, built for each system by CI. Signed in to GitHub: **Actions → app → the
 latest run → Artifacts** (or the release page, once a version is tagged).
 
-- **Windows:** download **HULC-windows**, unzip it into a normal folder (do not
+- **Windows:** download **hulc-ms-windows**, unzip it into a normal folder (do not
   run it from inside the zip). First launch: "Windows protected your PC" →
   **More info → Run anyway** (the app is not code-signed).
-- **macOS:** download **HULC-macos**, unzip it, then unzip `HULC-macos.zip`
+- **macOS:** download **hulc-ms-macos**, unzip it, then unzip `hulc-ms-macos.zip`
   inside it (the inner zip keeps the app's executable permission); open
-  `HULC.app` with right-click → **Open** the first time.
-- **Linux:** download **HULC-linux**, unzip it, `tar xzf HULC-linux.tar.gz`.
+  `hulc-ms.app` with right-click → **Open** the first time.
+- **Linux:** download **hulc-ms-linux**, unzip it, `tar xzf hulc-ms-linux.tar.gz`.
 
 Body-model solves (OpenSim) are not in the standalone app.
 
@@ -56,12 +56,12 @@ pip install -r requirements.txt              # numpy + bleak (the node commands)
 pip install -r requirements-opensense.txt    # optional: + OpenSim body-model solves
 ```
 
-(`HULC.bat` / `HULC.command` offer to do this the first time they run.)
+(`hulc-ms.bat` / `hulc-ms.command` offer to do this the first time they run.)
 
-### 1. The HULC app
+### 1. The HULC-MS app
 
-Start it: double-click **HULC** (`HULC.exe` / `HULC.app` from the standalone
-download, or `HULC.bat` / `HULC.command` in the repository folder). A browser
+Start it: double-click **hulc-ms** (`hulc-ms.exe` / `hulc-ms.app` from the standalone
+download, or `hulc-ms.bat` / `hulc-ms.command` in the repository folder). A browser
 tab opens at `http://127.0.0.1:8765/`.
 
 1. Type the subject id, then **drop a block's capture folder** on the page (or
@@ -77,31 +77,31 @@ The app runs only on this computer (127.0.0.1) and keeps copies of the dropped
 files and every analysis in `~/HULC_sessions` (`--workspace` to change); the
 original files are never modified, and **Remove** deletes a session's copies.
 
-### 2. `hulc` commands
+### 2. `hulc-ms` commands
 
-The same program, with a command after it. What to type for `hulc`:
+The same program, with a command after it. What to type for `hulc-ms`:
 
-| You have | Type `hulc` as |
+| You have | Type `hulc-ms` as |
 |---|---|
-| Standalone app, Windows | `hulc` in a Command Prompt opened in the HULC folder (it runs `HULC.exe`) |
-| Standalone app, macOS / Linux | `HULC.app/Contents/MacOS/HULC` / `HULC/HULC` |
-| Repository, Windows | `hulc` in a Command Prompt in the repository folder (it runs `HULC.bat`) |
-| Repository, macOS / Linux | `python3 hulc.py` (or `./HULC.command`) |
+| Standalone app, Windows | `hulc-ms` in a Command Prompt opened in the hulc-ms folder (it runs `hulc-ms.exe`) |
+| Standalone app, macOS / Linux | `hulc-ms.app/Contents/MacOS/hulc-ms` / `hulc-ms/hulc-ms` |
+| Repository, Windows | `hulc-ms` in a Command Prompt in the repository folder (it runs `hulc-ms.bat`) |
+| Repository, macOS / Linux | `python3 hulc-ms.py` (or `./hulc-ms.command`) |
 
-(In PowerShell, type `.\hulc`.)
+(In PowerShell, type `.\hulc-ms`.)
 
 | Command | What it does |
 |---|---|
-| `hulc` (no command) | the HULC app |
-| `hulc nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
-| `hulc nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | at the charger: each node's log + the block's `montage.json` into the folder |
-| `hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
-| `hulc nodes erase --count 2` | wipe the nodes for the next block |
-| `hulc regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
-| `hulc opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
-| `hulc selftest` | every tool's selftest: checks an install or a build |
+| `hulc-ms` (no command) | the HULC-MS app |
+| `hulc-ms nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
+| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | at the charger: each node's log + the block's `montage.json` into the folder |
+| `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
+| `hulc-ms nodes erase --count 2` | wipe the nodes for the next block |
+| `hulc-ms regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
+| `hulc-ms opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
+| `hulc-ms selftest` | every tool's selftest: checks an install or a build |
 
-`hulc <command> --help` lists the options. The ones you may need for
+`hulc-ms <command> --help` lists the options. The ones you may need for
 `analyze`: `--window t0,t1` / `--end t_ms` (set the freeze / end by hand — the
 review page's Timeline writes these for you), `--protocol hold-first`
 (recordings made before 2026-10), `--montage FILE` (override the folder's
@@ -129,13 +129,13 @@ capture folder carries its montage.
                           timeline        computable          mounting solve
 ```
 
-`hulc analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
+`hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
 runs it for each dropped block. The stages are separate modules in `tools/`,
 each runnable on its own for development (docs/COLLECTION_REFERENCE.md §5):
 
 | Stage | Module | What it does |
 |-------|------|--------------|
-| 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` (`hulc nodes`) | Nodes log autonomously; the laptop offloads each node's `.bin` |
+| 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` (`hulc-ms nodes`) | Nodes log autonomously; the laptop offloads each node's `.bin` |
 | 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating world-frame angular-velocity vectors; angular speed as fallback) → `aligned.csv`, plus `aligned.quality.json` (sync confidence, data gaps, clock restarts) |
 | 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
 | 5 Calibrate | `calibrate_segments.py` | Finds the freeze after the sync movement and solves each node's **sensor→segment mounting offset**, estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and finds where the nodes came off → `calibration.json` |
@@ -147,20 +147,20 @@ each runnable on its own for development (docs/COLLECTION_REFERENCE.md §5):
 
 ### Changing the analysis safely — the regression library
 
-Synthetic selftests (`hulc selftest`; CI runs them on every push) check the
+Synthetic selftests (`hulc-ms selftest`; CI runs them on every push) check the
 math; they cannot tell whether a change still handles **real** recordings.
-`hulc regress` runs the whole pipeline on a library of real captures and checks
+`hulc-ms regress` runs the whole pipeline on a library of real captures and checks
 each against what a person confirmed once: where the freeze is, where the
 session ends, the block-check verdict, the facing, and plausible ranges.
 
 ```bash
 # before AND after any change to the analysis — every case must still pass:
-hulc regress run --data /path/to/regress_data
+hulc-ms regress run --data /path/to/regress_data
 
 # grow the library (or "Keep as test case…" in the app): expectations are
 # pre-filled from today's analysis; CHECK them against what really happened,
 # edit, and commit tools/regress_cases/<name>.json
-hulc regress add 2026-10-07_torso_upper-arm --capture-dir ./capture/block1 --description "..."
+hulc-ms regress add 2026-10-07_torso_upper-arm --capture-dir ./capture/block1 --description "..."
 ```
 
 The case files are in git (`tools/regress_cases/`); the recordings are
@@ -272,8 +272,8 @@ nRF52840 board and flash `firmware/firmware.ino`.
 ## Repository layout
 
 ```
-HULC.bat / HULC.command      start the HULC app from the repository; `hulc …` commands
-hulc.py                      the hulc command (and the standalone app's entry point)
+hulc-ms.bat / hulc-ms.command      start the HULC-MS app from the repository; `hulc …` commands
+hulc-ms.py                      the hulc command (and the standalone app's entry point)
 requirements*.txt            pinned dependencies: analysis + nodes, OpenSim, build
 docs/                        recording card, reference, metrics, design docs
 firmware/
@@ -281,16 +281,16 @@ firmware/
   *.md                       design / testing / power docs
   state_machine_test/        BNO086 IDLE-reset investigation harness + findings
 tools/                       the analysis code
-  app.py                     the HULC app (local web page)
-  analyze_session.py         hulc analyze: stages 3-7 + the block check
-  multinode_test.py          hulc nodes: enroll / offload / erase / check (BLE)
+  app.py                     the HULC-MS app (local web page)
+  analyze_session.py         hulc-ms analyze: stages 3-7 + the block check
+  multinode_test.py          hulc-ms nodes: enroll / offload / erase / check (BLE)
   reconcile_nodes.py         stage 3 - motion-based time alignment
   motion_capabilities.py     stage 4 - montage schema + capability resolver
   calibrate_segments.py      stage 5 - freeze, facing, session end, mounting solve
   metrics.py                 stage 6 - joint angles, ROM, metric tiers
   skeleton_viewer.py         stage 7 - the review page
   opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
-  regress.py                 hulc regress; cases in regress_cases/
+  regress.py                 hulc-ms regress; cases in regress_cases/
   hulc_paths.py              where the tools write (repository vs standalone app)
   montage.example.json       a filled-in montage to copy
   evaluation/                synthetic-truth studies behind the design (timing_bench,
@@ -305,5 +305,5 @@ Real recordings and per-session generated files (capture folders, `.bin`
 logs, `aligned.csv`, every per-session `.json`, generated review pages) are
 **git-ignored** by design — see `.gitignore`. Only source, docs, the example
 montage and the regression case files (expectations, no recordings) are
-tracked; never commit real recording data. The HULC app keeps its copies
+tracked; never commit real recording data. The HULC-MS app keeps its copies
 outside the repository (`~/HULC_sessions` by default).

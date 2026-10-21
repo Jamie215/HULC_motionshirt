@@ -16,14 +16,14 @@ This is laptop-side — no phone app required. BLE actions need
 `bleak` (pip install bleak); the offline `enroll` bookkeeping and `selftest` do
 not.
 
-Subcommands (`hulc nodes …` runs this; `python tools/multinode_test.py …` too)
+Subcommands (`hulc-ms nodes …` runs this; `python tools/multinode_test.py …` too)
 -----------
-    hulc nodes enroll  --segments upper_arm_r,forearm_r [--reuse] [--no-erase]
-    hulc nodes read-segments                       # montage from the nodes' own headers
-    hulc nodes check   --count 2 --duration 60     # sync + offset/drift
-    hulc nodes erase   --count 2                   # wipe flash (destructive)
-    hulc nodes offload --count 2 --out-dir ./capture/block1 [--subject S01] [--erase-after]
-    hulc nodes selftest                            # offline logic, no hardware
+    hulc-ms nodes enroll  --segments upper_arm_r,forearm_r [--reuse] [--no-erase]
+    hulc-ms nodes read-segments                       # montage from the nodes' own headers
+    hulc-ms nodes check   --count 2 --duration 60     # sync + offset/drift
+    hulc-ms nodes erase   --count 2                   # wipe flash (destructive)
+    hulc-ms nodes offload --count 2 --out-dir ./capture/block1 [--subject S01] [--erase-after]
+    hulc-ms nodes selftest                            # offline logic, no hardware
 
 `enroll` maps each board to a body segment by powering ONE node at a time (its
 permanent HULC-IMU-XXXX id is unambiguous when it's the only one advertising)
@@ -1261,7 +1261,7 @@ def main() -> None:
         # the old flag form (--offload, --erase, --count ...) was retired
         raise SystemExit("[nodes] use a subcommand: check | erase | offload "
                          "| enroll | read-segments | selftest  (e.g. "
-                         "hulc nodes offload --count 2 --out-dir "
+                         "hulc-ms nodes offload --count 2 --out-dir "
                          "./capture/block1)")
     _main_sub(argv)
 

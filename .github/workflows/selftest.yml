@@ -20,8 +20,8 @@ jobs:
           python-version: "3.12"
       - name: Install the pinned requirements
         run: pip install -r requirements.txt
-      - name: Selftests (every tool, through the hulc command)
-        run: python hulc.py selftest
+      - name: Selftests (every tool, through the hulc-ms command)
+        run: python hulc-ms.py selftest
       - name: Regression library (skips cases without recordings)
-        run: python hulc.py regress run
+        run: python hulc-ms.py regress run
 

@@ -7,8 +7,8 @@ setting each number comes from, the charging checkpoint in detail, what the
 block check means, and what to do when something goes wrong. If you change one
 of the named settings, update both pages.
 
-Commands are `hulc` commands (the README's "Analysing sessions" says what to
-type for `hulc` on each system: the standalone app or the repository), with the
+Commands are `hulc-ms` commands (the README's "Analysing sessions" says what to
+type for `hulc-ms` on each system: the standalone app or the repository), with the
 nodes flashed from `firmware/firmware.ino`. The examples use two nodes
 (`--count 2`); for other montages only the segment names change. Commands
 written `python tools/…` are development tools for the repository install.
@@ -87,13 +87,13 @@ written `python tools/…` are development tools for the repository install.
 - **Laptop (once per machine).** Either the standalone app (no Python: see
   the README), or Python 3.11–3.13 and, from the repository folder,
   `pip install -r requirements.txt` (the pinned numpy, and bleak for the BLE
-  commands; HULC.bat / HULC.command offer to do this themselves).
+  commands; hulc-ms.bat / hulc-ms.command offer to do this themselves).
   The central should be a well-behaved BLE host — **iOS, Android or Linux
   (BlueZ)**: a Windows desktop `bleak` central forces a slow connection
   interval and makes offload crawl (a bench artifact, not a firmware limit).
   Body-model solves are optional (Python install only):
   `pip install -r requirements-opensense.txt` and
-  `hulc opensense fetch-models` once.
+  `hulc-ms opensense fetch-models` once.
 - **Straps.** Soft-tissue wobble is the largest error left at 10 Hz: about 3°
   RMS doubles every angle error in simulation. Snug, and the same way round
   every time.
@@ -158,7 +158,7 @@ connection per board it smart-erases and **stores the segment on the node**
 (log header, command `0x07`), where it survives power cycles and erases.
 
 ```bash
-hulc nodes enroll --segments upper_arm_r,forearm_r
+hulc-ms nodes enroll --segments upper_arm_r,forearm_r
 ```
 
 1. When asked for `upper_arm_r`, power on **only** that board and press Enter.
@@ -169,7 +169,7 @@ hulc nodes enroll --segments upper_arm_r,forearm_r
    `nodes_registry.json` (id → segment and label).
 
 Next time with the same labelled boards, `enroll … --reuse` only scans. To see
-what the nodes store, `hulc nodes read-segments` reads
+what the nodes store, `hulc-ms nodes read-segments` reads
 each node's segment and writes a montage from it. Each **offload** writes the
 block's own `montage.json` from what the nodes store (labels from the
 registry), and that is what the analysis uses. Swapping nodes between
@@ -184,7 +184,7 @@ The analysis aligns the clocks from the motion, so the BLE time sync is not
 needed per session. For a new rig or a flaky link, with the nodes still:
 
 ```bash
-hulc nodes check --count 2 --duration 30
+hulc-ms nodes check --count 2 --duration 30
 ```
 
 Every node should read `synced=True` with a small, stable cross-node offset;
@@ -224,7 +224,7 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
    powered from their batteries):
 
    ```bash
-   hulc nodes offload --count 2 --out-dir ./capture/blockN --subject S01
+   hulc-ms nodes offload --count 2 --out-dir ./capture/blockN --subject S01
    ```
 
    - Each node reports `COMPLETE — saved N bytes`. Missing records? Re-run the
@@ -236,11 +236,11 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
      `montage.json` already there for the same nodes is kept; one for other
      nodes is never overwritten.
 3. **Analyze** and read the block check (§6): drop the folder on the
-   HULC app (double-click **HULC**; it runs the command below and shows the
+   HULC-MS app (double-click **hulc-ms**; it runs the command below and shows the
    block check and review page, with **Apply** on the Timeline), or:
 
    ```bash
-   hulc analyze --capture-dir ./capture/blockN --outdir ./out/blockN
+   hulc-ms analyze --capture-dir ./capture/blockN --outdir ./out/blockN
    ```
 
    - The montage comes from the folder: its `montage.json`, else one built from
@@ -261,7 +261,7 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
    - A faster look without the analysis:
      `python tools/reconcile_nodes.py --inspect ./capture/blockN/*.bin` —
      records, ~10 Hz while moving, and no `clock restarted` warning.
-4. **Erase**: `hulc nodes erase --count 2`. An empty node
+4. **Erase**: `hulc-ms nodes erase --count 2`. An empty node
    is skipped; one holding data asks `[y/N]` (`--yes` for scripts); do not
    power off mid-wipe. Erasing only after the check keeps the block on the
    node until then, a safety net if a transfer looked complete but was not.
@@ -277,7 +277,7 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
   first freeze.
 - If a node must come off mid-block without an offload (avoid this), analyze
   the part after it separately with that part's own freeze:
-  `hulc analyze … --window t0,t1`.
+  `hulc-ms analyze … --window t0,t1`.
 - If a battery dies mid-block, the node restarts its clock when recharged. The
   loader detects it, keeps the larger part and warns; the rest is not analyzed.
 - Never swap nodes between segments without re-enrolling them: each node
@@ -285,7 +285,7 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
   store. (A one-off swap can be fixed afterwards with `--montage`.)
 
 **Running the stages by hand** (development, repository install).
-`hulc analyze` runs these in order; by hand, pass the logs to reconcile in
+`hulc-ms analyze` runs these in order; by hand, pass the logs to reconcile in
 montage column order (`n0` first), with
 `montage.json` the block's own (copy it from `./capture/blockN/`):
 
@@ -311,7 +311,7 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 
 ## 6. The block check, line by line
 
-`hulc analyze` (and the app) ends with `BLOCK CHECK: OK` or `REDO` and one line per
+`hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `REDO` and one line per
 check (also saved as `block_check.json`). **REDO** means re-record the block;
 **NOTE** means usable, read the note.
 

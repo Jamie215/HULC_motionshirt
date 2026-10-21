@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HULC Motion Shirt — the HULC app: drop a block's files, get its review page.
+HULC Motion Shirt — the HULC-MS app: drop a block's files, get its review page.
 
 A small local web app around `analyze_session.py`. Launch it, a browser tab
 opens; drag in a block's capture folder (or its loose `.bin` / `.seg.json`
@@ -20,11 +20,11 @@ the sessions live in a workspace folder (default ~/HULC_sessions, or
 Needs only Python 3 + numpy (OpenSim model solves run too when installed, as
 on the command line).
 
-Usage (`hulc` = the HULC command; see the README)
+Usage (`hulc-ms` = the HULC-MS command; see the README)
 -----
-    hulc                                   # opens http://127.0.0.1:8765/
-    hulc app --port 9000 --no-browser --workspace D:/hulc
-    hulc app selftest                      # drives the app end to end, no browser
+    hulc-ms                                # opens http://127.0.0.1:8765/
+    hulc-ms app --port 9000 --no-browser --workspace D:/hulc
+    hulc-ms app selftest                      # drives the app end to end, no browser
 """
 import argparse
 import datetime
@@ -455,7 +455,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def running_app(port):
-    """The URL of a HULC app already serving on this port, else None — a
+    """The URL of a HULC-MS app already serving on this port, else None — a
     second double-click opens that one instead of starting another."""
     import urllib.request
     url = f"http://127.0.0.1:{port}/"
@@ -492,7 +492,7 @@ def make_server(workspace, port, quiet=False):
 APP_PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>HULC</title>
+<title>HULC-MS</title>
 <style>
 :root{--bg:#f6f7f9;--panel:#fff;--ink:#1d232b;--muted:#5f6b78;--line:#dde2e8;
   --accent:#2563c9;--ok:#1a7f54;--redo:#b42318;--note:#a76500;--soft:#eef2f7}
@@ -556,7 +556,7 @@ dialog pre{max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap}
 </style></head><body>
 <aside>
   <header><div style="display:flex;justify-content:space-between;align-items:center">
-    <h1>HULC</h1><button id="quit" title="Stop the app">Quit</button></div>
+    <h1>HULC-MS</h1><button id="quit" title="Stop the app">Quit</button></div>
     <div class="sub">Drop a block's capture folder to analyze it. Nothing leaves this computer.</div></header>
   <div id="drop" tabindex="0"><b>Drop a capture folder here</b><br>
     or the block's <code>.bin</code> + <code>.seg.json</code> files<br>
@@ -743,7 +743,7 @@ $('quit').addEventListener('click',async()=>{
      !confirm('An analysis is still running. Quit anyway?')) return;
   try{ await api('POST','/api/quit',{}); }catch(e){}
   document.body.innerHTML='<div style="padding:40px;grid-column:1/-1">'+
-    '<h1>HULC has stopped.</h1><p class="sub">You can close this tab. '+
+    '<h1>HULC-MS has stopped.</h1><p class="sub">You can close this tab. '+
     'Your sessions are kept; start the app again to see them.</p></div>';
 });
 refresh();
@@ -908,7 +908,7 @@ def main():
         return
     srv, store = make_server(args.workspace, args.port)
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
-    print(f"[app] HULC at {url}  (workspace {store.root})", flush=True)
+    print(f"[app] HULC-MS at {url}  (workspace {store.root})", flush=True)
     print("[app] leave this window open while you use the app; Quit on the page "
           "or Ctrl+C stops it.", flush=True)
     if not args.no_browser:

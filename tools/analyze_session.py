@@ -28,30 +28,30 @@ the RIGHT order.
 Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
 its own folder — see COLLECTION_SOP.md, the one-page recording card).
 
-Usage (`hulc analyze …` runs this; `python tools/analyze_session.py run …` too)
+Usage (`hulc-ms analyze …` runs this; `python tools/analyze_session.py run …` too)
 -----
     # validate the orchestration on synthetic logs (no hardware):
-    hulc analyze selftest
+    hulc-ms analyze selftest
 
     # the whole chain for one block (the montage comes from the folder):
-    hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1
+    hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1
 
     # override the montage (a node stored the wrong segment, or old logs):
-    hulc analyze --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1
+    hulc-ms analyze --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1
 
     # no torso node and too little elbow flexion to infer the facing? state it:
-    hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1 --facing-deg 90
+    hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1 --facing-deg 90
 
     # also solve on published models; the page gets a Sensors / model switch:
-    hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1 \
+    hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1 \
         --opensense-model ThoracoscapularShoulderModel.osim \
         --opensense-model Rajagopal2015_opensense.osim
 
     # a recording made in the old order (neutral hold BEFORE the sync gesture):
-    hulc analyze --capture-dir ./capture/old --protocol hold-first
+    hulc-ms analyze --capture-dir ./capture/old --protocol hold-first
 
     # set the freeze window / session end by hand, or name the page:
-    hulc analyze --capture-dir ./capture/block1 --window 1200,4000 --end 95000 --out elbow.html
+    hulc-ms analyze --capture-dir ./capture/block1 --window 1200,4000 --end 95000 --out elbow.html
 """
 import argparse
 import json
@@ -359,13 +359,13 @@ def rerun_command(montage_path, capture_dir, out_html, outdir, fs, facing_deg,
     """The command that re-runs this analysis, WITHOUT --window / --end — the
     review page's Timeline strip appends those when the user drags a marker."""
     q = lambda v: f'"{v}"' if any(c in str(v) for c in ' "\'') else str(v)
-    # the same `hulc analyze` command the docs use: the standalone app itself,
+    # the same `hulc-ms analyze` command the docs use: the standalone app itself,
     # or the interpreter that ran this analysis (it has numpy, and opensim if
-    # used) with the repository's hulc.py
+    # used) with the repository's hulc-ms.py
     if FROZEN:
         parts = [q(sys.executable), "analyze"]
     else:
-        entry = os.path.join(os.path.dirname(TOOLS), "hulc.py")
+        entry = os.path.join(os.path.dirname(TOOLS), "hulc-ms.py")
         rel = os.path.relpath(entry)
         parts = [q(sys.executable or "python"),
                  q(entry if rel.startswith("..") else rel), "analyze"]

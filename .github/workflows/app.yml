@@ -3,7 +3,7 @@ name: app
 # The standalone app (Python included): built on each OS, checked by running
 # every tool's selftest inside the build, and uploaded as a downloadable
 # artifact (Actions → this run → Artifacts; Windows unzips straight to the
-# HULC folder). A version tag (v*) also attaches the builds to a GitHub
+# hulc-ms folder). A version tag (v*) also attaches the builds to a GitHub
 # release, as one archive per OS.
 
 on:
@@ -11,7 +11,7 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: ["hulc.py", "tools/**", "packaging/**", "requirements*.txt", ".github/workflows/app.yml"]
+    paths: ["hulc-ms.py", "tools/**", "packaging/**", "requirements*.txt", ".github/workflows/app.yml"]
 
 jobs:
   build:
@@ -21,13 +21,13 @@ jobs:
         include:
           - os: windows-latest
             name: windows
-            exe: dist/HULC/HULC.exe
+            exe: dist/hulc-ms/hulc-ms.exe
           - os: macos-latest
             name: macos
-            exe: dist/HULC.app/Contents/MacOS/HULC
+            exe: dist/hulc-ms.app/Contents/MacOS/hulc-ms
           - os: ubuntu-latest
             name: linux
-            exe: dist/HULC/HULC
+            exe: dist/hulc-ms/hulc-ms
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -51,26 +51,26 @@ jobs:
         run: |
           mkdir -p out
           case "${{ matrix.name }}" in
-            windows) (cd dist && 7z a -tzip ../out/HULC-windows.zip HULC > /dev/null) ;;
-            macos)   ditto -c -k --keepParent dist/HULC.app out/HULC-macos.zip ;;
-            linux)   tar czf out/HULC-linux.tar.gz -C dist HULC ;;
+            windows) (cd dist && 7z a -tzip ../out/hulc-ms-windows.zip hulc-ms > /dev/null) ;;
+            macos)   ditto -c -k --keepParent dist/hulc-ms.app out/hulc-ms-macos.zip ;;
+            linux)   tar czf out/hulc-ms-linux.tar.gz -C dist hulc-ms ;;
           esac
           ls -l out
-      # Windows: the HULC folder itself, so the download is one unzip.
+      # Windows: the hulc-ms folder itself, so the download is one unzip.
       # macOS / Linux: the archive, because a GitHub download zip drops the
       # executable permission the .app and the Linux binary need.
       - name: Upload (Windows, the folder)
         if: matrix.name == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: HULC-windows
+          name: hulc-ms-windows
           path: dist/
           retention-days: 30
       - name: Upload (macOS / Linux, the archive)
         if: matrix.name != 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: HULC-${{ matrix.name }}
+          name: hulc-ms-${{ matrix.name }}
           path: out/*
           retention-days: 30
       # a version tag: every archive goes to the release job

@@ -7,9 +7,9 @@ three: .github/workflows/app.yml). Needs numpy and pyinstaller (and bleak, so
 the built app can offload from the nodes):
 
     pip install numpy pyinstaller bleak
-    python packaging/build_app.py           # -> dist/HULC/ (Windows, Linux)
-                                            #    dist/HULC.app (macOS)
-    dist/HULC/HULC selftest                 # check the build
+    python packaging/build_app.py           # -> dist/hulc-ms/ (Windows, Linux)
+                                            #    dist/hulc-ms.app (macOS)
+    dist/hulc-ms/hulc-ms selftest                 # check the build
 
 OpenSim is not bundled (hundreds of MB); body-model solves stay a feature of
 the Python install.
@@ -20,7 +20,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, "tools")
-NAME = "HULC"
+NAME = "hulc-ms"
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
         raise SystemExit("needs PyInstaller:  pip install pyinstaller")
     sep = os.pathsep
     args = [
-        os.path.join(ROOT, "hulc.py"),
+        os.path.join(ROOT, "hulc-ms.py"),
         "--name", NAME,
         "--onedir",                       # fast start: the tools run as child processes
         "--noconfirm", "--clean",
@@ -53,7 +53,7 @@ def main():
     if sys.platform == "darwin":
         # a double-clickable .app; it has no console, so its output goes to
         # ~/HULC/app.log and the page's Quit button stops it
-        args += ["--windowed", "--osx-bundle-identifier", "org.hulc.sessions"]
+        args += ["--windowed", "--osx-bundle-identifier", "org.hulc.ms"]
     else:
         args += ["--console"]             # the window shows the app is running
     pyi.run(args)
