@@ -82,11 +82,13 @@ montages only the segment names change.
 
   Shoulder angles need the torso node; without it the pipeline blocks them,
   since trunk sway would read as shoulder motion.
-- **Laptop (once per machine).** `pip install numpy bleak` (`bleak` only for
-  the BLE commands). The central should be a well-behaved BLE host — **iOS,
-  Android or Linux (BlueZ)**: a Windows desktop `bleak` central forces a slow
-  connection interval and makes offload crawl (a bench artifact, not a
-  firmware limit). Body-model solves are optional: `pip install opensim` and
+- **Laptop (once per machine).** From the repository folder,
+  `pip install -e ".[ble]"` (numpy, bleak for the BLE commands, and the
+  `hulc-*` commands; the session app's launcher installs the basics itself).
+  The central should be a well-behaved BLE host — **iOS, Android or Linux
+  (BlueZ)**: a Windows desktop `bleak` central forces a slow connection
+  interval and makes offload crawl (a bench artifact, not a firmware limit).
+  Body-model solves are optional: `pip install -e ".[all]"` and
   `python tools/opensense_ik.py fetch-models` once.
 - **Straps.** Soft-tissue wobble is the largest error left at 10 Hz: about 3°
   RMS doubles every angle error in simulation. Snug, and the same way round

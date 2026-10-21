@@ -22,3 +22,8 @@ redon.csv
 !tools/montage.example.json
 !tools/regress_cases/*.json
 !tools/pipeline_walkthrough.html
+
+# Python packaging (pip install . / python -m build)
+build/
+dist/
+*.egg-info/

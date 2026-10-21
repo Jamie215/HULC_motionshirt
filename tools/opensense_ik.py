@@ -132,13 +132,16 @@ from metrics import (  # noqa: E402
     compute_metrics, print_report, resolve_anatomical_frame, trim_to_analysis,
 )
 from reconcile_nodes import quality_path  # noqa: E402
+from hulc_paths import writable_dir  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = [1.0, 0.0, 0.0, 0.0]
 # Where `fetch-models` puts the models, and where analyze_session.py looks for
-# them by default (git-ignored). Only the .osim is needed for IK: without the
-# mesh geometry OpenSim warns but solves the same.
-DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(TOOLS), "models", "opensense")
+# them by default: models/opensense/ in a checkout (git-ignored), or
+# ~/HULC/models/opensense for an installed copy. Only the .osim is needed for
+# IK: without the mesh geometry OpenSim warns but solves the same.
+DEFAULT_MODELS_DIR = writable_dir("models", "opensense",
+                                  installed=os.path.join("models", "opensense"))
 MODEL_URLS = {
     "ThoracoscapularShoulderModel.osim":
         "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"

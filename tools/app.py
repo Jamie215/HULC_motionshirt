@@ -438,7 +438,7 @@ class Handler(BaseHTTPRequestHandler):
         meta = self.store.load(sid)
         if meta.get("protocol"):
             cmd += ["--protocol", meta["protocol"]]
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(TOOLS),
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=self.store.root,
                            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         return self.send(200 if r.returncode == 0 else 400,
                          {"ok": r.returncode == 0,
@@ -566,8 +566,8 @@ dialog pre{max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap}
 </main>
 <dialog id="keepdlg"><form method="dialog">
   <h3 style="margin-top:0">Keep as a regression test case</h3>
-  <p class="sub">Copies the logs to the regression data folder and writes
-    <code>tools/regress_cases/&lt;name&gt;.json</code> with expectations from this analysis.
+  <p class="sub">Copies the logs to the regression data folder and writes a case file
+    (<code>&lt;name&gt;.json</code>; the output below says where) with expectations from this analysis.
     Check them against what really happened, then commit the case file.</p>
   <div class="row" style="padding:0"><label for="kname">Name</label><input id="kname"></div>
   <p class="sub" style="margin:8px 0 4px">What the subject did, and when (seconds on the review page):</p>

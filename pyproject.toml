@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hulc-motion"
+dynamic = ["version"]
+description = "HULC Motion Shirt: offline analysis of IMU node logs (alignment, calibration, joint angles, review page) and the session app"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+# the BLE commands of hulc-nodes (enroll, offload, erase, check)
+ble = ["bleak>=0.21"]
+# body-model solves (OpenSense); official wheels for Python 3.11-3.13
+opensense = ["opensim>=4.5"]
+all = ["bleak>=0.21", "opensim>=4.5"]
+
+[project.scripts]
+hulc-app = "hulc_tools.app:main"
+hulc-analyze = "hulc_tools.analyze_session:main"
+hulc-nodes = "hulc_tools.multinode_test:main"
+hulc-regress = "hulc_tools.regress:main"
+hulc-opensense = "hulc_tools.opensense_ik:main"
+
+[tool.setuptools]
+# the tools/ folder is the hulc_tools package
+package-dir = { "hulc_tools" = "tools" }
+packages = ["hulc_tools"]
+
+[tool.setuptools.package-data]
+hulc_tools = ["regress_cases/*.json", "montage.example.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "hulc_tools.__version__" }

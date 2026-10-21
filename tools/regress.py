@@ -65,12 +65,34 @@ import sys
 import tempfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-CASES = os.path.join(TOOLS, "regress_cases")
-DEFAULT_DATA = os.path.join(os.path.dirname(TOOLS), "regress_data")
+sys.path.insert(0, TOOLS)
+from hulc_paths import writable_dir  # noqa: E402
+
+CASES = os.path.join(TOOLS, "regress_cases")       # the cases that ship with the code
+DEFAULT_DATA = writable_dir("regress_data", installed="regress_data")
 
 
 def data_root(arg=None):
     return arg or os.environ.get("HULC_REGRESS_DATA") or DEFAULT_DATA
+
+
+def cases_dir():
+    """Where `add` writes a new case: tools/regress_cases in a checkout (to
+    commit), ~/HULC/regress_cases for an installed copy, or $HULC_REGRESS_CASES."""
+    return (os.environ.get("HULC_REGRESS_CASES")
+            or writable_dir("tools", "regress_cases", installed="regress_cases"))
+
+
+def case_paths():
+    """Every case: the shipped ones plus any added outside the code folder."""
+    seen, out = set(), []
+    for d in (CASES, cases_dir()):
+        for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+            name = os.path.basename(p)
+            if name not in seen:
+                seen.add(name)
+                out.append(p)
+    return out
 
 
 def load_case(path):
@@ -154,12 +176,12 @@ def evaluate(expect, res):
 
 
 def cmd_run(args):
-    paths = sorted(glob.glob(os.path.join(CASES, "*.json")))
+    paths = case_paths()
     if args.case:
         paths = [p for p in paths if os.path.splitext(os.path.basename(p))[0]
                  in args.case]
     if not paths:
-        print(f"[regress] no cases in {CASES}")
+        print(f"[regress] no cases in {CASES} or {cases_dir()}")
         return 0
     root = data_root(args.data)
     n_pass = n_fail = n_skip = 0
@@ -199,7 +221,7 @@ def cmd_run(args):
 
 def cmd_add(args):
     name = args.name
-    path = os.path.join(CASES, f"{name}.json")
+    path = os.path.join(cases_dir(), f"{name}.json")
     if os.path.exists(path) and not args.force:
         raise SystemExit(f"[regress] {path} exists (--force to overwrite)")
     if args.montage:
@@ -246,7 +268,7 @@ def cmd_add(args):
                 expect["metrics"][f"{j['key']}.{prim}.max_deg"] = [round(v - 10),
                                                                    round(v + 10)]
     case["expect"] = expect
-    os.makedirs(CASES, exist_ok=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(case, f, indent=2)
         f.write("\n")

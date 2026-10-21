@@ -94,11 +94,31 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 ## Analysis pipeline (`tools/`)
 
-The pipeline is pure Python on top of **NumPy** (`pip install numpy`), which
-every offline tool and `selftest` needs. Two optional extras: `bleak`, only for
-the live BLE actions in `multinode_test.py` (`pip install bleak`), and OpenSim,
-only for the optional OpenSense path and its comparison harness
-(`pip install opensim`, see `tools/opensense_ik.py`).
+The pipeline is pure Python on top of **NumPy**. It installs as a Python
+package, `hulc-motion` (Python 3.10+), which pulls in what it needs:
+
+```bash
+pip install -e .              # from the repository folder: numpy + the hulc-* commands
+pip install -e ".[ble]"       # + bleak, for the node commands (enroll, offload, erase)
+pip install -e ".[all]"       # + bleak and OpenSim (body-model solves, Python 3.11-3.13)
+```
+
+`-e` (editable) keeps the code in the repository, so a `git pull` updates the
+installed commands, and new regression cases and downloaded models land in the
+repository folders the docs name. `pip install .` (or a built wheel,
+`pip wheel . --no-deps`) makes a standalone copy instead; it keeps its data
+under `~/HULC` (`$HULC_HOME`). The installed commands:
+
+| Command | Same as |
+|---|---|
+| `hulc-app` | `python tools/app.py` — the session app |
+| `hulc-analyze run …` | `python tools/analyze_session.py run …` |
+| `hulc-nodes enroll / offload / erase / check …` | `python tools/multinode_test.py …` |
+| `hulc-regress run / add …` | `python tools/regress.py …` |
+| `hulc-opensense fetch-models` | `python tools/opensense_ik.py fetch-models` |
+
+The scripts in `tools/` still run directly once numpy is installed; the docs
+use that form.
 
 Each node records the ORIENTATION of the SEGMENT it is strapped to. A clinical
 **joint angle** is the *relative* orientation of two adjacent segments, so what
@@ -132,10 +152,10 @@ and the folder is all the analysis needs (`--montage` only overrides).
 ### Quick start
 
 ```bash
-# 0. one-time: install the BLE dependency (only for live node actions)
-pip install bleak
+# 0. one-time: install the package with the BLE extra (from the repo folder)
+pip install -e ".[ble]"
 #    optional, for body-model solves (the review page's Sensors / model switch):
-pip install opensim
+pip install -e ".[all]"
 python tools/opensense_ik.py fetch-models     # -> models/opensense/
 
 # 1. enroll boards (power ONE node on at a time): stores each board's segment
@@ -192,7 +212,9 @@ or run `python tools/app.py`. A tab opens at `http://127.0.0.1:8765/`:
 - **Keep as test case…** adds the block to the regression library
   (`regress.py add`); check the expectations and commit the case file.
 
-It needs only Python 3 + numpy, listens on this computer only (127.0.0.1),
+The launchers offer to install the package (`pip install -e .`) the first
+time, if numpy is missing; after a `pip install`, `hulc-app` starts it too. It
+needs only Python 3 + numpy, listens on this computer only (127.0.0.1),
 and keeps copies of the dropped files and every analysis in a workspace folder
 (`~/HULC_sessions`; `--workspace` or `$HULC_WORKSPACE` to change it). The
 original files are never modified; **Remove** deletes a session's copies.
@@ -255,6 +277,7 @@ the safer a threshold change.
 ## Repository layout
 
 ```
+pyproject.toml                   the pip package (hulc-motion): dependencies, hulc-* commands
 HULC Sessions.bat / .command     double-click launchers for tools/app.py
 .github/workflows/selftest.yml   CI: every selftest + the regression library
 firmware/
@@ -270,6 +293,7 @@ tools/
   skeleton_viewer.py         stage 7 — review page (skeleton, Timeline, metrics)
   analyze_session.py         stages 3–7 in one command, plus the block check
   app.py                     the session app: drop a block, get its review page
+  hulc_paths.py              where the tools write (repo checkout vs installed copy)
   opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
   regress.py                 regression library runner; cases in regress_cases/
   timing_bench.py            evaluation: what clock sync and sampling cost
