@@ -65,6 +65,9 @@ Other modes:
 
 ## Flash offload — framing & drop recovery
 
+(The protocol a central follows — commands, framing, recovery — is written out
+for a mobile app in `docs/BLE_PROTOCOL.md`.)
+
 The offload streams the flash log over the `A004` characteristic as BLE
 **notifications**, which are **unacknowledged**: if the central's stack drops
 one (common on Windows/WinRT under a fast burst), that packet is gone and

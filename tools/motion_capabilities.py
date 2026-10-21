@@ -450,37 +450,68 @@ def build_montage(assignments, subject_id="S01", session_id="", notes=""):
     }
 
 
+def capture_logs(capture_dir: str):
+    """The node logs in a capture folder, keyed by node id.
+
+    The capture-folder contract (docs/DATA_FORMAT.md): each node's log is a
+    `.bin` with a `.seg.json` header next to it (same name, other extension)
+    naming the node and its segment. The node id comes from the header, so the
+    file names themselves are free (offload writes `<node_id>.bin`; a mobile
+    app's export may name them differently). A `.bin` without a header is kept
+    under its file name, with `header` None.
+
+    Returns ({node_id: {"bin", "header_path", "header"}}, problems).
+    """
+    logs, problems = {}, []
+    for b in sorted(glob.glob(os.path.join(capture_dir, "*.bin"))):
+        side = os.path.splitext(b)[0] + ".seg.json"
+        head = None
+        if os.path.exists(side):
+            try:
+                with open(side, encoding="utf-8-sig") as f:
+                    head = json.load(f)
+                if not isinstance(head, dict):
+                    raise ValueError("not a JSON object")
+            except (OSError, ValueError) as e:
+                problems.append(f"{os.path.basename(side)} cannot be read ({e})")
+                head = None
+        nid = (head or {}).get("node_id") or os.path.splitext(os.path.basename(b))[0]
+        if nid in logs:
+            problems.append(f"two logs for node {nid}: "
+                            f"{os.path.basename(logs[nid]['bin'])} and {os.path.basename(b)}")
+            continue
+        logs[nid] = {"bin": b, "header_path": side if head is not None else None,
+                     "header": head}
+    return logs, problems
+
+
 def montage_from_capture(capture_dir: str, subject_id: str = "S01",
                          session_id: str = "", labels: Optional[dict] = None):
     """Build a montage from a capture folder's own files.
 
-    Every offloaded log `<node_id>.bin` has a `<node_id>.seg.json` sidecar with
-    the segment the node stores in its header (SETUP_AND_CALIBRATION_PLAN.md
-    §2.1), so the folder already says which node was on which body part.
-    Columns follow the canonical segment code (deterministic, as
-    `multinode_test.py read-segments`). `labels`: optional {node_id: landmark}
-    (e.g. from nodes_registry.json); otherwise a default label per segment.
+    Every node log in the folder has a `.seg.json` header with the segment the
+    node stores (SETUP_AND_CALIBRATION_PLAN.md §2.1; docs/DATA_FORMAT.md), so
+    the folder already says which node was on which body part. Columns follow
+    the canonical segment code (deterministic, as `read-segments`). `labels`:
+    optional {node_id: landmark} (e.g. from nodes_registry.json); otherwise a
+    default label per segment.
 
     Returns (montage | None, problems): None with the reasons when the folder
-    cannot describe itself (a log without a sidecar — older firmware or a node
+    cannot describe itself (a log without a header — older firmware or a node
     never enrolled — or two nodes claiming one segment).
     """
     labels = labels or {}
-    problems, found = [], {}
-    bins = sorted(glob.glob(os.path.join(capture_dir, "*.bin")))
-    if not bins:
+    logs, problems = capture_logs(capture_dir)
+    if not logs and not problems:
         return None, [f"no .bin logs in {capture_dir}"]
-    for b in bins:
-        side = os.path.splitext(b)[0] + ".seg.json"
-        try:
-            with open(side, encoding="utf-8-sig") as f:
-                head = json.load(f)
-        except (OSError, ValueError):
-            problems.append(f"{os.path.basename(b)} has no segment header "
-                            f"({os.path.basename(side)} missing or unreadable)")
+    found = {}
+    for nid, lg in logs.items():
+        if lg["header"] is None:
+            problems.append(f"{os.path.basename(lg['bin'])} has no segment header "
+                            f"({os.path.splitext(os.path.basename(lg['bin']))[0]}"
+                            f".seg.json missing or unreadable)")
             continue
-        nid = head.get("node_id") or os.path.splitext(os.path.basename(b))[0]
-        seg = head.get("segment")
+        seg = lg["header"].get("segment")
         if seg not in SEGMENTS:
             problems.append(f"{nid}: unknown segment {seg!r} in its header")
         elif seg in found:
@@ -873,6 +904,14 @@ def selftest() -> None:
     open(os.path.join(cap, "HULC-IMU-DUP2.bin"), "wb").close()
     m3, probs3 = montage_from_capture(cap)
     assert m3 is None and any("both report 'torso'" in p for p in probs3), probs3
+    # file names are free: the node id comes from the header (a mobile export)
+    cap2 = tempfile.mkdtemp(prefix="hulc_cap2_")
+    open(os.path.join(cap2, "export_1.bin"), "wb").close()
+    with open(os.path.join(cap2, "export_1.seg.json"), "w") as f:
+        json.dump({"node_id": "HULC-IMU-485C", "segment": "torso"}, f)
+    logs, lp = capture_logs(cap2)
+    assert not lp and list(logs) == ["HULC-IMU-485C"] and \
+        logs["HULC-IMU-485C"]["bin"].endswith("export_1.bin"), (logs, lp)
     print("[selftest] montage from a capture folder's segment headers: torso "
           "first, labels kept or defaulted; a log without a header or two "
           "nodes on one segment refuse — OK")

@@ -16,6 +16,14 @@ The repository has two halves:
   commands** (see [Analysing sessions](#analysing-sessions)). The code is in
   `tools/`, the documentation in `docs/`.
 
+**Where it is heading:** the nodes will hand their logs to a **mobile app**
+that stores every block during a collection period; afterwards the whole
+export moves to a computer for analysis. The analysis side is built and reads
+one documented hand-over format, the capture folder, so the mobile app can
+replace today's laptop offload without changing it. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the open items in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ---
 
 ## Analysing sessions
@@ -96,6 +104,7 @@ The same program, with a command after it. What to type for `hulc-ms`:
 | `hulc-ms nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
 | `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | at the charger: each node's log + the block's `montage.json` into the folder |
 | `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
+| `hulc-ms validate --capture-dir ./capture/block1` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
 | `hulc-ms nodes erase --count 2` | wipe the nodes for the next block |
 | `hulc-ms regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
 | `hulc-ms opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
@@ -249,6 +258,15 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 ## Documentation (`docs/`)
 
+- [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — today's system, the target
+  (mobile app), the layers and modules, and where they meet;
+  [`ROADMAP.md`](docs/ROADMAP.md) — what is done and the TODOs.
+- [`DATA_FORMAT.md`](docs/DATA_FORMAT.md) — the capture folder (the hand-over
+  between acquisition and analysis) and what the analysis writes;
+  [`BLE_PROTOCOL.md`](docs/BLE_PROTOCOL.md) — talking to a node, for the
+  mobile app.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to change the analysis safely and
+  ship a new build.
 - [`COLLECTION_SOP.md`](docs/COLLECTION_SOP.md) — the one-page recording card
   and the charger routine.
 - [`COLLECTION_REFERENCE.md`](docs/COLLECTION_REFERENCE.md) — setup and
@@ -272,10 +290,12 @@ nRF52840 board and flash `firmware/firmware.ino`.
 ## Repository layout
 
 ```
-hulc-ms.bat / hulc-ms.command      start the HULC-MS app from the repository; `hulc …` commands
-hulc-ms.py                      the hulc command (and the standalone app's entry point)
+hulc-ms.bat / .command       start the HULC-MS app from the repository; `hulc-ms …` commands
+hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)
+CONTRIBUTING.md              changing the analysis, checking it, shipping a build
 requirements*.txt            pinned dependencies: analysis + nodes, OpenSim, build
-docs/                        recording card, reference, metrics, design docs
+docs/                        recording card, reference, data format, BLE protocol,
+                             architecture, roadmap, metrics, design docs
 firmware/
   firmware.ino               node firmware (state machine + BLE + QSPI log)
   *.md                       design / testing / power docs
@@ -291,6 +311,7 @@ tools/                       the analysis code
   skeleton_viewer.py         stage 7 - the review page
   opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
   regress.py                 hulc-ms regress; cases in regress_cases/
+  validate_capture.py        hulc-ms validate: check a capture folder
   hulc_paths.py              where the tools write (repository vs standalone app)
   montage.example.json       a filled-in montage to copy
   evaluation/                synthetic-truth studies behind the design (timing_bench,

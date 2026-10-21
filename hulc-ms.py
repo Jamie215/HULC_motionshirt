@@ -17,6 +17,9 @@ Commands
                              talk to the nodes over BLE
   analyze --capture-dir DIR --outdir OUT [options]
                              analyse one block: block check + review page
+  validate --capture-dir DIR [--recursive]
+                             check a capture folder (or a whole export) against
+                             the data format, before analysing it
   regress run|add …          the regression library of real recordings
   opensense fetch-models     download the OpenSim models (Python install only)
   selftest                   every tool's selftest (checks an install or a build)
@@ -35,15 +38,17 @@ sys.path.insert(0, os.path.join(HERE, "tools"))
 # The standalone build (PyInstaller) only bundles modules it sees imported.
 import analyze_session, app, calibrate_segments, metrics  # noqa: E401,E402,F401
 import motion_capabilities, multinode_test, opensense_ik  # noqa: E401,E402,F401
-import reconcile_nodes, regress, skeleton_viewer  # noqa: E401,E402,F401
+import reconcile_nodes, regress, skeleton_viewer, validate_capture  # noqa: E401,E402,F401
 
 COMMANDS = {"app": "app", "nodes": "multinode_test", "analyze": "analyze_session",
-            "regress": "regress", "opensense": "opensense_ik"}
+            "validate": "validate_capture", "regress": "regress",
+            "opensense": "opensense_ik"}
 SELFTESTS = [("reconcile_nodes", "--selftest"), ("motion_capabilities", "--selftest"),
              ("calibrate_segments", "selftest"), ("metrics", "selftest"),
              ("skeleton_viewer", "selftest"), ("analyze_session", "selftest"),
              ("opensense_ik", "selftest"), ("multinode_test", "selftest"),
-             ("regress", "selftest"), ("app", "selftest")]
+             ("regress", "selftest"), ("validate_capture", "selftest"),
+             ("app", "selftest")]
 
 
 def _streams():

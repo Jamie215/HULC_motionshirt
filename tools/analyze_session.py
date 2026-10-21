@@ -63,7 +63,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import (  # noqa: E402
-    CAPTURE_MONTAGE, montage_from_capture, validate_montage)
+    CAPTURE_MONTAGE, capture_logs, montage_from_capture, validate_montage)
 from hulc_paths import FROZEN, tool_cmd  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -120,9 +120,11 @@ def ordered_logs(montage, capture_dir):
     Raises with a clear message if any node's log is missing.
     """
     nodes = sorted(montage["nodes"], key=lambda n: n["column"])
+    found, _ = capture_logs(capture_dir)      # node id -> its log, from the headers
     paths, missing = [], []
     for n in nodes:
-        p = os.path.join(capture_dir, f"{_safe_name(n['node_id'])}.bin")
+        p = (found.get(n["node_id"]) or {}).get("bin") or os.path.join(
+            capture_dir, f"{_safe_name(n['node_id'])}.bin")
         paths.append(p)
         if not os.path.exists(p):
             missing.append((n["node_id"], p))
@@ -131,8 +133,8 @@ def ordered_logs(montage, capture_dir):
         raise SystemExit(
             f"[analyze] {len(missing)} node log(s) not found in {capture_dir}:\n"
             f"{lines}\n"
-            f"    (offload writes <node_id>.bin; check --capture-dir and that "
-            f"both nodes offloaded COMPLETE.)")
+            f"    (each node's log is a .bin with a .seg.json header naming the "
+            f"node; check --capture-dir and that every node offloaded COMPLETE.)")
     return paths, nodes
 
 
@@ -146,15 +148,9 @@ def warn_segment_disagreements(nodes, capture_dir):
     Non-fatal and best-effort: a node captured on older firmware has no sidecar.
     """
     warned = False
+    found, _ = capture_logs(capture_dir)
     for n in nodes:
-        side = os.path.join(capture_dir, f"{_safe_name(n['node_id'])}.seg.json")
-        if not os.path.exists(side):
-            continue
-        try:
-            with open(side, encoding="utf-8-sig") as f:
-                node_seg = json.load(f).get("segment")
-        except (OSError, ValueError):
-            continue
+        node_seg = ((found.get(n["node_id"]) or {}).get("header") or {}).get("segment")
         if node_seg and node_seg != n["segment"]:
             print(f"    [!] {n['column']} {n['node_id']}: montage says "
                   f"'{n['segment']}' but the node's header says '{node_seg}'. "

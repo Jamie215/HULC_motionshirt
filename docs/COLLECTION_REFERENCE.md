@@ -258,9 +258,10 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
    - On the review page, **Neutral pose** then **Raw ↔ Calibrated**: the
      segments should snap to the freeze pose in Calibrated. That toggle is the
      calibration check.
-   - A faster look without the analysis:
-     `python tools/reconcile_nodes.py --inspect ./capture/blockN/*.bin` —
-     records, ~10 Hz while moving, and no `clock restarted` warning.
+   - A faster look without the analysis: `hulc-ms validate --capture-dir
+     ./capture/blockN` — every log present with its header, ~10 Hz while
+     moving, no dropped records or clock restarts (the folder format is in
+     [`DATA_FORMAT.md`](DATA_FORMAT.md)).
 4. **Erase**: `hulc-ms nodes erase --count 2`. An empty node
    is skipped; one holding data asks `[y/N]` (`--yes` for scripts); do not
    power off mid-wipe. Erasing only after the check keeps the block on the
