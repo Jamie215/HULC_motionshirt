@@ -32,5 +32,6 @@ jobs:
           python tools/opensense_ik.py selftest
           python tools/multinode_test.py selftest
           python tools/regress.py selftest
+          python tools/app.py selftest
       - name: Regression library (skips cases without recordings)
         run: python tools/regress.py run

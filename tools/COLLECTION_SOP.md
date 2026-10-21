@@ -35,9 +35,11 @@ repeat steps 2–3 first.
    The folder now holds everything about the block: each node's log, which
    body part it was on, and a `montage.json` built from that. Keep the folder
    together; there is no separate montage file to save.
-2. **Analyze** it:
+2. **Analyze** it: open the **HULC Sessions** app (double-click
+   `HULC Sessions.bat` / `.command` in the repo folder), type the subject and
+   drop `./capture/block1` on the page. Or from the command line:
    `python tools/analyze_session.py run --capture-dir ./capture/block1 --outdir ./out/block1`
-3. **Read the `BLOCK CHECK`** at the end of the output:
+3. **Read the `BLOCK CHECK`** (top of the app page, or the end of the output):
    - **OK** — keep going (read any NOTE lines).
    - **REDO** — do what the line under it says when you record the block again.
 4. **Erase** the nodes: `python tools/multinode_test.py erase --count 2`
@@ -48,7 +50,9 @@ repeat steps 2–3 first.
    ./capture/block1 --description "what was done, when"`
    (see the README, "Changing the analysis safely").
 
-Open `out/block1/session.html` to review the movement; **Neutral pose**
-should show the arms hanging, palms to the legs. If the freeze or the end was
-found in the wrong place, click **Timeline**: drag the green freeze band or the
-end line to where they really were, **Copy command**, and run it.
+Review the movement on the review page (in the app, or
+`out/block1/session.html`); **Neutral pose** should show the arms hanging,
+palms to the legs. If the freeze or the end was found in the wrong place,
+click **Timeline** and drag the green freeze band or the end line to where they
+really were, then press **Apply** in the app (or **Copy command** and run it).
+In the app, **Keep as test case…** does step 6.

@@ -229,7 +229,10 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
      from those (`--session` optional). Keep the folder whole. A
      `montage.json` already there for the same nodes is kept; one for other
      nodes is never overwritten.
-3. **Analyze** and read the block check (§6):
+3. **Analyze** and read the block check (§6): drop the folder on the
+   **HULC Sessions** app (`tools/app.py`, double-click launchers in the repo
+   folder; it runs the command below and shows the block check and review
+   page, with **Apply** on the Timeline), or:
 
    ```bash
    python tools/analyze_session.py run --capture-dir ./capture/blockN --outdir ./out/blockN

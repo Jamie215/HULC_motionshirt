@@ -151,8 +151,9 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 #    (it also writes ./capture/block1/montage.json from the nodes' segments)
 python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01
 
-# 4. run the whole analysis chain for the block (montage from the folder;
-#    --montage FILE overrides)
+# 4. analyze the block: double-click "HULC Sessions" (.bat on Windows,
+#    .command on macOS / Linux) and drop ./capture/block1 on the page — or
+#    from the command line (montage from the folder; --montage FILE overrides):
 python tools/analyze_session.py run --capture-dir ./capture/block1 \
     --outdir ./out/block1
 #    → aligned.csv, calibration.json, metrics.json, an HTML viewer, and a
@@ -172,6 +173,29 @@ python tools/multinode_test.py selftest
 
 GitHub Actions runs every selftest on each push and pull request
 (`.github/workflows/selftest.yml`).
+
+### The session app
+
+`tools/app.py` puts the analysis behind a browser page, for anyone who would
+rather not use a terminal. Double-click **`HULC Sessions.bat`** (Windows) or
+**`HULC Sessions.command`** (macOS; on Linux `bash "HULC Sessions.command"`),
+or run `python tools/app.py`. A tab opens at `http://127.0.0.1:8765/`:
+
+- **Drop** a block's capture folder (or its `.bin` + `.seg.json` files) on
+  the page; several block folders at once become one session each. Type the
+  subject id first; it goes into the block's montage.
+- Each block runs through `analyze_session.py` in the background, exactly as
+  on the command line (OpenSim solves included when installed), and the app
+  shows its **block check** and **review page**.
+- On the review page's **Timeline**, drag the freeze or the end and press
+  **Apply**: the block is re-analyzed in place with the hand-set values.
+- **Keep as test case…** adds the block to the regression library
+  (`regress.py add`); check the expectations and commit the case file.
+
+It needs only Python 3 + numpy, listens on this computer only (127.0.0.1),
+and keeps copies of the dropped files and every analysis in a workspace folder
+(`~/HULC_sessions`; `--workspace` or `$HULC_WORKSPACE` to change it). The
+original files are never modified; **Remove** deletes a session's copies.
 
 ### Changing the analysis safely — the regression library
 
@@ -231,6 +255,7 @@ the safer a threshold change.
 ## Repository layout
 
 ```
+HULC Sessions.bat / .command     double-click launchers for tools/app.py
 .github/workflows/selftest.yml   CI: every selftest + the regression library
 firmware/
   firmware.ino               node firmware (state machine + BLE + QSPI log)
@@ -244,6 +269,7 @@ tools/
   metrics.py                 stage 6 — joint angles, ROM, and metric tiers
   skeleton_viewer.py         stage 7 — review page (skeleton, Timeline, metrics)
   analyze_session.py         stages 3–7 in one command, plus the block check
+  app.py                     the session app: drop a block, get its review page
   opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
   regress.py                 regression library runner; cases in regress_cases/
   timing_bench.py            evaluation: what clock sync and sampling cost
@@ -259,4 +285,5 @@ Real recordings and per-session generated files (capture folders, `.bin`
 logs, `aligned.csv`, every per-session `.json`, generated review pages) are
 **git-ignored** by design — see `.gitignore`. Only source, docs, the example
 montage and the regression case files (expectations, no recordings) are
-tracked; never commit real recording data.
+tracked; never commit real recording data. The session app keeps its copies
+outside the repository (`~/HULC_sessions` by default).

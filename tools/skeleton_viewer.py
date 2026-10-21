@@ -1103,6 +1103,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <span id="tlinfo"></span>
       <input id="tlcmd" readonly aria-label="Re-run command">
       <button id="tlcopy">Copy command</button>
+      <button id="tlapply" class="primary" hidden
+              title="Re-analyze this block with these settings">Apply</button>
     </div>
   </div>
   <div class="legend">
@@ -2409,6 +2411,7 @@ function tlEdited(){
   return {f:Math.abs(TLS.f0-d.f0)>50, e:(TLS.end==null)!==(d.end==null)
           ||(TLS.end!=null&&Math.abs(TLS.end-d.end)>50)};
 }
+let APP=false;   // shown inside tools/app.py (see the hello handler below)
 function tlCommand(){
   const ed=tlEdited();
   let c=TL.rerun||'python tools/analyze_session.py run --montage montage.json --capture-dir <block folder>';
@@ -2423,11 +2426,26 @@ function tlText(){
   document.getElementById('tlinfo').innerHTML=
     `Freeze <b>${sec(TLS.f0)}–${sec(TLS.f0+TL_LEN)} s</b>${ed.f?' (moved)':''} · `+
     `end <b>${TLS.end==null?'end of the log':sec(TLS.end)+' s'}</b>${ed.e?' (moved)':''}`+
-    (ed.f||ed.e?' — copy the command and run it to re-analyze with these.'
+    (ed.f||ed.e?(APP?' — press Apply to re-analyze with these.'
+                  :' — copy the command and run it to re-analyze with these.')
      :TL.freeze_manual||TL.end_manual?' — as set by hand last time (kept in the command).'
      :' — as detected. Drag the green freeze band or the end line if they are wrong.');
   document.getElementById('tlcmd').value=tlCommand();
 }
+// Inside the session app (tools/app.py) the page sits in an iframe: the app
+// says hello, and Apply hands the dragged settings back to it to re-run.
+window.addEventListener('message',e=>{
+  if(e.source!==window.parent||!e.data||e.data.type!=='hulc-app') return;
+  APP=true; document.getElementById('tlapply').hidden=false; tlText();
+});
+document.getElementById('tlapply').addEventListener('click',()=>{
+  if(!APP||!TL) return;
+  const ed=tlEdited();
+  window.parent.postMessage({type:'hulc-apply',
+    window:ed.f||TL.freeze_manual?[Math.round(TLS.f0),Math.round(TLS.f0+TL_LEN)]:null,
+    end:(ed.e||TL.end_manual)&&TLS.end!=null?Math.round(TLS.end):null}, '*');
+  const b=document.getElementById('tlapply'); b.disabled=true; b.textContent='Re-running…';
+});
 document.getElementById('tlcopy').addEventListener('click',()=>{
   const inp=document.getElementById('tlcmd'), btn=document.getElementById('tlcopy');
   const done=()=>{btn.textContent='Copied'; setTimeout(()=>btn.textContent='Copy command',1500);};
