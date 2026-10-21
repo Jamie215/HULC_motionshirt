@@ -770,7 +770,8 @@ def selftest():
 
     ws = tempfile.mkdtemp(prefix="hulc_app_ws_")
     srv, store = make_server(ws, 0, quiet=True)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    served = threading.Thread(target=srv.serve_forever, daemon=True)
+    served.start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
 
     def req(method, path, body=None, raw=None, headers=None):
@@ -879,10 +880,15 @@ def selftest():
           and not os.path.exists(os.path.join(ws, sid2)),
           "a session can be removed")
 
+    # Quit: serve_forever notices the shutdown on its next poll (≤ 0.5 s), so
+    # wait for it to return rather than guessing a delay (a fixed 0.5 s raced
+    # it on a slow Windows runner)
     code, _ = req("POST", "/api/quit", {})
-    time.sleep(0.5)
-    check(code == 200 and running_app(srv.server_address[1]) is None,
-          "Quit stops the app")
+    served.join(timeout=10)
+    srv.server_close()
+    check(code == 200 and not served.is_alive()
+          and running_app(srv.server_address[1]) is None,
+          "Quit stops the app and frees its port")
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — upload, background analysis, "
           f"review page, Apply re-run, guards (workspace {ws}).")
     return 0 if ok else 1
@@ -917,6 +923,7 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    srv.server_close()        # free the port, so the next launch can take it
     print("\n[app] stopped.", flush=True)
 
 
