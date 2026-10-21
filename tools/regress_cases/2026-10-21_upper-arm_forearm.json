@@ -1,0 +1,57 @@
+{
+  "description": "Upper arm + forearm, right arm, new order (sync first); nodes re-enrolled (485C upper_arm_r, B059 forearm_r), montage built from the capture folder's .seg.json headers, no montage.json. Recording date unknown (received 2026-10-21). Node clocks ~19 min apart (switched on at different times; synced cleanly, peak ratio 1.86). Handling to ~15 s, sync movement 18-30 s (both nodes ~2 rad/s together), freeze 30.5-42 s (quietest 34.9-36.9 s), elbow bends 48-72 s (six reps, to ~124 deg flexion), forearm node off the body and flat from 73.1 s. Known: elbow reads down to -32 deg (hyperextension) for 17% of the session, a NOTE not a REDO - likely the freeze arm not fully straight or forearm strap roll.",
+  "recorded": "",
+  "protocol": "sync-first",
+  "montage": {
+    "schema_version": "1.0",
+    "subject": {
+      "id": "S01",
+      "notes": ""
+    },
+    "session": {
+      "id": "",
+      "aligned_csv": "aligned.csv"
+    },
+    "calibration": {
+      "neutral_pose": "N-pose",
+      "captured": true,
+      "protocol": "sync-first",
+      "functional": []
+    },
+    "nodes": [
+      {
+        "node_id": "HULC-IMU-485C",
+        "column": "n0",
+        "segment": "upper_arm_r",
+        "landmark": "right humerus",
+        "calibrated": true
+      },
+      {
+        "node_id": "HULC-IMU-B059",
+        "column": "n1",
+        "segment": "forearm_r",
+        "landmark": "right forearm",
+        "calibrated": true
+      }
+    ]
+  },
+  "expect": {
+    "freeze_start_s": [
+      31.0,
+      40.0
+    ],
+    "end_s": [
+      63.0,
+      73.1
+    ],
+    "verdict": "OK",
+    "sync_ok": true,
+    "facing_known": true,
+    "metrics": {
+      "elbow_r.flex_ext.max_deg": [
+        114,
+        134
+      ]
+    }
+  }
+}
