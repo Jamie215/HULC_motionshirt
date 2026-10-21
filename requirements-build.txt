@@ -1,0 +1,3 @@
+# Building the standalone app (packaging/build_app.py): requirements.txt + PyInstaller.
+-r requirements.txt
+pyinstaller==6.22.3

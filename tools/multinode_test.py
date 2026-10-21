@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-HULC Motion Shirt — multi-node BLE sync test harness.
+HULC Motion Shirt — the laptop BLE central for the nodes.
 
-Acts as the *central* for testing the synced connection across multiple IMU
-nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
+Enrolls boards to body segments, offloads each node's flash log into a
+block's capture folder (with its montage), erases nodes, and checks the synced
+connection. `check`:
 
   1. Scans for nodes advertising as "HULC-IMU-XXXX" (unique per board).
   2. Connects to N nodes simultaneously.
@@ -11,27 +12,28 @@ nodes (Phase 3e firmware, branch: bluetooth-multi-node-testing). It:
   4. Reads each node's Time Info characteristic (A005) repeatedly and computes
      the cross-node clock offset and its drift over time.
 
-This is a laptop-side test tool — no phone app required. BLE actions need
+This is laptop-side — no phone app required. BLE actions need
 `bleak` (pip install bleak); the offline `enroll` bookkeeping and `selftest` do
 not.
 
-Subcommands (preferred)
------------------------
-    python tools/multinode_test.py enroll  --segments upper_arm_r,forearm_r [--erase] [--reuse]
-    python tools/multinode_test.py check   --count 2 --duration 60     # sync + offset/drift
-    python tools/multinode_test.py erase   --count 2                   # wipe flash (destructive)
-    python tools/multinode_test.py offload --count 2 --out-dir ./capture [--erase-after]
-    python tools/multinode_test.py selftest                            # offline logic, no hardware
+Subcommands (`hulc-ms nodes …` runs this; `python tools/multinode_test.py …` too)
+-----------
+    hulc-ms nodes enroll  --segments upper_arm_r,forearm_r [--reuse] [--no-erase]
+    hulc-ms nodes read-segments                       # montage from the nodes' own headers
+    hulc-ms nodes check   --count 2 --duration 60     # sync + offset/drift
+    hulc-ms nodes erase   --count 2                   # wipe flash (destructive)
+    hulc-ms nodes offload --count 2 --out-dir ./capture/block1 [--subject S01] [--erase-after]
+    hulc-ms nodes selftest                            # offline logic, no hardware
 
 `enroll` maps each board to a body segment by powering ONE node at a time (its
 permanent HULC-IMU-XXXX id is unambiguous when it's the only one advertising)
 and writes montage.json + nodes_registry.json — no firmware change or streaming.
+Enroll also stores each node's segment ON the node, so `offload` writes a
+montage.json into every capture folder from the nodes themselves: a block's
+folder is all `analyze_session` needs.
 
-The legacy flag form still works as a deprecated alias:
-    --count/--duration (check) · --erase · --offload/--out-dir/--erase-after-offload
-
-What to look for
-----------------
+What to look for (`check`)
+------------------------
 * CONNECT: both nodes should connect and stay connected.
 * OFFSET (initial): right after sync, pairwise offset should be a few ms
   (bounded by BLE write latency + the firmware's millis() capture).
@@ -59,7 +61,8 @@ from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import (  # noqa: E402
-    SEGMENTS, SEGMENT_CODES, SEGMENT_CONFIG_TAG, SEGMENT_UNASSIGNED,
+    CAPTURE_MONTAGE, SEGMENTS, SEGMENT_CODES, build_montage,
+    montage_from_capture,
     segment_from_header, validate_montage,
 )
 
@@ -606,7 +609,7 @@ async def measure_offload(node: Node, quiet_s: float = 3.0,
                   f"{miss} bytes / {miss // RECORD_SIZE} records still missing "
                   f"at offsets {[(o, n) for o, n in holes]}.")
             print(f"           Saved {size} bytes with holes zero-filled "
-                  f"(reconcile drops them) -> {save_path}. Re-run --offload to "
+                  f"(reconcile drops them) -> {save_path}. Re-run offload to "
                   f"recover the rest (the node has NOT erased its log).")
     elif not received:
         print(f"[{node.name}] no data received. Is there a log to offload "
@@ -700,7 +703,9 @@ async def run(count: int, duration: float, interval: float,
               scan_timeout: float, offload: bool = False,
               offload_save: str = None, name_filter: str = None,
               offload_dir: str = None, erase: bool = False,
-              erase_after: bool = False, erase_yes: bool = False) -> None:
+              erase_after: bool = False, erase_yes: bool = False,
+              subject: str = "S01", session: str = "",
+              registry_path: str = None) -> None:
     _ensure_bleak()
     devices = await scan(count, scan_timeout, name_filter)
 
@@ -773,6 +778,9 @@ async def run(count: int, duration: float, interval: float,
                         print(f"[OFFLOAD] {node.name}: NOT erasing — offload was "
                               f"incomplete. Re-run to recover, or erase manually "
                               f"with --erase once you have the data.")
+            if not single:
+                write_capture_montage(offload_dir or ".", subject, session,
+                                      registry_path)
             return
 
         # Status BEFORE sync — the 'synced' flag here is leftover RAM state from
@@ -841,23 +849,45 @@ DEFAULT_REGISTRY = "nodes_registry.json"
 DEFAULT_MONTAGE = "montage.json"
 
 
-def build_montage(assignments, subject_id="S01", session_id="", notes=""):
-    """assignments: ordered [(node_id, segment, label)] -> montage dict.
+def write_capture_montage(capture_dir, subject="S01", session="",
+                          registry_path=None):
+    """Write the block's own montage.json into its capture folder.
 
-    Column order follows the list order (n0, n1, ...) — what reconcile and
-    analyze_session use to bind logs to segments.
-    """
-    nodes = [{"node_id": nid, "column": f"n{i}", "segment": seg,
-              "landmark": lbl or "", "calibrated": True}
-             for i, (nid, seg, lbl) in enumerate(assignments)]
-    return {
-        "schema_version": "1.0",
-        "subject": {"id": subject_id, "notes": notes},
-        "session": {"id": session_id, "aligned_csv": "aligned.csv"},
-        "calibration": {"neutral_pose": "N-pose", "captured": True,
-                        "t_window_ms": [1000, 4000], "functional": []},
-        "nodes": nodes,
-    }
+    Built from the `.seg.json` sidecars offload just wrote (each node's stored
+    segment), so the folder carries everything `analyze_session` needs and no
+    separate montage file has to be kept. Landmark labels come from the
+    registry when it has them. An existing montage.json for the same nodes is
+    kept (it may hold hand edits); one for different nodes is left alone with
+    a warning, since the folder then mixes two setups. Returns the path written,
+    or None."""
+    path = os.path.join(capture_dir, CAPTURE_MONTAGE)
+    labels = {nid: e.get("label", "")
+              for nid, e in load_registry(registry_path or DEFAULT_REGISTRY).items()}
+    montage, problems = montage_from_capture(capture_dir, subject, session, labels)
+    if montage is None:
+        print(f"[OFFLOAD] no {CAPTURE_MONTAGE} written to {capture_dir}: "
+              + "; ".join(problems) + ". Pass --montage to analyze_session "
+              "(or enroll the node so it stores its segment).")
+        return None
+    pairs = lambda m: sorted((n["node_id"], n["segment"]) for n in m["nodes"])
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                old = json.load(f)
+            same = pairs(old) == pairs(montage)
+        except (OSError, ValueError, KeyError, TypeError):
+            same = False
+        if same:
+            print(f"[OFFLOAD] {path} already describes these nodes — kept.")
+        else:
+            print(f"[OFFLOAD] [!] {path} describes different nodes — NOT "
+                  f"overwritten. Offload each block into its own new folder.")
+        return None
+    write_montage(path, montage)
+    print(f"[OFFLOAD] wrote {path} (subject {subject}"
+          + (f", session {session}" if session else "") + "): "
+          + ", ".join(f"{n['segment']} <- {n['node_id']}" for n in montage["nodes"]))
+    return path
 
 
 def load_registry(path):
@@ -1102,20 +1132,43 @@ def enroll_selftest():
     check(erase_decision(12, False, False) == "hold", "data, no confirm path -> hold")
     check(erase_decision(None, False, True) == "ask", "unknown size -> prompt, not blind wipe")
 
+    # offload's capture-folder montage: from the sidecars, labels from the
+    # registry; an existing montage for the same nodes is kept, never clobbered
+    import tempfile
+    cap = tempfile.mkdtemp(prefix="hulc_offload_")
+    for nid, seg in (("HULC-IMU-485C", "torso"), ("HULC-IMU-B059", "upper_arm_r")):
+        open(os.path.join(cap, f"{nid}.bin"), "wb").close()
+        with open(os.path.join(cap, f"{nid}.seg.json"), "w") as f:
+            json.dump({"node_id": nid, "segment": seg}, f)
+    regp = os.path.join(cap, "reg.json")
+    save_registry(regp, {"HULC-IMU-B059": {"segment": "upper_arm_r",
+                                           "label": "orange"}})
+    w1 = write_capture_montage(cap, "S03", "b1", regp)
+    with open(os.path.join(cap, CAPTURE_MONTAGE)) as f:
+        cm = json.load(f)
+    check(w1 is not None and cm["subject"]["id"] == "S03"
+          and [(n["segment"], n["landmark"]) for n in cm["nodes"]]
+          == [("torso", "sternum"), ("upper_arm_r", "orange")],
+          "offload writes capture/montage.json from the node headers")
+    cm["subject"]["notes"] = "hand edit"
+    write_montage(os.path.join(cap, CAPTURE_MONTAGE), cm)
+    check(write_capture_montage(cap, "S03", "b1", regp) is None
+          and "hand edit" in open(os.path.join(cap, CAPTURE_MONTAGE)).read(),
+          "a second offload into the folder keeps the existing montage")
+
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — montage build/validate, "
-          f"registry reuse, and segment validation.")
+          f"registry reuse, segment validation, capture-folder montage.")
     return 0 if ok else 1
 
 
 # ---------------------------------------------------------------------------
-# CLI: unified subcommands, with the legacy flag form kept as a back-compat alias
+# CLI
 # ---------------------------------------------------------------------------
-_SUBCOMMANDS = {"check", "erase", "offload", "enroll", "selftest"}
 
 
 def _main_sub(argv) -> None:
     ap = argparse.ArgumentParser(
-        prog="multinode_test.py", description=__doc__,
+        prog=os.path.basename(sys.argv[0]) or "multinode_test.py", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1141,6 +1194,12 @@ def _main_sub(argv) -> None:
     po.add_argument("--save", metavar="PATH", help="single-node: exact .bin path")
     po.add_argument("--erase-after", action="store_true",
                     help="wipe each node after its offload verifies COMPLETE")
+    po.add_argument("--subject", default="S01",
+                    help="subject id for the capture folder's montage.json")
+    po.add_argument("--session", default="",
+                    help="session id for the capture folder's montage.json")
+    po.add_argument("--registry", default=DEFAULT_REGISTRY,
+                    help="landmark labels for montage.json (from enroll)")
 
     pn = sub.add_parser("enroll", help="power-one-at-a-time -> montage.json")
     pn.add_argument("--segments", required=True,
@@ -1189,66 +1248,22 @@ def _main_sub(argv) -> None:
         elif args.cmd == "offload":
             asyncio.run(run(args.count, 0, 0, args.scan_timeout, offload=True,
                             offload_save=args.save, name_filter=args.name,
-                            offload_dir=args.out_dir, erase_after=args.erase_after))
+                            offload_dir=args.out_dir, erase_after=args.erase_after,
+                            subject=args.subject, session=args.session,
+                            registry_path=args.registry))
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted.")
 
 
 def main() -> None:
     argv = sys.argv[1:]
-    if argv and argv[0] in _SUBCOMMANDS:
-        _main_sub(argv)
-        return
-    # ---- legacy flag form (deprecated but still supported) ----
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--count", type=int, default=2,
-                    help="number of nodes to connect (default 2)")
-    ap.add_argument("--duration", type=float, default=60.0,
-                    help="offset-sampling duration in seconds (default 60)")
-    ap.add_argument("--interval", type=float, default=0.5,
-                    help="delay between sampling rounds in seconds (default 0.5)")
-    ap.add_argument("--scan-timeout", type=float, default=8.0,
-                    help="BLE scan timeout in seconds (default 8)")
-    ap.add_argument("--offload", action="store_true",
-                    help="offload one node's flash log (measure throughput) "
-                         "instead of the sync-offset test")
-    ap.add_argument("--save", metavar="PATH",
-                    help="with --offload and a SINGLE node: write the log to this "
-                         "exact .bin path (overrides the auto name)")
-    ap.add_argument("--out-dir", metavar="DIR", default=".",
-                    help="with --offload: directory for the auto-named per-node "
-                         ".bin files (default: current dir)")
-    ap.add_argument("--name", metavar="SUFFIX",
-                    help="only connect to the node whose name contains SUFFIX "
-                         "(e.g. --name D067). Use with --offload/--erase to pick "
-                         "exactly which node.")
-    ap.add_argument("--erase", action="store_true",
-                    help="WIPE each connected node's flash log (control 0x03), "
-                         "then exit. Use before a clean capture. Destructive.")
-    ap.add_argument("--erase-after-offload", action="store_true",
-                    help="with --offload: after each node's offload is verified "
-                         "COMPLETE, wipe its flash so the next capture starts "
-                         "clean (avoids reboot-seam / stale-record buildup). "
-                         "An incomplete offload is never erased.")
-    args = ap.parse_args()
-    if args.save and not args.offload:
-        ap.error("--save requires --offload")
-    if args.erase and args.offload:
-        ap.error("--erase and --offload are separate steps; run them separately")
-    if args.erase_after_offload and not args.offload:
-        ap.error("--erase-after-offload requires --offload")
-    hint = ("erase" if args.erase else "offload" if args.offload else "check")
-    print(f"[note] the flag form is deprecated; prefer: "
-          f"multinode_test.py {hint} ...\n", file=sys.stderr)
-
-    try:
-        asyncio.run(run(args.count, args.duration, args.interval,
-                        args.scan_timeout, args.offload, args.save, args.name,
-                        args.out_dir, args.erase, args.erase_after_offload,
-                        erase_yes=args.erase))   # legacy --erase = unconditional
-    except KeyboardInterrupt:
-        print("\n[ABORT] Interrupted.")
+    if argv and argv[0].startswith("--") and argv[0] not in ("-h", "--help"):
+        # the old flag form (--offload, --erase, --count ...) was retired
+        raise SystemExit("[nodes] use a subcommand: check | erase | offload "
+                         "| enroll | read-segments | selftest  (e.g. "
+                         "hulc-ms nodes offload --count 2 --out-dir "
+                         "./capture/block1)")
+    _main_sub(argv)
 
 
 if __name__ == "__main__":

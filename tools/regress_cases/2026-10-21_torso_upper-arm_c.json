@@ -1,0 +1,57 @@
+{
+  "description": "Torso + upper arm, right arm, new order (sync first). Montage.json was lost (overwritten by the next session) and rebuilt from the nodes' .seg.json headers (485C torso, B059 upper_arm_r); the recording date is unknown (received 2026-10-21). Strapping to ~6 s, sync movement 9-30 s (torso ~1.5 rad/s, arm ~2 rad/s, both together), freeze 30.5-48 s (quietest 40.7-42.7 s), five slower raises 48-65 s (~82 deg), torso shifting 66-80 s, nine faster raises 72-101 s (~71 deg, to ~132 deg elevation), nodes handled 102-107 s, torso node flat off the body from 107.3 s.",
+  "recorded": "",
+  "protocol": "sync-first",
+  "montage": {
+    "schema_version": "1.0",
+    "subject": {
+      "id": "S01",
+      "notes": ""
+    },
+    "session": {
+      "id": "recovered",
+      "aligned_csv": "aligned.csv"
+    },
+    "calibration": {
+      "neutral_pose": "N-pose",
+      "captured": true,
+      "protocol": "sync-first",
+      "functional": []
+    },
+    "nodes": [
+      {
+        "node_id": "HULC-IMU-485C",
+        "column": "n0",
+        "segment": "torso",
+        "landmark": "sternum",
+        "calibrated": true
+      },
+      {
+        "node_id": "HULC-IMU-B059",
+        "column": "n1",
+        "segment": "upper_arm_r",
+        "landmark": "right humerus",
+        "calibrated": true
+      }
+    ]
+  },
+  "expect": {
+    "freeze_start_s": [
+      31.0,
+      46.0
+    ],
+    "end_s": [
+      97.0,
+      107.3
+    ],
+    "verdict": "OK",
+    "sync_ok": true,
+    "facing_known": true,
+    "metrics": {
+      "shoulder_r.elevation.max_deg": [
+        122,
+        142
+      ]
+    }
+  }
+}

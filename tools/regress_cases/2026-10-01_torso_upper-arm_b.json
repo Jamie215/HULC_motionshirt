@@ -1,0 +1,60 @@
+{
+  "description": "Torso + upper arm, right arm, new order (sync first). Strapping on to ~10 s (torso node lying on the table at 0-10 s: the enroll placeholder window [1000, 4000] was still and used to calibrate it face-down), standing still 24-30 s, trunk twists 31-41 s (torso only 0.4-0.8 rad/s), freeze 50.5-71.4 s, raises to ~113 deg (78 s) and ~96 deg forward (100 s), fast small swings 141-152 s, torso node off first (flat from 163.5 s) while the arm node was still being handled.",
+  "recorded": "2026-10-01",
+  "protocol": "sync-first",
+  "montage": {
+    "schema_version": "1.0",
+    "subject": {
+      "id": "S01",
+      "notes": ""
+    },
+    "session": {
+      "id": "torso-ua-test",
+      "aligned_csv": "aligned.csv"
+    },
+    "calibration": {
+      "neutral_pose": "N-pose",
+      "captured": true,
+      "t_window_ms": [
+        1000,
+        4000
+      ],
+      "functional": []
+    },
+    "nodes": [
+      {
+        "node_id": "HULC-IMU-485C",
+        "column": "n0",
+        "segment": "torso",
+        "landmark": "sternum",
+        "calibrated": true
+      },
+      {
+        "node_id": "HULC-IMU-B059",
+        "column": "n1",
+        "segment": "upper_arm_r",
+        "landmark": "right humerus",
+        "calibrated": true
+      }
+    ]
+  },
+  "expect": {
+    "freeze_start_s": [
+      50.0,
+      69.4
+    ],
+    "end_s": [
+      155.0,
+      163.5
+    ],
+    "verdict": "OK",
+    "sync_ok": true,
+    "facing_known": true,
+    "metrics": {
+      "shoulder_r.elevation.max_deg": [
+        111,
+        131
+      ]
+    }
+  }
+}

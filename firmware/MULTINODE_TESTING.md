@@ -49,19 +49,24 @@ The harness scans, connects to both nodes simultaneously, syncs each with an
 ms-resolution timestamp, then reads `A005` from both in a round-robin for the
 duration and reports the cross-node offset and its drift.
 
-The tool uses subcommands (`check`, `erase`, `offload`, `enroll`, `selftest`);
-the older flag form (`--count`, `--offload`, `--erase`, ...) still works as a
-deprecated alias.
+The tool uses subcommands (`check`, `erase`, `offload`, `enroll`,
+`read-segments`, `selftest`); the older flag form (`--offload`, `--erase`, …)
+was retired.
 
 Other modes:
 * `check --count 1` — single-node latency diagnostic (isolates per-link latency
   from multi-connection scheduling).
-* `offload` — offload one node's flash log to a `.bin` (and measure throughput
-  KB/s). The transfer is now framed and loss-verified — see below.
+* `offload` — offload each node's flash log to a `.bin` (and measure throughput
+  KB/s), with a `.seg.json` segment sidecar per node and the block's
+  `montage.json` built from them. The transfer is now framed and loss-verified —
+  see below.
 * `enroll --segments ...` — map each board to a body segment (power one node at a
-  time) and write `montage.json`; see `tools/COLLECTION_CHECKLIST.md`.
+  time) and write `montage.json`; see `docs/COLLECTION_REFERENCE.md` §4.
 
 ## Flash offload — framing & drop recovery
+
+(The protocol a central follows — commands, framing, recovery — is written out
+for a mobile app in `docs/BLE_PROTOCOL.md`.)
 
 The offload streams the flash log over the `A004` characteristic as BLE
 **notifications**, which are **unacknowledged**: if the central's stack drops
@@ -113,7 +118,7 @@ Reading the output:
 * `[!] INCOMPLETE after 4 attempts …` → still missing after all retries. The
   file is saved with holes **zero-filled** (reconcile drops zero-norm records,
   so survivors keep their true timestamps rather than collapsing into a fake,
-  undetectable gap), and a warning lists the missing offsets. Re-run `--offload`
+  undetectable gap), and a warning lists the missing offsets. Re-run `offload`
   to recover the rest (the log is still on the node).
 
 If a particular central drops heavily, raise `OFFLOAD_MAX_ATTEMPTS`, or switch
@@ -147,8 +152,9 @@ than falsely showing `log=0KB`.
 ## Offline reconciliation (`tools/reconcile_nodes.py`)
 
 Aligns the offloaded per-node quaternion logs onto one common timeline by
-cross-correlating the motion itself (angular speed), so it recovers the clock
-offset from the data — no dependence on BLE read latency. This is the
+cross-correlating the motion itself (world-frame angular-velocity vectors by
+default, `--sync speed` for the older angular-speed method), so it recovers the
+clock offset from the data — no dependence on BLE read latency. This is the
 production sync path (see `MULTINODE_SYNC_DESIGN.md`).
 
 ```bash

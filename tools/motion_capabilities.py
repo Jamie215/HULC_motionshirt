@@ -47,14 +47,14 @@ Usage
     # validate the model + resolver logic with no montage file:
     python tools/motion_capabilities.py --selftest
 
-Montage schema (see tools/MONTAGE_SCHEMA.md for the full write-up)
+Montage schema (see docs/MONTAGE_SCHEMA.md for the full write-up)
 -----------------------------------------------------------------
     {
       "schema_version": "1.0",
       "subject":  {"id": "S01"},
       "session":  {"id": "2026-09-04-A", "aligned_csv": "aligned.csv"},
       "calibration": {"neutral_pose": "N-pose", "captured": true,
-                      "t_window_ms": [1000, 4000], "functional": []},
+                      "protocol": "sync-first", "functional": []},
       "nodes": [
         {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "calibrated": true},
         {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "calibrated": true},
@@ -68,7 +68,9 @@ directly.
 """
 
 import argparse
+import glob
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -186,6 +188,9 @@ class DOF:
                               # metric plugin (metrics.py) reads angle[seq_index];
                               # a 2-DOF joint drops the unused middle/last slot.
     needs_calibration: bool = True   # anatomical-frame cal needed for a valid number
+    plausible_deg: tuple = None      # physiological (lo, hi) in clinical degrees,
+                                     # from neutral; metrics flags angles beyond
+                                     # it. None = no hard limit (e.g. a plane).
 
 
 @dataclass(frozen=True)
@@ -220,7 +225,8 @@ JOINTS = {
             #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
-            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2,
+                plausible_deg=(-120.0, 120.0)),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         primary="elevation",
@@ -241,7 +247,8 @@ JOINTS = {
             #     independent of the plane; defined everywhere but overhead.
             DOF("plane_elev", "Plane of elevation",            "transverse", 0),
             DOF("elevation",  "Elevation",                     "plane of elevation", 1),
-            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2),
+            DOF("axial_rot",  "Axial rotation (int / ext)",    "transverse", 2,
+                plausible_deg=(-120.0, 120.0)),
         ),
         decomposition="YXY (plane of elevation, elevation, axial rotation)",
         primary="elevation",
@@ -252,10 +259,15 @@ JOINTS = {
         key="elbow_r", name="Right elbow + forearm",
         proximal="upper_arm_r", distal="forearm_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
+            # limits allow ~10–15° beyond the textbook range for soft-tissue
+            # and sensor slop; pro/sup is from the neutral (palms-in) pose
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0,
+                plausible_deg=(-20.0, 165.0)),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2,
+                plausible_deg=(-110.0, 110.0)),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
+        primary="flex_ext",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
                "forearm axial rotation vs the humerus; sensitive to forearm "
                "node roll placement — calibrate axial zero explicitly.",
@@ -264,10 +276,15 @@ JOINTS = {
         key="elbow_l", name="Left elbow + forearm",
         proximal="upper_arm_l", distal="forearm_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0),
-            DOF("pro_sup",   "Pronation / supination",         "transverse", 2),
+            # limits allow ~10–15° beyond the textbook range for soft-tissue
+            # and sensor slop; pro/sup is from the neutral (palms-in) pose
+            DOF("flex_ext",  "Flexion / extension",            "sagittal",   0,
+                plausible_deg=(-20.0, 165.0)),
+            DOF("pro_sup",   "Pronation / supination",         "transverse", 2,
+                plausible_deg=(-110.0, 110.0)),
         ),
         decomposition="ZXY (flexion primary; axial = pro/supination)",
+        primary="flex_ext",
         caveat="Pronation/supination is a radioulnar rotation seen here as "
                "forearm axial rotation vs the humerus; sensitive to forearm "
                "node roll placement — calibrate axial zero explicitly.",
@@ -276,19 +293,25 @@ JOINTS = {
         key="wrist_r", name="Right wrist",
         proximal="forearm_r", distal="hand_r",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0,
+                plausible_deg=(-100.0, 100.0)),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1,
+                plausible_deg=(-45.0, 55.0)),
         ),
         decomposition="ZXY (flex/ext, deviation)",
+        primary="flex_ext",
     ),
     "wrist_l": Joint(
         key="wrist_l", name="Left wrist",
         proximal="forearm_l", distal="hand_l",
         dofs=(
-            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0),
-            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1),
+            DOF("flex_ext",  "Flexion / extension",            "sagittal", 0,
+                plausible_deg=(-100.0, 100.0)),
+            DOF("rad_uln",   "Radial / ulnar deviation",       "frontal",  1,
+                plausible_deg=(-45.0, 55.0)),
         ),
         decomposition="ZXY (flex/ext, deviation)",
+        primary="flex_ext",
     ),
 }
 
@@ -389,6 +412,120 @@ def validate_montage(montage: dict) -> list:
         else:
             seen_col[col] = i
     return errors
+
+
+# Default landmark label per segment base, for a montage built from the nodes'
+# own headers (a node stores WHICH segment, not where on it the strap sat). A
+# label is descriptive only: it never changes an angle.
+DEFAULT_LANDMARKS = {"torso": "sternum", "upper_arm": "humerus",
+                     "forearm": "forearm", "hand": "hand"}
+
+# The name of the montage a block's capture folder carries (offload writes it).
+CAPTURE_MONTAGE = "montage.json"
+
+
+def default_landmark(seg: str) -> str:
+    side = {"l": "left ", "r": "right "}.get(_seg_side(seg) or "", "")
+    return side + DEFAULT_LANDMARKS.get(_seg_base(seg), "")
+
+
+def build_montage(assignments, subject_id="S01", session_id="", notes=""):
+    """assignments: ordered [(node_id, segment, label)] -> montage dict.
+
+    Column order follows the list order (n0, n1, ...) — what reconcile and
+    analyze_session use to bind logs to segments.
+    """
+    nodes = [{"node_id": nid, "column": f"n{i}", "segment": seg,
+              "landmark": lbl or "", "calibrated": True}
+             for i, (nid, seg, lbl) in enumerate(assignments)]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "subject": {"id": subject_id, "notes": notes},
+        "session": {"id": session_id, "aligned_csv": "aligned.csv"},
+        "calibration": {"neutral_pose": "N-pose", "captured": True,
+                        "protocol": "sync-first",
+                        # no t_window_ms: calibration finds the freeze itself
+                        "functional": []},
+        "nodes": nodes,
+    }
+
+
+def capture_logs(capture_dir: str):
+    """The node logs in a capture folder, keyed by node id.
+
+    The capture-folder contract (docs/DATA_FORMAT.md): each node's log is a
+    `.bin` with a `.seg.json` header next to it (same name, other extension)
+    naming the node and its segment. The node id comes from the header, so the
+    file names themselves are free (offload writes `<node_id>.bin`; a mobile
+    app's export may name them differently). A `.bin` without a header is kept
+    under its file name, with `header` None.
+
+    Returns ({node_id: {"bin", "header_path", "header"}}, problems).
+    """
+    logs, problems = {}, []
+    for b in sorted(glob.glob(os.path.join(capture_dir, "*.bin"))):
+        side = os.path.splitext(b)[0] + ".seg.json"
+        head = None
+        if os.path.exists(side):
+            try:
+                with open(side, encoding="utf-8-sig") as f:
+                    head = json.load(f)
+                if not isinstance(head, dict):
+                    raise ValueError("not a JSON object")
+            except (OSError, ValueError) as e:
+                problems.append(f"{os.path.basename(side)} cannot be read ({e})")
+                head = None
+        nid = (head or {}).get("node_id") or os.path.splitext(os.path.basename(b))[0]
+        if nid in logs:
+            problems.append(f"two logs for node {nid}: "
+                            f"{os.path.basename(logs[nid]['bin'])} and {os.path.basename(b)}")
+            continue
+        logs[nid] = {"bin": b, "header_path": side if head is not None else None,
+                     "header": head}
+    return logs, problems
+
+
+def montage_from_capture(capture_dir: str, subject_id: str = "S01",
+                         session_id: str = "", labels: Optional[dict] = None):
+    """Build a montage from a capture folder's own files.
+
+    Every node log in the folder has a `.seg.json` header with the segment the
+    node stores (SETUP_AND_CALIBRATION_PLAN.md §2.1; docs/DATA_FORMAT.md), so
+    the folder already says which node was on which body part. Columns follow
+    the canonical segment code (deterministic, as `read-segments`). `labels`:
+    optional {node_id: landmark} (e.g. from nodes_registry.json); otherwise a
+    default label per segment.
+
+    Returns (montage | None, problems): None with the reasons when the folder
+    cannot describe itself (a log without a header — older firmware or a node
+    never enrolled — or two nodes claiming one segment).
+    """
+    labels = labels or {}
+    logs, problems = capture_logs(capture_dir)
+    if not logs and not problems:
+        return None, [f"no .bin logs in {capture_dir}"]
+    found = {}
+    for nid, lg in logs.items():
+        if lg["header"] is None:
+            problems.append(f"{os.path.basename(lg['bin'])} has no segment header "
+                            f"({os.path.splitext(os.path.basename(lg['bin']))[0]}"
+                            f".seg.json missing or unreadable)")
+            continue
+        seg = lg["header"].get("segment")
+        if seg not in SEGMENTS:
+            problems.append(f"{nid}: unknown segment {seg!r} in its header")
+        elif seg in found:
+            problems.append(f"{nid} and {found[seg]} both report '{seg}'")
+        else:
+            found[seg] = nid
+    if problems or not found:
+        return None, problems or [f"no segment headers in {capture_dir}"]
+    ordered = sorted(found.items(), key=lambda kv: SEGMENT_CODES[kv[0]])
+    montage = build_montage(
+        [(nid, seg, labels.get(nid) or default_landmark(seg))
+         for seg, nid in ordered], subject_id, session_id,
+        notes="built from the nodes' segment headers")
+    return montage, []
 
 
 def montage_warnings(montage: dict) -> list:
@@ -622,7 +759,7 @@ def example_montage() -> dict:
         "subject": {"id": "S01", "notes": ""},
         "session": {"id": "2026-09-04-A", "aligned_csv": "aligned.csv"},
         "calibration": {"neutral_pose": "N-pose", "captured": True,
-                        "t_window_ms": [1000, 4000], "functional": []},
+                        "protocol": "sync-first", "functional": []},
         "nodes": [
             {"node_id": "HULC-IMU-D067", "column": "n0", "segment": "torso",       "landmark": "sternum",        "calibrated": True},
             {"node_id": "HULC-IMU-A1B2", "column": "n1", "segment": "upper_arm_r", "landmark": "right humerus",  "calibrated": True},
@@ -739,6 +876,45 @@ def selftest() -> None:
         example_montage())
     print("[selftest] landmark labels: joint→ambiguous & mismatch flagged, "
           "clean labels silent — OK")
+
+    # A capture folder describes itself: the montage is built from the
+    # `.seg.json` sidecars offload writes next to each log.
+    import tempfile
+    cap = tempfile.mkdtemp(prefix="hulc_cap_")
+    for nid, seg in (("HULC-IMU-B059", "upper_arm_r"), ("HULC-IMU-485C", "torso")):
+        open(os.path.join(cap, f"{nid}.bin"), "wb").close()
+        with open(os.path.join(cap, f"{nid}.seg.json"), "w") as f:
+            json.dump({"node_id": nid, "segment": seg,
+                       "code": SEGMENT_CODES[seg]}, f)
+    m, probs = montage_from_capture(cap, "S07", "blk1",
+                                    labels={"HULC-IMU-B059": "lateral humerus"})
+    assert not probs and not validate_montage(m), (probs, m)
+    assert [(n["column"], n["node_id"], n["segment"], n["landmark"])
+            for n in m["nodes"]] == [
+        ("n0", "HULC-IMU-485C", "torso", "sternum"),
+        ("n1", "HULC-IMU-B059", "upper_arm_r", "lateral humerus")], m["nodes"]
+    assert m["subject"]["id"] == "S07" and m["session"]["id"] == "blk1"
+    assert not montage_warnings(m), montage_warnings(m)
+    open(os.path.join(cap, "HULC-IMU-OLD1.bin"), "wb").close()   # no sidecar
+    m2, probs2 = montage_from_capture(cap)
+    assert m2 is None and any("OLD1" in p for p in probs2), probs2
+    os.remove(os.path.join(cap, "HULC-IMU-OLD1.bin"))
+    with open(os.path.join(cap, "HULC-IMU-DUP2.seg.json"), "w") as f:
+        json.dump({"node_id": "HULC-IMU-DUP2", "segment": "torso"}, f)
+    open(os.path.join(cap, "HULC-IMU-DUP2.bin"), "wb").close()
+    m3, probs3 = montage_from_capture(cap)
+    assert m3 is None and any("both report 'torso'" in p for p in probs3), probs3
+    # file names are free: the node id comes from the header (a mobile export)
+    cap2 = tempfile.mkdtemp(prefix="hulc_cap2_")
+    open(os.path.join(cap2, "export_1.bin"), "wb").close()
+    with open(os.path.join(cap2, "export_1.seg.json"), "w") as f:
+        json.dump({"node_id": "HULC-IMU-485C", "segment": "torso"}, f)
+    logs, lp = capture_logs(cap2)
+    assert not lp and list(logs) == ["HULC-IMU-485C"] and \
+        logs["HULC-IMU-485C"]["bin"].endswith("export_1.bin"), (logs, lp)
+    print("[selftest] montage from a capture folder's segment headers: torso "
+          "first, labels kept or defaulted; a log without a header or two "
+          "nodes on one segment refuse — OK")
 
     print("\n[selftest] all checks passed.")
 

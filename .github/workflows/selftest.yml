@@ -1,0 +1,27 @@
+name: selftest
+
+# Every push and pull request: run each tool's selftest (synthetic data, no
+# hardware) and the regression library. The library's real recordings are not
+# in the repository, so its cases are skipped here unless a data folder is made
+# available (HULC_REGRESS_DATA); run it locally against the lab copy before
+# merging a change to the analysis.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the pinned requirements
+        run: pip install -r requirements.txt
+      - name: Selftests (every tool, through the hulc-ms command)
+        run: python hulc-ms.py selftest
+      - name: Regression library (skips cases without recordings)
+        run: python hulc-ms.py regress run
+

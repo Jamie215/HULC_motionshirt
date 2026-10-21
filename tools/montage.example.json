@@ -11,10 +11,7 @@
   "calibration": {
     "neutral_pose": "N-pose",
     "captured": true,
-    "t_window_ms": [
-      1000,
-      4000
-    ],
+    "protocol": "sync-first",
     "functional": []
   },
   "nodes": [

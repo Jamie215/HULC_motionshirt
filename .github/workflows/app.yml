@@ -1,0 +1,110 @@
+name: app
+
+# The standalone app (Python included): built on each OS, checked by running
+# every tool's selftest inside the build, and uploaded as a downloadable
+# artifact (Actions → this run → Artifacts; Windows unzips straight to the
+# hulc-ms folder). A version tag (v*) also attaches the builds to a GitHub
+# release, as one archive per OS.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["hulc-ms.py", "tools/**", "packaging/**", "requirements*.txt", ".github/workflows/app.yml"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            exe: dist/hulc-ms/hulc-ms.exe
+          - os: macos-latest
+            name: macos
+            exe: dist/hulc-ms.app/Contents/MacOS/hulc-ms
+          - os: ubuntu-latest
+            name: linux
+            exe: dist/hulc-ms/hulc-ms
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      HULC_HOME: ${{ github.workspace }}/hulc-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the build requirements
+        run: pip install -r requirements-build.txt
+      - name: Build
+        run: python packaging/build_app.py
+      - name: Selftests inside the build
+        run: |
+          set +e
+          "${{ matrix.exe }}" selftest > selftest.log 2>&1
+          rc=$?
+          cat selftest.log
+          cat "$HULC_HOME/app.log" 2>/dev/null | tail -40
+          if [ $rc -ne 0 ]; then
+            # the failure, readable as a check annotation (no log download needed)
+            { grep -E "FAIL|Error|Traceback|failed|passed" selftest.log | tail -15
+              echo "--- last lines ---"; tail -25 selftest.log
+              cat "$HULC_HOME/app.log" 2>/dev/null | tail -20; } > failure.txt
+            msg=$(sed -e 's/%/%25/g' -e 's/\r//g' failure.txt | awk '{printf "%s%%0A", $0}')
+            echo "::error title=selftest failed (${{ matrix.name }})::$msg"
+          fi
+          exit $rc
+      - name: Archive
+        run: |
+          mkdir -p out
+          case "${{ matrix.name }}" in
+            windows) (cd dist && 7z a -tzip ../out/hulc-ms-windows.zip hulc-ms > /dev/null) ;;
+            macos)   ditto -c -k --keepParent dist/hulc-ms.app out/hulc-ms-macos.zip ;;
+            linux)   tar czf out/hulc-ms-linux.tar.gz -C dist hulc-ms ;;
+          esac
+          ls -l out
+      # Windows: the hulc-ms folder itself, so the download is one unzip.
+      # macOS / Linux: the archive, because a GitHub download zip drops the
+      # executable permission the .app and the Linux binary need.
+      - name: Upload (Windows, the folder)
+        if: matrix.name == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hulc-ms-windows
+          path: dist/
+          retention-days: 30
+      - name: Upload (macOS / Linux, the archive)
+        if: matrix.name != 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hulc-ms-${{ matrix.name }}
+          path: out/*
+          retention-days: 30
+      # a version tag: every archive goes to the release job
+      - name: Upload the release archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: out/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
