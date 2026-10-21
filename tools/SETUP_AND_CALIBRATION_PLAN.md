@@ -61,9 +61,10 @@ record, and not as a string.**
   *which node*; the header adds *which body part* — which removes the
   mislabel-after-offload risk.
 - Source-of-truth rule: the node header is the **default**, a host montage may
-  **override**, and reconcile **warns on disagreement** (same pattern as the
+  **override**, and the analysis **warns on disagreement** (same pattern as the
   landmark check). Better: **auto-populate the montage from the headers** so it
-  stops being hand-typed and the user only confirms.
+  stops being hand-typed and the user only confirms. (Built: offload writes each
+  block's montage from the headers, see §6 step 3.)
 
 ### 2.2 The configuration stage (front end of montage + calibration)
 
@@ -295,9 +296,11 @@ useful: **the neutral pose is how you *see* whether calibration worked.**
    set over BLE (control `0x07`) and read back on the status characteristic.
    `enroll` now does it on one connection per node — smart-erase **and** stamp the
    segment — and `read-segments` builds a montage from the nodes' own headers (the
-   §2.2 "user only confirms" flow). Offload drops a `<node_id>.seg.json` sidecar so
-   captures are self-describing on disk; `analyze_session` warns when a node's
-   header disagrees with the montage (montage stays authoritative).
+   §2.2 "user only confirms" flow). Offload drops a `<node_id>.seg.json` sidecar
+   and writes the block's `montage.json` from them, so a capture folder is
+   self-contained; `analyze_session` uses `--montage` if given, else the folder's
+   montage, else one built from the sidecars, and warns when the montage used
+   disagrees with a node's header.
 4. ~~**Metric plugins** (stage 6) over the calibrated stream — ROM first, then the
    rest already declared by the resolver. The skeleton linkage exists; the
    per-DOF joint-angle read-out rides along with ROM (same decomposition).~~ —

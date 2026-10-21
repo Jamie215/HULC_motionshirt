@@ -320,7 +320,10 @@
           flag). <span class="tool">motion_capabilities.py</span> reads it and
           reports which joints and metrics the placement supports — and blocks the
           rest, naming the missing node. A joint needs <b>both</b> its adjacent
-          segments; bilateral activity asymmetry needs only a matching L/R pair.</p>
+          segments; bilateral activity asymmetry needs only a matching L/R pair.
+          Each node stores its own segment, so offload writes the montage into the
+          block's capture folder from the nodes themselves; a montage passed by
+          hand only overrides.</p>
         <div class="shape">
           <div class="lbl">montage node entry</div>
           <pre>{ <span class="k">"column"</span>:"n1", <span class="k">"segment"</span>:"upper_arm_r", <span class="k">"landmark"</span>:"right humerus", <span class="k">"calibrated"</span>:true }</pre>

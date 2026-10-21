@@ -133,7 +133,9 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
   `analyze_session.py run … --window t0,t1`.
 - If a battery dies mid-block, the node restarts its clock when recharged. The
   loader detects it, keeps the larger part and warns; the rest is not analyzed.
-- Never swap nodes between segments without updating the montage.
+- Never swap nodes between segments without re-enrolling them: each node
+  stores its segment, and the block's montage is built from what the nodes
+  store. (A one-off swap can be fixed afterwards with `--montage`.)
 
 ---
 
@@ -171,6 +173,7 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 | Working next to metal | Nodes disagree on north, unflagged | Before the session: place |
 | Re-mounting without offloading | The rest is calibrated on the old mounting's freeze | Checkpoint: offload + erase before re-mounting |
 | Battery dying mid-block | Clock restart; part of that node's log not analyzed | Charge before it runs out |
+| Splitting up a capture folder | The block loses its montage or a node's segment | Keep each block's folder whole; if `montage.json` is lost, the analysis rebuilds it from the `.seg.json` files |
 
 ---
 
@@ -182,6 +185,10 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
   still hold ending right as the movement starts.
 - **Closing hold:** no longer needed or looked for. Calibrations written while
   it was are still honoured: their `closing` window ends the analysis.
+- **No `montage.json` in the capture folder** (offloaded before offload wrote
+  one): the analysis builds it from the `.seg.json` files. Logs with no
+  `.seg.json` (firmware before nodes stored their segment) need
+  `--montage montage.json`.
 - **`t_window_ms: [1000, 4000]` in the montage:** the placeholder `enroll` used
   to write. It is ignored (on one capture it was still — the torso node lying
   on the table before strapping — and calibrated the torso ~85° off, drawing

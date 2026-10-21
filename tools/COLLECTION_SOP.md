@@ -30,9 +30,12 @@ repeat steps 2–3 first.
 ## At the charger
 
 1. **Offload** into a new folder for this block:
-   `python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1`
+   `python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01`
+   The folder now holds everything about the block: each node's log, which
+   body part it was on, and a `montage.json` built from that. Keep the folder
+   together; there is no separate montage file to save.
 2. **Analyze** it:
-   `python tools/analyze_session.py run --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1`
+   `python tools/analyze_session.py run --capture-dir ./capture/block1 --outdir ./out/block1`
 3. **Read the `BLOCK CHECK`** at the end of the output:
    - **OK** — keep going (read any NOTE lines).
    - **REDO** — do what the line under it says when you record the block again.
@@ -41,7 +44,7 @@ repeat steps 2–3 first.
 6. *Optional, but it is how the analysis gets better:* if the block was new in
    some way (new person, montage, room) or the analysis got it wrong, keep it as
    a test case: `python tools/regress.py add <date>_<montage> --capture-dir
-   ./capture/block1 --montage montage.json --description "what was done, when"`
+   ./capture/block1 --description "what was done, when"`
    (see the README, "Changing the analysis safely").
 
 Open `out/block1/session.html` to review the movement; **Neutral pose**

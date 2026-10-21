@@ -68,7 +68,9 @@ directly.
 """
 
 import argparse
+import glob
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -410,6 +412,89 @@ def validate_montage(montage: dict) -> list:
         else:
             seen_col[col] = i
     return errors
+
+
+# Default landmark label per segment base, for a montage built from the nodes'
+# own headers (a node stores WHICH segment, not where on it the strap sat). A
+# label is descriptive only: it never changes an angle.
+DEFAULT_LANDMARKS = {"torso": "sternum", "upper_arm": "humerus",
+                     "forearm": "forearm", "hand": "hand"}
+
+# The name of the montage a block's capture folder carries (offload writes it).
+CAPTURE_MONTAGE = "montage.json"
+
+
+def default_landmark(seg: str) -> str:
+    side = {"l": "left ", "r": "right "}.get(_seg_side(seg) or "", "")
+    return side + DEFAULT_LANDMARKS.get(_seg_base(seg), "")
+
+
+def build_montage(assignments, subject_id="S01", session_id="", notes=""):
+    """assignments: ordered [(node_id, segment, label)] -> montage dict.
+
+    Column order follows the list order (n0, n1, ...) — what reconcile and
+    analyze_session use to bind logs to segments.
+    """
+    nodes = [{"node_id": nid, "column": f"n{i}", "segment": seg,
+              "landmark": lbl or "", "calibrated": True}
+             for i, (nid, seg, lbl) in enumerate(assignments)]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "subject": {"id": subject_id, "notes": notes},
+        "session": {"id": session_id, "aligned_csv": "aligned.csv"},
+        "calibration": {"neutral_pose": "N-pose", "captured": True,
+                        "protocol": "sync-first",
+                        # no t_window_ms: calibration finds the freeze itself
+                        "functional": []},
+        "nodes": nodes,
+    }
+
+
+def montage_from_capture(capture_dir: str, subject_id: str = "S01",
+                         session_id: str = "", labels: Optional[dict] = None):
+    """Build a montage from a capture folder's own files.
+
+    Every offloaded log `<node_id>.bin` has a `<node_id>.seg.json` sidecar with
+    the segment the node stores in its header (SETUP_AND_CALIBRATION_PLAN.md
+    §2.1), so the folder already says which node was on which body part.
+    Columns follow the canonical segment code (deterministic, as
+    `multinode_test.py read-segments`). `labels`: optional {node_id: landmark}
+    (e.g. from nodes_registry.json); otherwise a default label per segment.
+
+    Returns (montage | None, problems): None with the reasons when the folder
+    cannot describe itself (a log without a sidecar — older firmware or a node
+    never enrolled — or two nodes claiming one segment).
+    """
+    labels = labels or {}
+    problems, found = [], {}
+    bins = sorted(glob.glob(os.path.join(capture_dir, "*.bin")))
+    if not bins:
+        return None, [f"no .bin logs in {capture_dir}"]
+    for b in bins:
+        side = os.path.splitext(b)[0] + ".seg.json"
+        try:
+            with open(side, encoding="utf-8-sig") as f:
+                head = json.load(f)
+        except (OSError, ValueError):
+            problems.append(f"{os.path.basename(b)} has no segment header "
+                            f"({os.path.basename(side)} missing or unreadable)")
+            continue
+        nid = head.get("node_id") or os.path.splitext(os.path.basename(b))[0]
+        seg = head.get("segment")
+        if seg not in SEGMENTS:
+            problems.append(f"{nid}: unknown segment {seg!r} in its header")
+        elif seg in found:
+            problems.append(f"{nid} and {found[seg]} both report '{seg}'")
+        else:
+            found[seg] = nid
+    if problems or not found:
+        return None, problems or [f"no segment headers in {capture_dir}"]
+    ordered = sorted(found.items(), key=lambda kv: SEGMENT_CODES[kv[0]])
+    montage = build_montage(
+        [(nid, seg, labels.get(nid) or default_landmark(seg))
+         for seg, nid in ordered], subject_id, session_id,
+        notes="built from the nodes' segment headers")
+    return montage, []
 
 
 def montage_warnings(montage: dict) -> list:
@@ -760,6 +845,37 @@ def selftest() -> None:
         example_montage())
     print("[selftest] landmark labels: joint→ambiguous & mismatch flagged, "
           "clean labels silent — OK")
+
+    # A capture folder describes itself: the montage is built from the
+    # `.seg.json` sidecars offload writes next to each log.
+    import tempfile
+    cap = tempfile.mkdtemp(prefix="hulc_cap_")
+    for nid, seg in (("HULC-IMU-B059", "upper_arm_r"), ("HULC-IMU-485C", "torso")):
+        open(os.path.join(cap, f"{nid}.bin"), "wb").close()
+        with open(os.path.join(cap, f"{nid}.seg.json"), "w") as f:
+            json.dump({"node_id": nid, "segment": seg,
+                       "code": SEGMENT_CODES[seg]}, f)
+    m, probs = montage_from_capture(cap, "S07", "blk1",
+                                    labels={"HULC-IMU-B059": "lateral humerus"})
+    assert not probs and not validate_montage(m), (probs, m)
+    assert [(n["column"], n["node_id"], n["segment"], n["landmark"])
+            for n in m["nodes"]] == [
+        ("n0", "HULC-IMU-485C", "torso", "sternum"),
+        ("n1", "HULC-IMU-B059", "upper_arm_r", "lateral humerus")], m["nodes"]
+    assert m["subject"]["id"] == "S07" and m["session"]["id"] == "blk1"
+    assert not montage_warnings(m), montage_warnings(m)
+    open(os.path.join(cap, "HULC-IMU-OLD1.bin"), "wb").close()   # no sidecar
+    m2, probs2 = montage_from_capture(cap)
+    assert m2 is None and any("OLD1" in p for p in probs2), probs2
+    os.remove(os.path.join(cap, "HULC-IMU-OLD1.bin"))
+    with open(os.path.join(cap, "HULC-IMU-DUP2.seg.json"), "w") as f:
+        json.dump({"node_id": "HULC-IMU-DUP2", "segment": "torso"}, f)
+    open(os.path.join(cap, "HULC-IMU-DUP2.bin"), "wb").close()
+    m3, probs3 = montage_from_capture(cap)
+    assert m3 is None and any("both report 'torso'" in p for p in probs3), probs3
+    print("[selftest] montage from a capture folder's segment headers: torso "
+          "first, labels kept or defaulted; a log without a header or two "
+          "nodes on one segment refuse — OK")
 
     print("\n[selftest] all checks passed.")
 

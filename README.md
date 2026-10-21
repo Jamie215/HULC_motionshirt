@@ -123,7 +123,9 @@ number a placement can't support.
 | (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual; frames where the model loses the sensors are flagged and excluded. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
 
 `analyze_session.py` orchestrates stages 3–7 in one command, binding each log
-to its segment automatically from the montage.
+to its segment automatically from the montage. Each node stores its own
+segment, so offload writes the block's `montage.json` into its capture folder
+and the folder is all the analysis needs (`--montage` only overrides).
 
 ### Quick start
 
@@ -134,7 +136,8 @@ pip install bleak
 pip install opensim
 python tools/opensense_ik.py fetch-models     # -> models/opensense/
 
-# 1. enroll boards → montage.json (power ONE node on at a time)
+# 1. enroll boards (power ONE node on at a time): stores each board's segment
+#    on the board, and writes montage.json + nodes_registry.json
 python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 
 # 2. record one block, laptop DISCONNECTED — the one-page card,
@@ -143,11 +146,13 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 
 # 3. charging checkpoint: nodes off the body onto the charger (they go IDLE and
 #    stop logging), then offload this block into its own folder
-python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
+#    (it also writes ./capture/block1/montage.json from the nodes' segments)
+python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01
 
-# 4. run the whole analysis chain for the block
-python tools/analyze_session.py run --montage montage.json \
-    --capture-dir ./capture/block1 --outdir ./out/block1
+# 4. run the whole analysis chain for the block (montage from the folder;
+#    --montage FILE overrides)
+python tools/analyze_session.py run --capture-dir ./capture/block1 \
+    --outdir ./out/block1
 #    → aligned.csv, calibration.json, metrics.json, an HTML viewer, and a
 #      BLOCK CHECK (OK / REDO + what to change) at the end
 #    (with OpenSim + fetched models it also solves on each model by itself;
@@ -182,7 +187,7 @@ python tools/regress.py run --data /path/to/regress_data
 # analysis), then CHECK them against what really happened, edit, and commit
 # tools/regress_cases/<name>.json
 python tools/regress.py add 2026-10-07_torso_upper-arm \
-    --capture-dir ./capture/block1 --montage montage.json --description "..."
+    --capture-dir ./capture/block1 --description "..."
 ```
 
 The case files (montage, description, expectations) are in git

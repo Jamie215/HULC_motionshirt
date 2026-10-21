@@ -24,7 +24,8 @@ A case file
       "description": "what the subject did, and when (review-page seconds)",
       "recorded": "2026-10-01",
       "protocol": "sync-first",            # or "hold-first"
-      "montage": { ... the montage used ... },
+      "montage": { ... the montage used (kept in the case, so a case
+                    never depends on the recordings' own headers) ... },
       "expect": {
         "freeze_start_s": [50, 72],        # where the freeze may start
         "end_s": [155, 164],               # where the analysis may end; null =
@@ -48,7 +49,7 @@ Usage
     # the analysis finds now — check them against what really happened, edit
     # the file, then commit it:
     python tools/regress.py add 2026-10-07_torso_upper-arm \\
-        --capture-dir ./capture/block1 --montage montage.json \\
+        --capture-dir ./capture/block1 \\
         --description "twists 20-30 s, freeze 33-40 s, five forward raises ..."
 
     python tools/regress.py selftest
@@ -201,8 +202,17 @@ def cmd_add(args):
     path = os.path.join(CASES, f"{name}.json")
     if os.path.exists(path) and not args.force:
         raise SystemExit(f"[regress] {path} exists (--force to overwrite)")
-    with open(args.montage, encoding="utf-8-sig") as f:
-        montage = json.load(f)
+    if args.montage:
+        with open(args.montage, encoding="utf-8-sig") as f:
+            montage = json.load(f)
+    else:
+        # the block's own montage (offload writes it), else the nodes' headers
+        from analyze_session import resolve_montage
+        mpath, source = resolve_montage(None, args.capture_dir,
+                                        tempfile.mkdtemp(prefix="hulc_regress_m_"))
+        print(f"[regress] montage: {source}")
+        with open(mpath, encoding="utf-8-sig") as f:
+            montage = json.load(f)
     dest = os.path.join(data_root(args.data), name)
     os.makedirs(dest, exist_ok=True)
     copied = 0
@@ -293,7 +303,8 @@ def main():
     pa = sub.add_parser("add", help="add a recording as a new case")
     pa.add_argument("name", help="case name, e.g. 2026-10-07_torso_upper-arm")
     pa.add_argument("--capture-dir", required=True, help="the block's offloaded logs")
-    pa.add_argument("--montage", required=True)
+    pa.add_argument("--montage", help="default: the capture folder's montage.json, "
+                    "else built from the nodes' .seg.json headers")
     pa.add_argument("--protocol", choices=["sync-first", "hold-first"],
                     default="sync-first")
     pa.add_argument("--description")

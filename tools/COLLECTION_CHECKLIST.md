@@ -76,6 +76,11 @@ python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
 - [ ] It writes a schema-valid `montage.json` (columns in enrollment order) plus
       `nodes_registry.json` (remembers id → segment/label).
 
+The segment now lives **on each node**, so this `montage.json` is only a record
+of the rig: every offload writes the block's own `montage.json` into its
+capture folder from the nodes themselves (labels from the registry), and that
+is what the analysis uses.
+
 Pass `--no-erase` to skip only the wipe check (the segment is still written).
 
 Next time the same (labeled) boards are used, reuse the saved mapping —
@@ -199,14 +204,20 @@ With the nodes on the charger (IDLE), offload each log into **a new folder for
 this block** (the next block's clean start is step 2):
 
 ```bash
-python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1
+python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01
 ```
 
 - [ ] Each node reports `COMPLETE — saved N bytes`.
 - [ ] Files land as `./capture/block1/HULC-IMU-XXXX.bin` (auto-named by id), each with a
-      `HULC-IMU-XXXX.seg.json` sidecar recording the node's own segment — so the
-      capture dir is self-describing and `analyze_session` can cross-check it
-      against the montage (it warns, but the montage stays authoritative).
+      `HULC-IMU-XXXX.seg.json` sidecar recording the node's own segment.
+- [ ] Offload then writes `./capture/block1/montage.json` from those sidecars
+      (subject from `--subject`, `--session` optional, landmark labels from
+      `nodes_registry.json`) and prints the binding, e.g.
+      `torso <- HULC-IMU-485C, upper_arm_r <- HULC-IMU-B059`. The folder is now
+      self-contained: keep it whole, there is no separate montage to save. A
+      `montage.json` already in the folder for the same nodes is kept; one for
+      different nodes is never overwritten (offload each block into a new
+      folder).
 - [ ] If any records are reported missing, just re-run the same command — it
       re-requests only the holes.
 - [ ] Quick check before erasing: `python tools/reconcile_nodes.py --inspect
@@ -227,8 +238,15 @@ OpenSense path with `--opensense-model`) and binds each `.bin` to its
 segment **in montage order automatically**, so there's no hand-ordering of logs:
 
 ```bash
-python tools/analyze_session.py run --montage montage.json --capture-dir ./capture/block1 --outdir ./out/block1 --out elbow.html
+python tools/analyze_session.py run --capture-dir ./capture/block1 --outdir ./out/block1 --out elbow.html
 ```
+
+The montage comes from the capture folder: its `montage.json`, or, when the
+folder has none (an older offload, or the file was lost), one built from the
+`.seg.json` sidecars and saved to the output folder. `--montage FILE`
+overrides both, for a node that stored the wrong segment or logs offloaded
+before the firmware stored segments. Whichever is used, the run prints where it
+came from and warns if it disagrees with a node's own header.
 
 **Body-model solves.** Once per machine: `pip install opensim` and
 `python tools/opensense_ik.py fetch-models` (downloads the Thoracoscapular

@@ -124,14 +124,24 @@ shared with the firmware; **append new segments only at the end** so a code neve
 changes meaning for logs already on deployed nodes. The rule when the two sources
 disagree:
 
-- The **montage `segment` stays authoritative** — it is what binds a log to a body
-  part in the pipeline.
-- The node header is the **default/confirmation**: `read-segments` builds the
-  montage straight from the headers, and offload writes a `<node_id>.seg.json`
-  sidecar next to each `.bin`.
-- On a mismatch, `analyze_session` **warns** (same non-fatal spirit as the
-  landmark check) so a swapped or re-placed node surfaces instead of silently
-  binding wrong — but it never overrides the montage.
+- The node header is the **default**. Offload writes a `<node_id>.seg.json`
+  sidecar next to each `.bin` and then the block's own `montage.json` into the
+  same capture folder, built from those sidecars (`read-segments` does the same
+  from live nodes). A capture folder therefore describes itself.
+- `analyze_session` uses, in order: `--montage` if given; else the capture
+  folder's `montage.json`; else one built from the sidecars (saved to the
+  output folder). So a lost montage never blocks a block.
+- A montage that is used **is authoritative** — it is what binds a log to a body
+  part. Pass `--montage` to override a node that stored the wrong segment, or
+  for logs offloaded before the firmware stored segments.
+- On a mismatch between the montage used and a node's header, `analyze_session`
+  **warns** (same non-fatal spirit as the landmark check) so a swapped or
+  re-placed node surfaces instead of silently binding wrong.
+- A montage built from the headers has no subject id beyond what offload's
+  `--subject` / `--session` gave it, and landmark labels from
+  `nodes_registry.json`, else a default per segment (`sternum`, `right
+  humerus`, …). Labels are descriptive only and never change an angle: where on
+  the segment the strap sat is measured by the freeze calibration.
 
 ### Validation (hard errors)
 

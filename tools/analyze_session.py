@@ -18,9 +18,13 @@ segments automatically (no hand-ordering of .bin files):
                                       with OpenSense, a switch between the
                                       direct sensor view and each model solve)
 
-The montage records each node's column (n0, n1, ...) and its id. Offload names
-each file by node id (e.g. HULC-IMU-485C.bin), so this tool resolves every
-node's log from --capture-dir and feeds reconcile the files in the RIGHT order.
+The montage records each node's column (n0, n1, ...), its id and its segment.
+A block's capture folder carries its own: offload writes montage.json there
+from each node's stored segment (the `.seg.json` headers), and when a folder
+has none this tool builds it from those headers. --montage overrides both.
+Offload names each file by node id (e.g. HULC-IMU-485C.bin), so this tool
+resolves every node's log from --capture-dir and feeds reconcile the files in
+the RIGHT order.
 Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
 its own folder — see COLLECTION_SOP.md, the one-page recording card).
 
@@ -29,26 +33,30 @@ Usage
     # validate the orchestration on synthetic logs (no hardware):
     python tools/analyze_session.py selftest
 
-    # run the whole chain for one block:
+    # run the whole chain for one block (the montage comes from the folder):
+    python tools/analyze_session.py run --capture-dir ./capture/block1 \
+        --outdir ./out/block1
+
+    # override the montage (a node stored the wrong segment, or old logs):
     python tools/analyze_session.py run --montage montage.json \
         --capture-dir ./capture/block1 --outdir ./out/block1
 
     # no torso node and too little elbow flexion to infer the facing? state it:
-    python tools/analyze_session.py run --montage montage.json \
+    python tools/analyze_session.py run \
         --capture-dir ./capture/block1 --outdir ./out/block1 --facing-deg 90
 
     # also solve on published models; the page gets a Sensors / model switch:
-    python tools/analyze_session.py run --montage montage.json \
+    python tools/analyze_session.py run \
         --capture-dir ./capture/block1 --outdir ./out/block1 \
         --opensense-model ThoracoscapularShoulderModel.osim \
         --opensense-model Rajagopal2015_opensense.osim
 
     # a recording made in the old order (neutral hold BEFORE the sync gesture):
-    python tools/analyze_session.py run --montage montage.json \
+    python tools/analyze_session.py run \
         --capture-dir ./capture/old --protocol hold-first
 
     # override the neutral window / output name:
-    python tools/analyze_session.py run --montage montage.json \
+    python tools/analyze_session.py run \
         --capture-dir ./capture/block1 --window 1200,4000 --out elbow.html
 """
 import argparse
@@ -60,7 +68,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_capabilities import validate_montage  # noqa: E402
+from motion_capabilities import (  # noqa: E402
+    CAPTURE_MONTAGE, montage_from_capture, validate_montage)
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 
@@ -78,6 +87,36 @@ def load_montage(path):
         raise SystemExit("[analyze] montage failed validation:\n  - " +
                          "\n  - ".join(errors))
     return montage
+
+
+def resolve_montage(montage_arg, capture_dir, outdir):
+    """Which montage this run uses, and where it came from.
+
+    1. --montage, when given: the override (e.g. a node's stored segment is
+       wrong, or the logs predate the segment header).
+    2. The capture folder's own montage.json, which offload writes.
+    3. Otherwise built from the folder's `.seg.json` headers and saved to
+       <outdir>/montage.json, so a lost or missing montage never blocks a block.
+    """
+    if montage_arg:
+        return montage_arg, f"{montage_arg} (given with --montage)"
+    own = os.path.join(capture_dir, CAPTURE_MONTAGE)
+    if os.path.exists(own):
+        return own, f"{own} (the capture folder's own)"
+    montage, problems = montage_from_capture(capture_dir)
+    if montage is None:
+        raise SystemExit(
+            f"[analyze] no montage: {capture_dir} has no {CAPTURE_MONTAGE} and "
+            f"cannot describe itself — " + "; ".join(problems) + ".\n"
+            f"    Pass --montage (a montage.json listing each node's segment).")
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, CAPTURE_MONTAGE)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(montage, f, indent=2)
+        f.write("\n")
+    return path, (f"{path} (built from the nodes' segment headers in "
+                  f"{capture_dir}, subject S01; to keep a subject id with the "
+                  f"block, copy it into {capture_dir} and edit it there)")
 
 
 def ordered_logs(montage, capture_dir):
@@ -329,8 +368,10 @@ def rerun_command(montage_path, capture_dir, out_html, outdir, fs, facing_deg,
     if script.startswith(".."):
         script = os.path.join(TOOLS, "analyze_session.py")
     # the interpreter that ran this analysis (it has numpy, and opensim if used)
-    parts = [q(sys.executable or "python"), q(script), "run", "--montage", q(montage_path),
-             "--capture-dir", q(capture_dir), "--outdir", q(outdir)]
+    parts = [q(sys.executable or "python"), q(script), "run"]
+    if montage_path:
+        parts += ["--montage", q(montage_path)]
+    parts += ["--capture-dir", q(capture_dir), "--outdir", q(outdir)]
     if out_html != "session.html":
         parts += ["--out", q(out_html)]
     if protocol:
@@ -350,6 +391,8 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
         facing_deg=None, opensense_models=None, protocol=None, end_ms=None):
     rerun = rerun_command(montage_path, capture_dir, out_html, outdir, fs,
                           facing_deg, opensense_models, protocol)
+    montage_path, source = resolve_montage(montage_path, capture_dir, outdir)
+    print(f"[analyze] montage: {source}")
     montage = load_montage(montage_path)
     logs, nodes = ordered_logs(montage, capture_dir)
 
@@ -537,6 +580,36 @@ def selftest():
     except SystemExit:
         check(True, "missing log raises a clear error")
 
+    # where the montage comes from: --montage, else the capture folder's own,
+    # else built from the nodes' segment headers; a folder with neither refuses
+    try:
+        resolve_montage(None, cap, os.path.join(tmp, "m0"))
+        ok = False; check(False, "a folder without headers should refuse")
+    except SystemExit:
+        check(True, "no montage and no segment headers -> a clear error")
+    for nid, seg in zip(ids, ("upper_arm_r", "forearm_r")):
+        with open(os.path.join(cap, f"{nid}.seg.json"), "w") as f:
+            json.dump({"node_id": nid, "segment": seg}, f)
+    bp, _ = resolve_montage(None, cap, os.path.join(tmp, "m1"))
+    built = load_montage(bp)
+    r_b = ([(n["column"], n["node_id"]) for n in built["nodes"]]
+           == [("n0", ids[0]), ("n1", ids[1])]
+           and bp == os.path.join(tmp, "m1", "montage.json"))
+    with open(os.path.join(cap, "montage.json"), "w") as f:
+        json.dump(montage, f)
+    r_c = resolve_montage(None, cap, tmp)[0] == os.path.join(cap, "montage.json")
+    r_g = resolve_montage(mpath, cap, tmp)[0] == mpath
+    os.remove(os.path.join(cap, "montage.json"))
+    r_r = ("--montage" not in rerun_command(None, cap, "session.html", tmp, None,
+                                            None, None, None)
+           and "--montage" in rerun_command(mpath, cap, "session.html", tmp,
+                                            None, None, None, None))
+    r_m = r_b and r_c and r_g and r_r
+    ok = ok and r_m
+    check(r_m, "montage: built from the headers when the folder has none; the "
+          "folder's montage.json next; --montage overrides; the re-run command "
+          "names --montage only when it was given")
+
     # full chain end-to-end
     try:
         run(mpath, cap, "out.html", tmp, window=None, fs=None)
@@ -622,7 +695,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd")
 
     pr = sub.add_parser("run", help="run reconcile->capability->calibrate->render")
-    pr.add_argument("--montage", required=True, help="montage JSON")
+    pr.add_argument("--montage",
+                    help="montage JSON (an override). Default: the capture "
+                         "folder's montage.json (offload writes it), else one "
+                         "built from the nodes' .seg.json segment headers")
     pr.add_argument("--capture-dir", required=True,
                     help="directory of offloaded <node_id>.bin logs")
     pr.add_argument("--out", default="session.html", help="viewer HTML filename")

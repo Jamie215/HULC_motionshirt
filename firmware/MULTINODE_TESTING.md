@@ -56,8 +56,10 @@ deprecated alias.
 Other modes:
 * `check --count 1` — single-node latency diagnostic (isolates per-link latency
   from multi-connection scheduling).
-* `offload` — offload one node's flash log to a `.bin` (and measure throughput
-  KB/s). The transfer is now framed and loss-verified — see below.
+* `offload` — offload each node's flash log to a `.bin` (and measure throughput
+  KB/s), with a `.seg.json` segment sidecar per node and the block's
+  `montage.json` built from them. The transfer is now framed and loss-verified —
+  see below.
 * `enroll --segments ...` — map each board to a body segment (power one node at a
   time) and write `montage.json`; see `tools/COLLECTION_CHECKLIST.md`.
 
