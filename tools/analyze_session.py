@@ -70,6 +70,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from motion_capabilities import (  # noqa: E402
     CAPTURE_MONTAGE, montage_from_capture, validate_montage)
+from hulc_paths import FROZEN, tool_cmd  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 
@@ -367,8 +368,10 @@ def rerun_command(montage_path, capture_dir, out_html, outdir, fs, facing_deg,
     script = os.path.relpath(os.path.join(TOOLS, "analyze_session.py"))
     if script.startswith(".."):
         script = os.path.join(TOOLS, "analyze_session.py")
-    # the interpreter that ran this analysis (it has numpy, and opensim if used)
-    parts = [q(sys.executable or "python"), q(script), "run"]
+    # the interpreter that ran this analysis (it has numpy, and opensim if
+    # used); in the standalone app, the app itself
+    parts = ([q(sys.executable), "analyze", "run"] if FROZEN
+             else [q(sys.executable or "python"), q(script), "run"])
     if montage_path:
         parts += ["--montage", q(montage_path)]
     parts += ["--capture-dir", q(capture_dir), "--outdir", q(outdir)]
@@ -406,20 +409,19 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     calib = os.path.join(outdir, "calibration.json")
     metrics = os.path.join(outdir, "metrics.json")
     out_html = os.path.join(outdir, out_html)
-    py = sys.executable
 
     # 1. reconcile — logs in montage column order
-    cmd = [py, os.path.join(TOOLS, "reconcile_nodes.py"), *logs, "--out", aligned]
+    cmd = [*tool_cmd("reconcile_nodes"), *logs, "--out", aligned]
     if fs:
         cmd += ["--fs", str(fs)]
     _run(cmd, "1/5 reconcile (align onto one timeline)")
 
     # 2. capability — which joints this montage supports
-    _run([py, os.path.join(TOOLS, "motion_capabilities.py"), montage_path],
+    _run([*tool_cmd("motion_capabilities"), montage_path],
          "2/5 capability check")
 
     # 3. calibrate — auto neutral window unless overridden
-    cmd = [py, os.path.join(TOOLS, "calibrate_segments.py"), "calibrate",
+    cmd = [*tool_cmd("calibrate_segments"), "calibrate",
            aligned, montage_path, "--out", calib]
     if window:
         cmd += ["--window", window]
@@ -433,7 +435,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
 
     # 4. metrics — per-DOF joint angles + ROM over the calibrated stream. Runs
     #    BEFORE render so the viewer can bake the metrics panel into one page.
-    _run([py, os.path.join(TOOLS, "metrics.py"), "compute", aligned,
+    _run([*tool_cmd("metrics"), "compute", aligned,
           montage_path, "--calibration", calib, "--out", metrics],
          "4/5 metrics (per-DOF joint angles + range of motion)")
 
@@ -454,7 +456,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
             os_dir = os.path.join(outdir, "opensense", name)
             if os_dir in solver_dirs:
                 os_dir += f"_{k}"
-            cmd = [py, os.path.join(TOOLS, "opensense_ik.py"), "run", aligned,
+            cmd = [*tool_cmd("opensense_ik"), "run", aligned,
                    montage_path, "--calibration", calib, "--model", model,
                    "--outdir", os_dir, "--no-render"]
             step = f"OpenSense {k}/{len(models)}: {os.path.basename(model)}"
@@ -467,7 +469,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
     # 6. render — the stage-7 review: the 3-D viewer + the metrics panel, one page
     #    (it also picks up reconcile's aligned.quality.json for the sync chips).
     #    Each OpenSense solve rides along, switchable against the sensor view.
-    cmd = [py, os.path.join(TOOLS, "skeleton_viewer.py"), "render", aligned,
+    cmd = [*tool_cmd("skeleton_viewer"), "render", aligned,
            montage_path, "--calibration", calib, "--metrics", metrics,
            "--out", out_html, "--rerun", rerun]
     for d in solver_dirs:

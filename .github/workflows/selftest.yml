@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
-        run: pip install numpy
+      - name: Install the pinned requirements
+        run: pip install -r requirements.txt
       - name: Selftests
         run: |
           set -e
@@ -36,28 +36,3 @@ jobs:
       - name: Regression library (skips cases without recordings)
         run: python tools/regress.py run
 
-  package:
-    # the pip package: build the wheel, install it in a clean environment and
-    # run the commands from outside the repository
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build and install the wheel
-        run: |
-          pip wheel . --no-deps -w dist
-          python -m venv /tmp/hulc
-          /tmp/hulc/bin/pip install dist/*.whl
-      - name: Commands from outside the repository
-        working-directory: /tmp
-        env:
-          HULC_HOME: /tmp/hulc-home
-        run: |
-          set -e
-          /tmp/hulc/bin/hulc-analyze selftest
-          /tmp/hulc/bin/hulc-app selftest
-          /tmp/hulc/bin/hulc-regress selftest
-          /tmp/hulc/bin/hulc-nodes selftest
-          /tmp/hulc/bin/hulc-opensense selftest

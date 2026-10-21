@@ -82,13 +82,15 @@ montages only the segment names change.
 
   Shoulder angles need the torso node; without it the pipeline blocks them,
   since trunk sway would read as shoulder motion.
-- **Laptop (once per machine).** From the repository folder,
-  `pip install -e ".[ble]"` (numpy, bleak for the BLE commands, and the
-  `hulc-*` commands; the session app's launcher installs the basics itself).
+- **Laptop (once per machine).** Either the standalone app (no Python: see
+  the README), or Python 3.11–3.13 and, from the repository folder,
+  `pip install -r requirements.txt` (the pinned numpy, and bleak for the BLE
+  commands; the session app's launcher offers to do this itself).
   The central should be a well-behaved BLE host — **iOS, Android or Linux
   (BlueZ)**: a Windows desktop `bleak` central forces a slow connection
   interval and makes offload crawl (a bench artifact, not a firmware limit).
-  Body-model solves are optional: `pip install -e ".[all]"` and
+  Body-model solves are optional (Python install only):
+  `pip install -r requirements-opensense.txt` and
   `python tools/opensense_ik.py fetch-models` once.
 - **Straps.** Soft-tissue wobble is the largest error left at 10 Hz: about 3°
   RMS doubles every angle error in simulation. Snug, and the same way round
@@ -232,9 +234,9 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
      `montage.json` already there for the same nodes is kept; one for other
      nodes is never overwritten.
 3. **Analyze** and read the block check (§6): drop the folder on the
-   **HULC Sessions** app (`tools/app.py`, double-click launchers in the repo
-   folder; it runs the command below and shows the block check and review
-   page, with **Apply** on the Timeline), or:
+   session app (the standalone **HULC** app, or `tools/app.py` through the
+   double-click launchers in the repo folder; it runs the command below and
+   shows the block check and review page, with **Apply** on the Timeline), or:
 
    ```bash
    python tools/analyze_session.py run --capture-dir ./capture/blockN --outdir ./out/blockN

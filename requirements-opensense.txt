@@ -1,0 +1,5 @@
+# Optional: body-model solves (OpenSense) on top of requirements.txt.
+# Official OpenSim wheels, Python 3.11-3.13. Then once:
+#     python tools/opensense_ik.py fetch-models
+-r requirements.txt
+opensim==4.6

@@ -1,0 +1,77 @@
+name: app
+
+# The standalone app (Python included): built on each OS, checked by running
+# every tool's selftest inside the build, and uploaded as a downloadable
+# artifact (Actions → this run → Artifacts). A version tag (v*) also attaches
+# the builds to a GitHub release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["tools/**", "packaging/**", "requirements*.txt", ".github/workflows/app.yml"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            exe: dist/HULC/HULC.exe
+          - os: macos-latest
+            name: macos
+            exe: dist/HULC.app/Contents/MacOS/HULC
+          - os: ubuntu-latest
+            name: linux
+            exe: dist/HULC/HULC
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      HULC_HOME: ${{ github.workspace }}/hulc-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the build requirements
+        run: pip install -r requirements-build.txt
+      - name: Build
+        run: python packaging/build_app.py
+      - name: Selftests inside the build
+        run: |
+          "${{ matrix.exe }}" selftest || { cat "$HULC_HOME/app.log" 2>/dev/null; exit 1; }
+          cat "$HULC_HOME/app.log" 2>/dev/null | tail -15 || true
+      - name: Archive
+        run: |
+          mkdir -p out
+          case "${{ matrix.name }}" in
+            windows) (cd dist && 7z a -tzip ../out/HULC-windows.zip HULC > /dev/null) ;;
+            macos)   ditto -c -k --keepParent dist/HULC.app out/HULC-macos.zip ;;
+            linux)   tar czf out/HULC-linux.tar.gz -C dist HULC ;;
+          esac
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HULC-${{ matrix.name }}
+          path: out/*
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

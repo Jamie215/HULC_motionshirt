@@ -132,13 +132,13 @@ from metrics import (  # noqa: E402
     compute_metrics, print_report, resolve_anatomical_frame, trim_to_analysis,
 )
 from reconcile_nodes import quality_path  # noqa: E402
-from hulc_paths import writable_dir  # noqa: E402
+from hulc_paths import tool_cmd, writable_dir  # noqa: E402
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = [1.0, 0.0, 0.0, 0.0]
 # Where `fetch-models` puts the models, and where analyze_session.py looks for
 # them by default: models/opensense/ in a checkout (git-ignored), or
-# ~/HULC/models/opensense for an installed copy. Only the .osim is needed for
+# ~/HULC/models/opensense in the standalone app. Only the .osim is needed for
 # IK: without the mesh geometry OpenSim warns but solves the same.
 DEFAULT_MODELS_DIR = writable_dir("models", "opensense",
                                   installed=os.path.join("models", "opensense"))
@@ -641,7 +641,7 @@ def run(aligned_csv, montage_path, calibration_path, model_path, outdir,
 
     if render:
         html = os.path.join(outdir, "opensense.html")
-        subprocess.run([sys.executable, os.path.join(TOOLS, "skeleton_viewer.py"),
+        subprocess.run([*tool_cmd("skeleton_viewer"),
                         "render", aligned_out, montage_path, "--calibration",
                         cal_path, "--metrics", met_path, "--out", html],
                        check=False)

@@ -1,0 +1,10 @@
+# HULC Motion Shirt — the pinned (frozen) versions the tools are tested with.
+# Python 3.11-3.13.  From the repository folder:
+#
+#     pip install -r requirements.txt
+#
+# numpy: every analysis tool, the session app and the selftests.
+# bleak: the node commands (multinode_test.py enroll / offload / erase / check);
+#        its own dependencies differ per OS and are resolved by pip.
+numpy==2.3.5
+bleak==3.0.2

@@ -32,12 +32,15 @@ repeat steps 2–3 first.
 
 1. **Offload** into a new folder for this block:
    `python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01`
+   (standalone app: `HULC nodes offload …` with the same options; likewise
+   `HULC nodes erase …` in step 4)
    The folder now holds everything about the block: each node's log, which
    body part it was on, and a `montage.json` built from that. Keep the folder
    together; there is no separate montage file to save.
-2. **Analyze** it: open the **HULC Sessions** app (double-click
-   `HULC Sessions.bat` / `.command` in the repo folder), type the subject and
-   drop `./capture/block1` on the page. Or from the command line:
+2. **Analyze** it: open the session app — double-click **HULC** (the
+   standalone app, no Python needed) or `HULC Sessions.bat` / `.command` in
+   the repo folder — type the subject and drop `./capture/block1` on the page.
+   Or from the command line:
    `python tools/analyze_session.py run --capture-dir ./capture/block1 --outdir ./out/block1`
 3. **Read the `BLOCK CHECK`** (top of the app page, or the end of the output):
    - **OK** — keep going (read any NOTE lines).

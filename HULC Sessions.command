@@ -1,7 +1,7 @@
 #!/bin/bash
 # Double-click (macOS) or run (Linux: bash "HULC Sessions.command") to open the
 # HULC session app in your browser. The first time, it offers to install what
-# the app needs (pip install -e . : numpy, and the hulc-* commands). Keep this
+# the app needs (pip install -r requirements.txt). Keep this
 # window open while you use the app; close it or press Ctrl+C to stop.
 cd "$(dirname "$0")" || exit 1
 PY=python3
@@ -14,7 +14,7 @@ if ! "$PY" -c "import numpy" >/dev/null 2>&1; then
   echo "The app needs a few Python packages (numpy)."
   read -r -p "Install them now with pip? [Y/n] " ans
   case "$ans" in [nN]*) exit 1;; esac
-  "$PY" -m pip install -e . || { read -r -p "Install failed. Press Enter to close."; exit 1; }
+  "$PY" -m pip install -r requirements.txt || { read -r -p "Install failed. Press Enter to close."; exit 1; }
 fi
 if ! "$PY" tools/app.py "$@"; then
   echo

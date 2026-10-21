@@ -1,7 +1,7 @@
 @echo off
 rem Double-click to open the HULC session app in your browser. The first time,
-rem it offers to install what the app needs (pip install -e . : numpy, and the
-rem hulc-* commands). Keep this window open while you use the app.
+rem it offers to install what the app needs (pip install -r requirements.txt).
+rem Keep this window open while you use the app.
 cd /d "%~dp0"
 set "PY=python"
 where py >nul 2>nul && set "PY=py -3"
@@ -12,7 +12,7 @@ echo The app needs a few Python packages (numpy).
 set "ANS="
 set /p "ANS=Install them now with pip? [Y/n] "
 if /i "%ANS%"=="n" exit /b 1
-%PY% -m pip install -e . || goto installfailed
+%PY% -m pip install -r requirements.txt || goto installfailed
 
 :run
 %PY% tools\app.py %*

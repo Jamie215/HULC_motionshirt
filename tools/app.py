@@ -43,6 +43,7 @@ from urllib.parse import unquote, urlparse
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 from motion_capabilities import CAPTURE_MONTAGE, montage_from_capture  # noqa: E402
+from hulc_paths import tool_cmd  # noqa: E402
 
 DEFAULT_PORT = 8765
 MAX_FILE_BYTES = 64 * 1024 * 1024        # a node's whole flash is 2 MB
@@ -182,7 +183,7 @@ def prepare_montage(capture_dir, subject, session):
 
 
 def analyze_command(store, meta):
-    cmd = [sys.executable, os.path.join(TOOLS, "analyze_session.py"), "run",
+    cmd = [*tool_cmd("analyze_session"), "run",
            "--capture-dir", store.path(meta["id"], "capture"),
            "--outdir", store.path(meta["id"], "out")]
     if meta.get("protocol") in ("sync-first", "hold-first"):
@@ -318,6 +319,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not p:
                 return self.send(200, APP_PAGE, "text/html; charset=utf-8")
+            if p == ["api", "ping"]:
+                return self.send(200, {"app": "hulc-sessions",
+                                       "workspace": self.store.root})
             if p == ["api", "sessions"]:
                 return self.send(200, self.store.list())
             if len(p) == 3 and p[:2] == ["api", "sessions"]:
@@ -337,6 +341,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             return self.fail(403, "cross-origin request refused")
         p = self.route()
+        if p == ["api", "quit"]:
+            # the Quit button: a double-clicked app may have no window to close
+            self.send(200, {"stopping": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         try:
             if p == ["api", "sessions"]:
                 d = self.json_body()
@@ -432,7 +441,7 @@ class Handler(BaseHTTPRequestHandler):
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,80}$", name):
             return self.fail(400, "case name: letters, digits, . _ - (e.g. "
                                   "2026-10-21_torso_upper-arm)")
-        cmd = [sys.executable, os.path.join(TOOLS, "regress.py"), "add", name,
+        cmd = [*tool_cmd("regress"), "add", name,
                "--capture-dir", self.store.path(sid, "capture"),
                "--description", str(d.get("description") or "")[:2000]]
         meta = self.store.load(sid)
@@ -443,6 +452,20 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200 if r.returncode == 0 else 400,
                          {"ok": r.returncode == 0,
                           "output": (r.stdout + r.stderr)[-6000:]})
+
+
+def running_app(port):
+    """The URL of a session app already serving on this port, else None — a
+    second double-click opens that one instead of starting another."""
+    import urllib.request
+    url = f"http://127.0.0.1:{port}/"
+    try:
+        with urllib.request.urlopen(url + "api/ping", timeout=1.5) as r:
+            if json.loads(r.read()).get("app") == "hulc-sessions":
+                return url
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def make_server(workspace, port, quiet=False):
@@ -532,7 +555,8 @@ dialog pre{max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap}
   overflow:auto;height:auto}aside{max-height:55vh}main{min-height:80vh}}
 </style></head><body>
 <aside>
-  <header><h1>HULC sessions</h1>
+  <header><div style="display:flex;justify-content:space-between;align-items:center">
+    <h1>HULC sessions</h1><button id="quit" title="Stop the app">Quit</button></div>
     <div class="sub">Drop a block's capture folder to analyze it. Nothing leaves this computer.</div></header>
   <div id="drop" tabindex="0"><b>Drop a capture folder here</b><br>
     or the block's <code>.bin</code> + <code>.seg.json</code> files<br>
@@ -714,6 +738,14 @@ $('kgo').addEventListener('click',async e=>{
   catch(err){ $('kout').textContent=err.message; }
   $('kgo').disabled=false;
 });
+$('quit').addEventListener('click',async()=>{
+  if(LIST.some(s=>s.status==='queued'||s.status==='running')&&
+     !confirm('An analysis is still running. Quit anyway?')) return;
+  try{ await api('POST','/api/quit',{}); }catch(e){}
+  document.body.innerHTML='<div style="padding:40px;grid-column:1/-1">'+
+    '<h1>HULC sessions has stopped.</h1><p class="sub">You can close this tab. '+
+    'Your sessions are kept; start the app again to see them.</p></div>';
+});
 refresh();
 </script></body></html>
 """
@@ -763,6 +795,8 @@ def selftest():
 
     code, page = req("GET", "/")
     check(code == 200 and b'id="drop"' in page, "the app page is served")
+    check(running_app(srv.server_address[1]) == base + "/",
+          "a running app is recognised (a second launch opens it)")
 
     # a block: two synthetic logs with their segment headers, plus a montage
     # whose freeze window keeps the synthetic run deterministic
@@ -845,7 +879,10 @@ def selftest():
           and not os.path.exists(os.path.join(ws, sid2)),
           "a session can be removed")
 
-    srv.shutdown()
+    code, _ = req("POST", "/api/quit", {})
+    time.sleep(0.5)
+    check(code == 200 and running_app(srv.server_address[1]) is None,
+          "Quit stops the app")
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — upload, background analysis, "
           f"review page, Apply re-run, guards (workspace {ws}).")
     return 0 if ok else 1
@@ -863,17 +900,24 @@ def main():
     ap.add_argument("--no-browser", action="store_true",
                     help="do not open a browser tab")
     args = ap.parse_args()
+    url = running_app(args.port)
+    if url:
+        print(f"[app] already running at {url} — opening it.", flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
     srv, store = make_server(args.workspace, args.port)
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
     print(f"[app] HULC sessions at {url}  (workspace {store.root})", flush=True)
-    print("[app] leave this window open while you use the app; Ctrl+C to stop.",
-          flush=True)
+    print("[app] leave this window open while you use the app; Quit on the page "
+          "or Ctrl+C stops it.", flush=True)
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\n[app] stopped.")
+        pass
+    print("\n[app] stopped.", flush=True)
 
 
 if __name__ == "__main__":

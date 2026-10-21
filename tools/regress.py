@@ -66,7 +66,7 @@ import tempfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
-from hulc_paths import writable_dir  # noqa: E402
+from hulc_paths import tool_cmd, writable_dir  # noqa: E402
 
 CASES = os.path.join(TOOLS, "regress_cases")       # the cases that ship with the code
 DEFAULT_DATA = writable_dir("regress_data", installed="regress_data")
@@ -78,7 +78,7 @@ def data_root(arg=None):
 
 def cases_dir():
     """Where `add` writes a new case: tools/regress_cases in a checkout (to
-    commit), ~/HULC/regress_cases for an installed copy, or $HULC_REGRESS_CASES."""
+    commit), ~/HULC/regress_cases in the standalone app, or $HULC_REGRESS_CASES."""
     return (os.environ.get("HULC_REGRESS_CASES")
             or writable_dir("tools", "regress_cases", installed="regress_cases"))
 
@@ -108,7 +108,7 @@ def analyze(case, capture_dir, workdir, opensense=False):
     with open(mpath, "w") as f:
         json.dump(case["montage"], f, indent=2)
     out = os.path.join(workdir, "out")
-    cmd = [sys.executable, os.path.join(TOOLS, "analyze_session.py"), "run",
+    cmd = [*tool_cmd("analyze_session"), "run",
            "--montage", mpath, "--capture-dir", capture_dir, "--outdir", out,
            "--protocol", case.get("protocol", "sync-first")]
     if not opensense:
