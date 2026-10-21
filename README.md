@@ -96,12 +96,22 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 The pipeline is pure Python on top of **NumPy**. Two ways to run it:
 
-- **The standalone app — no Python needed.** Download the build for your
-  system (Windows / macOS / Linux) from the repository's GitHub Actions
-  **app** workflow (or a release) and double-click **HULC**. It holds Python,
-  numpy and every tool; from a terminal, `HULC analyze …` / `HULC nodes …`
-  run the tools (see `packaging/README.txt`). Built by
-  `packaging/build_app.py`; body-model solves (OpenSim) are not included.
+- **The standalone app — no Python needed.** It holds Python, numpy and
+  every tool; from a terminal, `HULC analyze …` / `HULC nodes …` run the
+  tools (see `packaging/README.txt`). Built by `packaging/build_app.py`;
+  body-model solves (OpenSim) are not included. To get it, signed in to
+  GitHub: **Actions → app → the latest run → Artifacts** (or a release page
+  once a version is tagged).
+  - **Windows:** download **HULC-windows**, unzip it into a normal folder
+    (not run from inside the zip), double-click `HULC\HULC.exe`. First launch:
+    "Windows protected your PC" → **More info → Run anyway** (the app is not
+    code-signed).
+  - **macOS:** download **HULC-macos**, unzip it, then unzip
+    `HULC-macos.zip` inside (the inner zip keeps the app's executable
+    permission), and open `HULC.app` with right-click → **Open** the first
+    time.
+  - **Linux:** download **HULC-linux**, unzip it, `tar xzf HULC-linux.tar.gz`,
+    run `HULC/HULC`.
 - **With Python 3.11–3.13**, from the repository folder, install the pinned
   (frozen) versions the tools are tested with:
 
