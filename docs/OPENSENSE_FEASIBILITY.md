@@ -6,7 +6,7 @@
 
 Question: can OpenSim/OpenSense (Stanford, Apache-2.0) replace our own
 calibration + joint-angle stage, and how does it behave when only some nodes
-are worn? Harness: `tools/opensense_feasibility.py` (synthetic ground truth, no
+are worn? Harness: `tools/evaluation/opensense_feasibility.py` (synthetic ground truth, no
 hardware). Run 2026-09-25 with OpenSim 4.6.
 
 ## Setup

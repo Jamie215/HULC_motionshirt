@@ -30,7 +30,7 @@ def main():
         raise SystemExit("needs PyInstaller:  pip install pyinstaller")
     sep = os.pathsep
     args = [
-        os.path.join(ROOT, "packaging", "hulc_entry.py"),
+        os.path.join(ROOT, "hulc.py"),
         "--name", NAME,
         "--onedir",                       # fast start: the tools run as child processes
         "--noconfirm", "--clean",

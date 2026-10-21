@@ -2414,7 +2414,7 @@ function tlEdited(){
 let APP=false;   // shown inside tools/app.py (see the hello handler below)
 function tlCommand(){
   const ed=tlEdited();
-  let c=TL.rerun||'python tools/analyze_session.py run --montage montage.json --capture-dir <block folder>';
+  let c=TL.rerun||'hulc analyze --capture-dir <block folder>';
   // a value set by hand last time stays in the command even when not moved
   if(ed.f||TL.freeze_manual) c+=` --window ${Math.round(TLS.f0)},${Math.round(TLS.f0+TL_LEN)}`;
   if((ed.e||TL.end_manual)&&TLS.end!=null) c+=` --end ${Math.round(TLS.end)}`;
@@ -2432,7 +2432,7 @@ function tlText(){
      :' — as detected. Drag the green freeze band or the end line if they are wrong.');
   document.getElementById('tlcmd').value=tlCommand();
 }
-// Inside the session app (tools/app.py) the page sits in an iframe: the app
+// Inside the HULC app (tools/app.py) the page sits in an iframe: the app
 // says hello, and Apply hands the dragged settings back to it to re-run.
 window.addEventListener('message',e=>{
   if(e.source!==window.parent||!e.data||e.data.type!=='hulc-app') return;

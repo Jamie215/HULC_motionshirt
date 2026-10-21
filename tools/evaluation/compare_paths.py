@@ -28,7 +28,7 @@ axes match the model exactly — a real arm will not. The soft-tissue wobble
 is the stand-in for that mismatch in the realistic condition.
 
 Needs OpenSim + the model (see opensense_ik.py):
-    python tools/compare_paths.py --model Rajagopal2015_opensense.osim [--out cmp]
+    python tools/evaluation/compare_paths.py --model Rajagopal2015_opensense.osim [--out cmp]
 """
 
 import argparse
@@ -40,7 +40,8 @@ import tempfile
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# the pipeline modules live one folder up, in tools/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from calibrate_segments import (  # noqa: E402
     qmul, qconj, qnorm, build_calibration, choose_neutral_window,
 )

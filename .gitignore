@@ -21,7 +21,7 @@ redon.csv
 # ...except the tracked files that share those extensions:
 !tools/montage.example.json
 !tools/regress_cases/*.json
-!tools/pipeline_walkthrough.html
+!docs/pipeline_walkthrough.html
 
 # The standalone app build (packaging/build_app.py)
 build/

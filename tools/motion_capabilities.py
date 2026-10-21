@@ -47,7 +47,7 @@ Usage
     # validate the model + resolver logic with no montage file:
     python tools/motion_capabilities.py --selftest
 
-Montage schema (see tools/MONTAGE_SCHEMA.md for the full write-up)
+Montage schema (see docs/MONTAGE_SCHEMA.md for the full write-up)
 -----------------------------------------------------------------
     {
       "schema_version": "1.0",

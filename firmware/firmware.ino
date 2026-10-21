@@ -309,7 +309,7 @@
 // most of an arm session in STATIC, and every shoulder angle is measured
 // against it: at 5 s the slow trunk drift between samples was lost (shoulder
 // axial rotation 6.3° -> 1.9° RMS, elevation 5.1° -> 2.5° in
-// tools/timing_bench.py). The RV already runs at 1 Hz here, so the change adds
+// tools/evaluation/timing_bench.py). The RV already runs at 1 Hz here, so the change adds
 // only the flash writes: +16 B/s while STATIC, ~+3.5% of a torso+arm session.
 #define STATIC_SAMPLE_INTERVAL_MS   1000
 // A report that lands a few ms early must not be skipped (which would double

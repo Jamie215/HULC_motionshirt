@@ -42,7 +42,7 @@ Findings that shaped reconcile_nodes.py (2026-09-26, 4 seeds, 3° wobble):
     at in STATIC): torso + upper arm shoulder axial rotation 6.3 -> 1.9° RMS,
     elevation 5.1 -> 2.5°, plane of elevation 9.5 -> 5.9°, for +3.5% samples.
 
-Usage:  python tools/timing_bench.py [--seeds 3] [--wobble 3] [--out DIR]
+Usage:  python tools/evaluation/timing_bench.py [--seeds 3] [--wobble 3] [--out DIR]
 """
 
 import argparse
@@ -56,7 +56,8 @@ import tempfile
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# the pipeline modules live one folder up, in tools/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from calibrate_segments import (  # noqa: E402
     qmul, qnorm, anatomical_frame_quat, build_calibration,
     choose_neutral_window, load_aligned,

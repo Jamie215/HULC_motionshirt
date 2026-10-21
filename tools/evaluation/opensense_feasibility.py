@@ -7,13 +7,13 @@ through a known upper-body motion, read off the world orientation of virtual
 IMUs (random strap mounting, Z-up sensor world, subject facing 37° off north,
 ~1° noise), write OpenSense .sto files, then run IMUPlacer +
 IMUInverseKinematicsTool for several node subsets and compare the recovered
-joint coordinates against truth. Findings: OPENSENSE_FEASIBILITY.md.
+joint coordinates against truth. Findings: docs/OPENSENSE_FEASIBILITY.md.
 
 This is an evaluation harness, not part of the pipeline. Needs:
     pip install opensim numpy        # official Stanford wheels, Python 3.11-3.13
     git clone --depth 1 https://github.com/opensim-org/opensim-models
 Usage:
-    python tools/opensense_feasibility.py --model \
+    python tools/evaluation/opensense_feasibility.py --model \
         opensim-models/Models/Rajagopal_OpenSense/Rajagopal2015_opensense.osim \
         [--out os_eval] [--default-ranges] [CASE_PREFIX ...]
 """

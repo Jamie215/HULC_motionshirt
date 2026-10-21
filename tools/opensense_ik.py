@@ -715,7 +715,7 @@ def selftest():
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — model plans for both profiles "
           f"(what each montage frees), profile detection, world->model frame, .sto "
           f"export. The solve itself needs "
-          f"OpenSim + the model: see tools/OPENSENSE_FEASIBILITY.md.")
+          f"OpenSim + the model: see docs/OPENSENSE_FEASIBILITY.md.")
     return 0 if ok else 1
 
 

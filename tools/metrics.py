@@ -21,7 +21,7 @@ ROM and the per-DOF read-out came first (SETUP_AND_CALIBRATION_PLAN.md §6, buil
 step 4); the rest ride on the same decomposition and the same honesty contract.
 
 Every metric's meaning, formula, units, and calibration gate are catalogued in
-tools/METRICS.md (this module is the implementation it indexes).
+docs/METRICS.md (this module is the implementation it indexes).
 
 How a joint angle is computed (the whole chain in five lines)
 -------------------------------------------------------------

@@ -33,7 +33,7 @@ solve on the same timeline (`analyze_session.py run … --opensense-model A.osim
 --opensense-model B.osim`). Use **Rajagopal** only where TSM has no body: the left arm and the
 wrists. Report its raw coordinates only with a torso node (see finding 3).
 
-## 1. Synthetic ground truth (`tools/compare_paths.py`)
+## 1. Synthetic ground truth (`tools/evaluation/compare_paths.py`)
 
 **Truth.** A protocol-shaped 40 s session is played on the Rajagopal model:
 
@@ -258,6 +258,6 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/opensim-org/o
 (cd opensim-models && git sparse-checkout set Models/Rajagopal_OpenSense)
 RAJ=opensim-models/Models/Rajagopal_OpenSense/Rajagopal2015_opensense.osim
 TSM=opensim-core/OpenSim/Tests/shared/ThoracoscapularShoulderModel.osim
-python tools/compare_paths.py --model $RAJ                    # Rajagopal
-python tools/compare_paths.py --model $TSM --truth-model $RAJ # Thoracoscapular
+python tools/evaluation/compare_paths.py --model $RAJ                    # Rajagopal
+python tools/evaluation/compare_paths.py --model $TSM --truth-model $RAJ # Thoracoscapular
 ```

@@ -20,19 +20,8 @@ jobs:
           python-version: "3.12"
       - name: Install the pinned requirements
         run: pip install -r requirements.txt
-      - name: Selftests
-        run: |
-          set -e
-          python tools/reconcile_nodes.py --selftest
-          python tools/motion_capabilities.py --selftest
-          python tools/calibrate_segments.py selftest
-          python tools/metrics.py selftest
-          python tools/skeleton_viewer.py selftest
-          python tools/analyze_session.py selftest
-          python tools/opensense_ik.py selftest
-          python tools/multinode_test.py selftest
-          python tools/regress.py selftest
-          python tools/app.py selftest
+      - name: Selftests (every tool, through the hulc command)
+        run: python hulc.py selftest
       - name: Regression library (skips cases without recordings)
-        run: python tools/regress.py run
+        run: python hulc.py regress run
 

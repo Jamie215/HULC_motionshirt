@@ -25,7 +25,7 @@ FROM THE MOTION:
      lag that best aligns them = the clock offset. Direction matters: a trunk
      twist (about vertical) can only match a trunk twist, never an arm swing
      (about a horizontal axis) — matching speed magnitudes alone could pair them
-     and miss by tens of seconds (tools/timing_bench.py). The match is trusted
+     and miss by tens of seconds (tools/evaluation/timing_bench.py). The match is trusted
      when its peak clearly beats every other alignment (sync_peak_ratio); the
      angular-SPEED cross-correlation remains as a fallback (--sync speed). A
      start-window vs end-window lag comparison estimates the (linear) clock

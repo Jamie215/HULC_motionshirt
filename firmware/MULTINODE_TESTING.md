@@ -61,7 +61,7 @@ Other modes:
   `montage.json` built from them. The transfer is now framed and loss-verified —
   see below.
 * `enroll --segments ...` — map each board to a body segment (power one node at a
-  time) and write `montage.json`; see `tools/COLLECTION_REFERENCE.md` §4.
+  time) and write `montage.json`; see `docs/COLLECTION_REFERENCE.md` §4.
 
 ## Flash offload — framing & drop recovery
 

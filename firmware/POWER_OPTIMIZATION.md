@@ -144,7 +144,7 @@ machine's logic; each is commented at its site.
    skipped. Motivation is data quality, not power: a torso node spends most of
    an arm session in STATIC (the trunk is still while the arm works), and every
    shoulder angle is measured against it, so 5 s between torso samples lost the
-   slow trunk drift in between. `tools/timing_bench.py` (6 seeds, firmware
+   slow trunk drift in between. `tools/evaluation/timing_bench.py` (6 seeds, firmware
    schedule model) on torso + upper arm: shoulder axial rotation 6.3° → 1.9°
    RMS, elevation 5.1° → 2.5°, plane of elevation 9.5° → 5.9°; arm-only
    montages unchanged. **Cost:** the RV already runs at ~1 Hz in STATIC (Tier

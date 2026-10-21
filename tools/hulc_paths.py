@@ -32,7 +32,7 @@ def tool_cmd(name):
     """The command that runs one tool (`name` = its module, e.g.
     "reconcile_nodes") as a separate process: this Python and the tool's
     script, or — in the standalone app, which has no separate Python — the
-    app itself, which dispatches `--tool <name>` (packaging/hulc_entry.py)."""
+    app itself, which dispatches `--tool <name>` (hulc.py)."""
     if FROZEN:
         return [sys.executable, "--tool", name]
     return [sys.executable, os.path.join(TOOLS_DIR, name + ".py")]

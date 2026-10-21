@@ -11,8 +11,163 @@ The repository has two halves:
 
 - **`firmware/`** — the node firmware (Arduino / nRF52840) that records motion
   and offloads it over BLE.
-- **`tools/`** — the Python analysis pipeline that runs on a laptop after
-  collection, from raw logs to range-of-motion numbers and a visual.
+- **The analysis** — offloading the nodes and turning their logs into a block
+  check and a review page, done **either in the HULC app or with `hulc`
+  commands** (see [Analysing sessions](#analysing-sessions)). The code is in
+  `tools/`, the documentation in `docs/`.
+
+---
+
+## Analysing sessions
+
+A session is recorded in **blocks** (one mounting, one charge — the
+[recording card](docs/COLLECTION_SOP.md)). Each block is offloaded into its own
+capture folder, and analysing that folder gives a **block check** (OK / REDO
+and what to change) and a **review page** (3-D movement, joint angles, range of
+motion). There are two ways to do it; both run the same analysis.
+
+| | **1. The HULC app** | **2. `hulc` commands** |
+|---|---|---|
+| For | analysing and reviewing blocks without a terminal | offloading the nodes, scripting, batches |
+| How | drop a block's folder on a page in the browser | `hulc analyze --capture-dir …` in a terminal |
+| Get it | the standalone app (no Python), or the repository + Python | the same two installs |
+
+### Getting HULC
+
+**Standalone app — no Python needed.** One program holding Python and every
+tool, built for each system by CI. Signed in to GitHub: **Actions → app → the
+latest run → Artifacts** (or the release page, once a version is tagged).
+
+- **Windows:** download **HULC-windows**, unzip it into a normal folder (do not
+  run it from inside the zip). First launch: "Windows protected your PC" →
+  **More info → Run anyway** (the app is not code-signed).
+- **macOS:** download **HULC-macos**, unzip it, then unzip `HULC-macos.zip`
+  inside it (the inner zip keeps the app's executable permission); open
+  `HULC.app` with right-click → **Open** the first time.
+- **Linux:** download **HULC-linux**, unzip it, `tar xzf HULC-linux.tar.gz`.
+
+Body-model solves (OpenSim) are not in the standalone app.
+
+**From the repository, with Python 3.11–3.13.** Install the pinned versions the
+tools are tested with, from the repository folder:
+
+```bash
+pip install -r requirements.txt              # numpy + bleak (the node commands)
+pip install -r requirements-opensense.txt    # optional: + OpenSim body-model solves
+```
+
+(`HULC.bat` / `HULC.command` offer to do this the first time they run.)
+
+### 1. The HULC app
+
+Start it: double-click **HULC** (`HULC.exe` / `HULC.app` from the standalone
+download, or `HULC.bat` / `HULC.command` in the repository folder). A browser
+tab opens at `http://127.0.0.1:8765/`.
+
+1. Type the subject id, then **drop a block's capture folder** on the page (or
+   its `.bin` + `.seg.json` files; several block folders become one session
+   each).
+2. Read the **block check** at the top, then the **review page** below it.
+3. Freeze or end in the wrong place? Open **Timeline**, drag it, press
+   **Apply**: the block is re-analysed in place.
+4. **Keep as test case…** adds the block to the regression library;
+   **Quit** stops the app.
+
+The app runs only on this computer (127.0.0.1) and keeps copies of the dropped
+files and every analysis in `~/HULC_sessions` (`--workspace` to change); the
+original files are never modified, and **Remove** deletes a session's copies.
+
+### 2. `hulc` commands
+
+The same program, with a command after it. What to type for `hulc`:
+
+| You have | Type `hulc` as |
+|---|---|
+| Standalone app, Windows | `hulc` in a Command Prompt opened in the HULC folder (it runs `HULC.exe`) |
+| Standalone app, macOS / Linux | `HULC.app/Contents/MacOS/HULC` / `HULC/HULC` |
+| Repository, Windows | `hulc` in a Command Prompt in the repository folder (it runs `HULC.bat`) |
+| Repository, macOS / Linux | `python3 hulc.py` (or `./HULC.command`) |
+
+(In PowerShell, type `.\hulc`.)
+
+| Command | What it does |
+|---|---|
+| `hulc` (no command) | the HULC app |
+| `hulc nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
+| `hulc nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | at the charger: each node's log + the block's `montage.json` into the folder |
+| `hulc analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
+| `hulc nodes erase --count 2` | wipe the nodes for the next block |
+| `hulc regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
+| `hulc opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
+| `hulc selftest` | every tool's selftest: checks an install or a build |
+
+`hulc <command> --help` lists the options. The ones you may need for
+`analyze`: `--window t0,t1` / `--end t_ms` (set the freeze / end by hand — the
+review page's Timeline writes these for you), `--protocol hold-first`
+(recordings made before 2026-10), `--montage FILE` (override the folder's
+montage), `--facing-deg` (no torso node and too little elbow bending),
+`--no-opensense`.
+
+Recording, the charger routine and every threshold: the
+[recording card](docs/COLLECTION_SOP.md) and the
+[collection reference](docs/COLLECTION_REFERENCE.md).
+
+---
+
+## How the analysis works
+
+Each node records the ORIENTATION of the SEGMENT it is strapped to. A clinical
+**joint angle** is the *relative* orientation of two adjacent segments, so what
+can be computed depends entirely on where the nodes are placed — the
+**montage**. The pipeline makes that dependency explicit and never fabricates a
+number a placement can't support. Each node stores its own segment, so a block's
+capture folder carries its montage.
+
+```
+   capture ──▶ offload ──▶ reconcile ──▶ montage/resolve ──▶ calibrate ──▶ metrics ──▶ visualize
+  (firmware)   (BLE)      align to one    which joints are    sensor→bone    ROM etc.    HTML viewer
+                          timeline        computable          mounting solve
+```
+
+`hulc analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
+runs it for each dropped block. The stages are separate modules in `tools/`,
+each runnable on its own for development (docs/COLLECTION_REFERENCE.md §5):
+
+| Stage | Module | What it does |
+|-------|------|--------------|
+| 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` (`hulc nodes`) | Nodes log autonomously; the laptop offloads each node's `.bin` |
+| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating world-frame angular-velocity vectors; angular speed as fallback) → `aligned.csv`, plus `aligned.quality.json` (sync confidence, data gaps, clock restarts) |
+| 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
+| 5 Calibrate | `calibrate_segments.py` | Finds the freeze after the sync movement and solves each node's **sensor→segment mounting offset**, estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and finds where the nodes came off → `calibration.json` |
+| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived tiers → `metrics.json` |
+| 7 Visualize | `skeleton_viewer.py` | The review page: the segments as a stickman, Front / Side / Top views, the metrics panel, the Timeline, and a switch to each OpenSense solve |
+| (optional) OpenSense | `opensense_ik.py` | The same session solved on a published OpenSim model (Thoracoscapular Shoulder Model, right arm; or Rajagopal 2016), through the same metrics and page; fit-lost frames excluded. See [`SOLVER_COMPARISON.md`](docs/SOLVER_COMPARISON.md) |
+| Block check | `analyze_session.py` | OK / REDO per check (sync, freeze, facing, end, trunk, joint limits, …) → `block_check.json` |
+| The app | `app.py` | The local web app around `analyze_session.py` |
+
+### Changing the analysis safely — the regression library
+
+Synthetic selftests (`hulc selftest`; CI runs them on every push) check the
+math; they cannot tell whether a change still handles **real** recordings.
+`hulc regress` runs the whole pipeline on a library of real captures and checks
+each against what a person confirmed once: where the freeze is, where the
+session ends, the block-check verdict, the facing, and plausible ranges.
+
+```bash
+# before AND after any change to the analysis — every case must still pass:
+hulc regress run --data /path/to/regress_data
+
+# grow the library (or "Keep as test case…" in the app): expectations are
+# pre-filled from today's analysis; CHECK them against what really happened,
+# edit, and commit tools/regress_cases/<name>.json
+hulc regress add 2026-10-07_torso_upper-arm --capture-dir ./capture/block1 --description "..."
+```
+
+The case files are in git (`tools/regress_cases/`); the recordings are
+**not** — keep them on a lab drive (`<data>/<case name>/*.bin`) and point
+`--data` or `$HULC_REGRESS_DATA` at it. Cases without recordings are skipped.
+When a recording breaks the analysis, add it as a case first, then fix the code
+until every case passes.
 
 ---
 
@@ -50,8 +205,8 @@ serves data over a BLE GATT service:
   gap recovery.
 - **Multi-node time sync** — millisecond-resolution sync command plus a
   read-only Time Info characteristic, so a central can measure cross-node clock
-  offset. (The production alignment path does not depend on this being precise —
-  see below.)
+  offset. (The analysis does not depend on this being precise — it aligns the
+  clocks from the motion; see How the analysis works.)
 
 ### BLE GATT layout
 
@@ -92,219 +247,56 @@ nRF52840 board and flash `firmware/firmware.ino`.
 
 ---
 
-## Analysis pipeline (`tools/`)
+## Documentation (`docs/`)
 
-The pipeline is pure Python on top of **NumPy**. Two ways to run it:
-
-- **The standalone app — no Python needed.** It holds Python, numpy and
-  every tool; from a terminal, `HULC analyze …` / `HULC nodes …` run the
-  tools (see `packaging/README.txt`). Built by `packaging/build_app.py`;
-  body-model solves (OpenSim) are not included. To get it, signed in to
-  GitHub: **Actions → app → the latest run → Artifacts** (or a release page
-  once a version is tagged).
-  - **Windows:** download **HULC-windows**, unzip it into a normal folder
-    (not run from inside the zip), double-click `HULC\HULC.exe`. First launch:
-    "Windows protected your PC" → **More info → Run anyway** (the app is not
-    code-signed).
-  - **macOS:** download **HULC-macos**, unzip it, then unzip
-    `HULC-macos.zip` inside (the inner zip keeps the app's executable
-    permission), and open `HULC.app` with right-click → **Open** the first
-    time.
-  - **Linux:** download **HULC-linux**, unzip it, `tar xzf HULC-linux.tar.gz`,
-    run `HULC/HULC`.
-- **With Python 3.11–3.13**, from the repository folder, install the pinned
-  (frozen) versions the tools are tested with:
-
-  ```bash
-  pip install -r requirements.txt              # numpy + bleak (node commands)
-  pip install -r requirements-opensense.txt    # optional: + OpenSim body-model solves
-  ```
-
-  Then run the tools as `python tools/<tool>.py …`, as the docs do.
-
-Each node records the ORIENTATION of the SEGMENT it is strapped to. A clinical
-**joint angle** is the *relative* orientation of two adjacent segments, so what
-can be computed depends entirely on where the nodes are placed — the
-**montage**. The pipeline makes that dependency explicit and never fabricates a
-number a placement can't support.
-
-### Stages
-
-```
-   capture ──▶ offload ──▶ reconcile ──▶ montage/resolve ──▶ calibrate ──▶ metrics ──▶ visualize
-  (firmware)   (BLE)      align to one    which joints are    sensor→bone    ROM etc.    HTML viewer
-                          timeline        computable          mounting solve
-```
-
-| Stage | Tool | What it does |
-|-------|------|--------------|
-| 1–2 Capture & offload | `firmware.ino`, `multinode_test.py` | Nodes log autonomously; the central offloads each node's `.bin` |
-| 3 Reconcile | `reconcile_nodes.py` | Time-aligns the per-node logs onto one timeline **from the motion itself** (cross-correlating world-frame angular-velocity vectors; angular speed as fallback), so alignment doesn't depend on BLE latency → `aligned.csv`, plus `aligned.quality.json` (per-sensor sync confidence and peak distinctness, data gaps, clock restarts — shown in the review page) |
-| 4 Capability | `motion_capabilities.py` | Given the montage, resolves which joints/metrics are valid and which are blocked (and why) |
-| 5 Calibrate | `calibrate_segments.py` | Solves each node's **sensor→segment mounting offset** from the freeze right after the sync movement (found automatically), estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`), and finds where the nodes came off → `calibration.json` |
-| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window (freeze → nodes coming off) → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived (L/R symmetry, coordination) tiers → `metrics.json` |
-| 7 Visualize | `skeleton_viewer.py` | A self-contained HTML viewer: the segments connected into a stickman by forward kinematics, with the subject's front marked and Front / Side / Top views. With OpenSense solves, a footer switch between the direct sensor view and each model, and a solver-comparison overlay on the angle graph. A **Timeline** strip shows the whole log with the detected sync, freeze and end; drag them to correct a detection and copy the re-run command |
-| (optional) OpenSense | `opensense_ik.py` | The same session solved with OpenSim OpenSense on a published model — the Thoracoscapular Shoulder Model (right arm, recommended) or Rajagopal 2016 — reported through the same metrics + viewer, with a per-frame fit residual; frames where the model loses the sensors are flagged and excluded. Needs `pip install opensim` and the model; see [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) |
-
-`analyze_session.py` orchestrates stages 3–7 in one command, binding each log
-to its segment automatically from the montage. Each node stores its own
-segment, so offload writes the block's `montage.json` into its capture folder
-and the folder is all the analysis needs (`--montage` only overrides).
-
-### Quick start
-
-```bash
-# 0. one-time, from the repo folder: the pinned dependencies
-pip install -r requirements.txt
-#    optional, for body-model solves (the review page's Sensors / model switch):
-pip install -r requirements-opensense.txt
-python tools/opensense_ik.py fetch-models     # -> models/opensense/
-
-# 1. enroll boards (power ONE node on at a time): stores each board's segment
-#    on the board, and writes montage.json + nodes_registry.json
-python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
-
-# 2. record one block, laptop DISCONNECTED — the one-page card,
-#    tools/COLLECTION_SOP.md: sync movement → freeze → task → nodes off
-#    (each node logs to its own flash while it is moving)
-
-# 3. charging checkpoint: nodes off the body onto the charger (they go IDLE and
-#    stop logging), then offload this block into its own folder
-#    (it also writes ./capture/block1/montage.json from the nodes' segments)
-python tools/multinode_test.py offload --count 2 --out-dir ./capture/block1 --subject S01
-
-# 4. analyze the block: double-click "HULC Sessions" (.bat on Windows,
-#    .command on macOS / Linux) and drop ./capture/block1 on the page — or
-#    from the command line (montage from the folder; --montage FILE overrides):
-python tools/analyze_session.py run --capture-dir ./capture/block1 \
-    --outdir ./out/block1
-#    → aligned.csv, calibration.json, metrics.json, an HTML viewer, and a
-#      BLOCK CHECK (OK / REDO + what to change) at the end
-#    (with OpenSim + fetched models it also solves on each model by itself;
-#    --no-opensense skips, --opensense-model PATH picks other models)
-```
-
-Almost every tool has a `selftest` / `--selftest` that validates its logic on
-synthetic data with **no hardware**, e.g.:
-
-```bash
-python tools/reconcile_nodes.py --selftest
-python tools/analyze_session.py selftest
-python tools/multinode_test.py selftest
-```
-
-GitHub Actions runs every selftest on each push and pull request
-(`.github/workflows/selftest.yml`).
-
-### The session app
-
-`tools/app.py` puts the analysis behind a browser page, for anyone who would
-rather not use a terminal. Double-click **`HULC Sessions.bat`** (Windows) or
-**`HULC Sessions.command`** (macOS; on Linux `bash "HULC Sessions.command"`),
-or run `python tools/app.py`. A tab opens at `http://127.0.0.1:8765/`:
-
-- **Drop** a block's capture folder (or its `.bin` + `.seg.json` files) on
-  the page; several block folders at once become one session each. Type the
-  subject id first; it goes into the block's montage.
-- Each block runs through `analyze_session.py` in the background, exactly as
-  on the command line (OpenSim solves included when installed), and the app
-  shows its **block check** and **review page**.
-- On the review page's **Timeline**, drag the freeze or the end and press
-  **Apply**: the block is re-analyzed in place with the hand-set values.
-- **Keep as test case…** adds the block to the regression library
-  (`regress.py add`); check the expectations and commit the case file.
-
-The launchers offer to install the requirements (`pip install -r
-requirements.txt`) the first time, if numpy is missing. The standalone app
-(above) is the same session app with Python built in. It needs only Python 3 +
-numpy, listens on this computer only (127.0.0.1),
-and keeps copies of the dropped files and every analysis in a workspace folder
-(`~/HULC_sessions`; `--workspace` or `$HULC_WORKSPACE` to change it). The
-original files are never modified; **Remove** deletes a session's copies.
-
-### Changing the analysis safely — the regression library
-
-Synthetic selftests check the math; they cannot tell whether a change still
-handles **real** recordings. `tools/regress.py` runs the whole pipeline on a
-library of real captures and checks each against what a person confirmed once:
-where the freeze is, where the session ends, the block-check verdict, the
-facing, and plausible ranges.
-
-```bash
-# before AND after any change to the analysis — every case must still pass:
-python tools/regress.py run --data /path/to/regress_data
-
-# grow the library: add a recording (expectations pre-filled from today's
-# analysis), then CHECK them against what really happened, edit, and commit
-# tools/regress_cases/<name>.json
-python tools/regress.py add 2026-10-07_torso_upper-arm \
-    --capture-dir ./capture/block1 --description "..."
-```
-
-The case files (montage, description, expectations) are in git
-(`tools/regress_cases/`); the recordings are **not** — keep them on a lab drive
-(`<data>/<case name>/*.bin`) and point `--data` or `$HULC_REGRESS_DATA` at it.
-Cases without recordings are skipped. When a recording breaks the analysis, add
-it as a case first, then fix the code until every case passes: each fix then
-stays fixed. The more varied the library (people, mountings, rooms, montages),
-the safer a threshold change.
-
-### Pipeline docs
-
-- [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the one-page recording
-  card: sync movement, freeze, task, nodes off, and the charger routine.
-- [`COLLECTION_REFERENCE.md`](tools/COLLECTION_REFERENCE.md) — laptop and
-  node setup (enroll, link check), where to strap each node, why each step,
-  the setting behind every number, the charging checkpoint in detail, the
-  block check line by line, and troubleshooting.
-- [`MONTAGE_SCHEMA.md`](tools/MONTAGE_SCHEMA.md) — the montage format and the
-  capability resolver contract.
-- [`SETUP_AND_CALIBRATION_PLAN.md`](tools/SETUP_AND_CALIBRATION_PLAN.md) — the
-  design of stages 5–7 (calibration, metrics, visual).
-- [`pipeline_walkthrough.html`](tools/pipeline_walkthrough.html) — the whole
-  pipeline at a glance.
-- `timing_bench.py` — synthetic sessions pushed through the real reconcile
-  step (own clocks, firmware sampling schedule, STATIC gaps, strap wobble) to
-  measure what sync and sampling cost; it motivated the vector clock sync and
-  the 1 Hz STATIC logging.
-- [`SOLVER_COMPARISON.md`](tools/SOLVER_COMPARISON.md) — default chain vs
-  OpenSense (two models) on synthetic ground truth and a real capture, with a
-  draft methods paragraph; [`OPENSENSE_FEASIBILITY.md`](tools/OPENSENSE_FEASIBILITY.md)
-  — what OpenSense can and cannot recover for each montage.
-- [`METRICS.md`](tools/METRICS.md) — every metric, its definition and the
+- [`COLLECTION_SOP.md`](docs/COLLECTION_SOP.md) — the one-page recording card
+  and the charger routine.
+- [`COLLECTION_REFERENCE.md`](docs/COLLECTION_REFERENCE.md) — setup and
+  enroll, where to strap each node, why each step and the setting behind every
+  number, the checkpoint in detail, the block check line by line,
+  troubleshooting.
+- [`METRICS.md`](docs/METRICS.md) — every metric, its definition and the
   plausibility limits.
-- [`montage.example.json`](tools/montage.example.json) — a filled-in montage to copy.
+- [`MONTAGE_SCHEMA.md`](docs/MONTAGE_SCHEMA.md) — the montage format and the
+  capability resolver.
+- [`SOLVER_COMPARISON.md`](docs/SOLVER_COMPARISON.md) and
+  [`OPENSENSE_FEASIBILITY.md`](docs/OPENSENSE_FEASIBILITY.md) — the direct
+  sensor path vs OpenSense, and what OpenSense recovers per montage.
+- [`SETUP_AND_CALIBRATION_PLAN.md`](docs/SETUP_AND_CALIBRATION_PLAN.md) — the
+  design record of stages 5–7.
+- [`pipeline_walkthrough.html`](docs/pipeline_walkthrough.html) — the whole
+  pipeline at a glance.
 
 ---
 
 ## Repository layout
 
 ```
-requirements*.txt                the pinned dependencies (analysis + nodes, OpenSim, build)
-packaging/                       the standalone app: build_app.py, entry point, README.txt
-HULC Sessions.bat / .command     double-click launchers for tools/app.py
-.github/workflows/selftest.yml   CI: every selftest + the regression library
+HULC.bat / HULC.command      start the HULC app from the repository; `hulc …` commands
+hulc.py                      the hulc command (and the standalone app's entry point)
+requirements*.txt            pinned dependencies: analysis + nodes, OpenSim, build
+docs/                        recording card, reference, metrics, design docs
 firmware/
   firmware.ino               node firmware (state machine + BLE + QSPI log)
   *.md                       design / testing / power docs
   state_machine_test/        BNO086 IDLE-reset investigation harness + findings
-tools/
-  multinode_test.py          BLE central: enroll / offload / erase / sync check (needs bleak)
-  reconcile_nodes.py         stage 3 — motion-based time alignment
-  motion_capabilities.py     stage 4 — montage schema + capability resolver
-  calibrate_segments.py      stage 5 — freeze, facing, session end, mounting solve
-  metrics.py                 stage 6 — joint angles, ROM, and metric tiers
-  skeleton_viewer.py         stage 7 — review page (skeleton, Timeline, metrics)
-  analyze_session.py         stages 3–7 in one command, plus the block check
-  app.py                     the session app: drop a block, get its review page
-  hulc_paths.py              where the tools write (repo checkout vs standalone app)
+tools/                       the analysis code
+  app.py                     the HULC app (local web page)
+  analyze_session.py         hulc analyze: stages 3-7 + the block check
+  multinode_test.py          hulc nodes: enroll / offload / erase / check (BLE)
+  reconcile_nodes.py         stage 3 - motion-based time alignment
+  motion_capabilities.py     stage 4 - montage schema + capability resolver
+  calibrate_segments.py      stage 5 - freeze, facing, session end, mounting solve
+  metrics.py                 stage 6 - joint angles, ROM, metric tiers
+  skeleton_viewer.py         stage 7 - the review page
   opensense_ik.py            optional OpenSense solve (TSM / Rajagopal)
-  regress.py                 regression library runner; cases in regress_cases/
-  timing_bench.py            evaluation: what clock sync and sampling cost
-  compare_paths.py           evaluation: default chain vs OpenSense (needs opensim)
-  opensense_feasibility.py   evaluation: OpenSense on partial montages (needs opensim)
+  regress.py                 hulc regress; cases in regress_cases/
+  hulc_paths.py              where the tools write (repository vs standalone app)
   montage.example.json       a filled-in montage to copy
-  *.md, *.html               pipeline docs
+  evaluation/                synthetic-truth studies behind the design (timing_bench,
+                             compare_paths, opensense_feasibility)
+packaging/                   building the standalone app (build_app.py, README.txt)
+.github/workflows/           CI: selftest.yml (selftests + library), app.yml (standalone builds)
 ```
 
 ## Data & privacy
@@ -313,5 +305,5 @@ Real recordings and per-session generated files (capture folders, `.bin`
 logs, `aligned.csv`, every per-session `.json`, generated review pages) are
 **git-ignored** by design — see `.gitignore`. Only source, docs, the example
 montage and the regression case files (expectations, no recordings) are
-tracked; never commit real recording data. The session app keeps its copies
+tracked; never commit real recording data. The HULC app keeps its copies
 outside the repository (`~/HULC_sessions` by default).
