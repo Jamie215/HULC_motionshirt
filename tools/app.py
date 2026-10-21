@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -66,7 +67,11 @@ class Store:
     def __init__(self, root):
         self.root = os.path.abspath(root)
         os.makedirs(self.root, exist_ok=True)
-        self.lock = threading.Lock()
+        # One lock for every read and write of session.json: on Windows a file
+        # cannot be replaced while another thread has it open (and a reader can
+        # hit the moment of the replace), so the web server reading a session
+        # while the worker updates it must never overlap.
+        self.lock = threading.RLock()
 
     def path(self, sid, *parts):
         if not SESSION_ID.match(sid or ""):
@@ -74,11 +79,13 @@ class Store:
         return os.path.join(self.root, sid, *parts)
 
     def load(self, sid):
-        try:
-            with open(self.path(sid, "session.json"), encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            raise KeyError(sid)
+        path = self.path(sid, "session.json")
+        with self.lock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                raise KeyError(sid)
 
     def save(self, meta):
         with self.lock:
@@ -86,13 +93,21 @@ class Store:
             tmp = p + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
-            os.replace(tmp, p)
+            for attempt in range(20):          # antivirus / indexers can hold a
+                try:                           # file for a moment on Windows
+                    os.replace(tmp, p)
+                    break
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.05)
 
     def update(self, sid, **kw):
-        meta = self.load(sid)
-        meta.update(kw)
-        self.save(meta)
-        return meta
+        with self.lock:                        # read-modify-write as one step
+            meta = self.load(sid)
+            meta.update(kw)
+            self.save(meta)
+            return meta
 
     def create(self, subject, session, protocol, label=""):
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -756,7 +771,6 @@ refresh();
 # ---------------------------------------------------------------------------
 def selftest():
     import tempfile
-    import time
     import urllib.error
     import urllib.request
     from analyze_session import _write_synth_log
@@ -786,13 +800,37 @@ def selftest():
             return e.code, e.read()
 
     def wait(sid, limit=240):
-        t0 = time.time()
+        t0, st = time.time(), {}
         while time.time() - t0 < limit:
-            st = json.loads(req("GET", f"/api/sessions/{sid}")[1])
-            if st["status"] in ("done", "failed"):
+            code, body = req("GET", f"/api/sessions/{sid}")
+            st = json.loads(body) if code == 200 else {"status": f"HTTP {code}"}
+            if st.get("status") in ("done", "failed"):
                 return st
             time.sleep(0.3)
         return st
+
+    # session state read while it is being written (what the page's polling
+    # does during an analysis) never looks missing
+    sm = store.create("S00", "", "sync-first")
+    misses, stop = [], threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            try:
+                store.load(sm["id"])
+            except KeyError:
+                misses.append(1)
+    readers = [threading.Thread(target=reader) for _ in range(4)]
+    for t in readers:
+        t.start()
+    for i in range(300):
+        store.update(sm["id"], status="running", n=i)
+    stop.set()
+    for t in readers:
+        t.join()
+    store.remove(sm["id"])
+    check(not misses, f"session state stays readable while it is updated "
+                      f"({len(misses)} misses in 300 updates)")
 
     code, page = req("GET", "/")
     check(code == 200 and b'id="drop"' in page, "the app page is served")
