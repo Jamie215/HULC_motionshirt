@@ -1,9 +1,15 @@
-# Collection reference — why each step, the numbers behind it, troubleshooting
+# Collection reference — setup, why each step, the numbers behind it, troubleshooting
 
 The companion to the one-page [recording card](COLLECTION_SOP.md). The card
-says what to do; this page says why, which pipeline or firmware setting each
-number comes from, what the block check means, and what to do when something
-goes wrong. If you change one of the named settings, update both pages.
+says what to do; this page covers setting up the laptop and the nodes, where
+to strap each node, why each step is there and which pipeline or firmware
+setting each number comes from, the charging checkpoint in detail, what the
+block check means, and what to do when something goes wrong. If you change one
+of the named settings, update both pages.
+
+Commands run from the repo root, with the nodes flashed from
+`firmware/firmware.ino`. The examples use two nodes (`--count 2`); for other
+montages only the segment names change.
 
 ---
 
@@ -15,7 +21,7 @@ goes wrong. If you change one of the named settings, update both pages.
 | **2 Sync movement** | One strong motion shared by every node, so their independent clocks can be aligned (`reconcile_nodes.py`); the **landmark** calibration uses to find the freeze; and motion that wakes every node and settles its magnetic heading. | Clocks off by milliseconds to tens of seconds; the freeze cannot be told from setup stillness |
 | **3 Freeze** | The sensor→segment mounting offsets and the zero of every angle (`calibrate_segments.py`), plus which way the subject faces (torso node). Taken after the movement, so the nodes are awake and any strap shift from the twisting is already in the calibration. | Every angle measured against a wrong zero |
 | **4 Task** | The movement of interest; with no torso node, elbow bends also give the facing. | — |
-| **5 Nodes off** | Where the analysis ends: taken-off nodes lie still on the charger in a pose no body holds, then go IDLE. | — (detected; see §4) |
+| **5 Nodes off** | Where the analysis ends: taken-off nodes lie still on the charger in a pose no body holds, then go IDLE. | — (detected; see §5) |
 
 ---
 
@@ -76,17 +82,112 @@ goes wrong. If you change one of the named settings, update both pages.
 
   Shoulder angles need the torso node; without it the pipeline blocks them,
   since trunk sway would read as shoulder motion.
+- **Laptop (once per machine).** `pip install numpy bleak` (`bleak` only for
+  the BLE commands). The central should be a well-behaved BLE host — **iOS,
+  Android or Linux (BlueZ)**: a Windows desktop `bleak` central forces a slow
+  connection interval and makes offload crawl (a bench artifact, not a
+  firmware limit). Body-model solves are optional: `pip install opensim` and
+  `python tools/opensense_ik.py fetch-models` once.
 - **Straps.** Soft-tissue wobble is the largest error left at 10 Hz: about 3°
-  RMS doubles every angle error in simulation.
+  RMS doubles every angle error in simulation. Snug, and the same way round
+  every time.
 - **Block length.** A block ends when the nodes need charging. Storage is
   rarely the limit first: at 10 Hz (20 B per sample) a node halves its logging
   rate after ~2.3 h of ACTIVE recording (80% watermark) and stops at ~2.6 h;
   still time costs little (1 sample/s). Plan blocks by battery, never past
   ~90 min of recording.
 
+### Where on each segment
+
+The freeze calibration measures however each node sits on its segment and
+subtracts it, so a static offset in the exact spot does **not** shift the
+angles. What it cannot fix is **soft-tissue artifact** (muscle bulging under
+the node moves it without the bone moving) and **repeatability** between
+wears. One rule handles both: **over the least contractile tissue, referenced
+to a bony landmark you can feel, with the roll around the limb pinned to a
+consistent flat spot.**
+
+| Segment | Put it | Referenced to | Avoid |
+|---|---|---|---|
+| torso | **anterior**, flat on the **sternum** | sternal midline | pec / upper abdomen (muscle and breathing motion) |
+| upper arm | **lateral**, distal third, just above the elbow | distal humerus | the biceps belly (bulges in flexion); proximal deltoid |
+| forearm | **lateral/dorsal**, distal third | the ulnar border (bone under the skin) | palm-side muscle bellies |
+| hand | flat on the **dorsum** | 2nd–3rd metacarpal | — |
+
+- **The torso node is anterior for a reason:** the facing is recovered on the
+  assumption that the torso node's face points out of the chest
+  (`TORSO_FORWARD_IN_SENSOR` in `calibrate_segments.py`). A side-of-trunk
+  mount is flagged low-confidence and loses the facing; if the torso spot is
+  ever standardised elsewhere, that constant moves with it.
+- **Repeatability beats alignment.** The freeze lines the node up with the
+  bone; the goal is the same placement every wear, which also lets
+  `calibrate_segments.py verify` reuse a cached calibration.
+
 ---
 
-## 4. Blocks, the charging checkpoint, and where the analysis ends
+## 4. Setting up the nodes
+
+**What a node does on its own.** Each node logs to its own flash. Moving, it
+records ~10 samples/s (`ACTIVE_RECORDING`); after 10 s still it drops to
+1 sample/s (`STATIC_POSTURE`); after 60 s still — or ~8 s lying flat — it goes
+`IDLE` and logs nothing. **Offload works only in `IDLE`**, so the laptop is
+disconnected while recording and connects afterwards.
+
+**Connections are the slow part.** Every BLE command connects to each node
+first (slow, especially from Windows), so a routine block touches BLE twice:
+
+| Step | BLE connect? |
+|---|---|
+| Enroll (once per rig) | scan to identify; one connect per node to store its segment |
+| Erase to a clean start | yes — skips the ~30 s wipe if the node is already empty |
+| Strap on and record | no — laptop disconnected |
+| Offload (at the charger) | yes |
+| Link check | only for a new rig or a flaky link |
+
+### Enroll — once per rig
+
+Enroll maps each board to a body segment by **powering one node at a time**:
+with only one advertising, its `HULC-IMU-XXXX` id is unambiguous. On one
+connection per board it smart-erases and **stores the segment on the node**
+(log header, command `0x07`), where it survives power cycles and erases.
+
+```bash
+python tools/multinode_test.py enroll --segments upper_arm_r,forearm_r
+```
+
+1. When asked for `upper_arm_r`, power on **only** that board and press Enter.
+2. Type a physical label (e.g. "orange tape") and mark the board.
+3. It erases if needed (asks `[y/N]` before wiping data; `--no-erase` skips
+   this), stores the segment and reads it back.
+4. Repeat for each segment. It writes `montage.json` (a record of the rig) and
+   `nodes_registry.json` (id → segment and label).
+
+Next time with the same labelled boards, `enroll … --reuse` only scans. To see
+what the nodes store, `python tools/multinode_test.py read-segments` reads
+each node's segment and writes a montage from it. Each **offload** writes the
+block's own `montage.json` from what the nodes store (labels from the
+registry), and that is what the analysis uses. Swapping nodes between
+segments therefore means re-enrolling them.
+
+A `montage.json` edited by hand must stay UTF-8: the tools accept a UTF-8 BOM
+(Notepad, PowerShell `>`), but a UTF-16 file must be re-saved.
+
+### Link check — occasionally
+
+The analysis aligns the clocks from the motion, so the BLE time sync is not
+needed per session. For a new rig or a flaky link, with the nodes still:
+
+```bash
+python tools/multinode_test.py check --count 2 --duration 30
+```
+
+Every node should read `synced=True` with a small, stable cross-node offset;
+a bad offset points at the link before a recording is wasted on it. Offload
+framing and recovery are in `firmware/MULTINODE_TESTING.md`.
+
+---
+
+## 5. Blocks, the charging checkpoint, and where the analysis ends
 
 A **block** is everything between two offloads: one charge, one mounting, one
 capture folder. The analysis of a block runs from the first freeze after the
@@ -112,16 +213,54 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
 
 **The checkpoint, step by step.**
 
-1. Nodes off and flat on the charger: they drop to IDLE within ~8 s.
-2. Offload into a new folder per block while they charge (they stay powered
-   from their batteries): `multinode_test.py offload --count 2 --out-dir ./capture/blockN`.
-3. Analyze and read the block check (§5). For a faster look without the full
-   analysis: `reconcile_nodes.py --inspect ./capture/blockN/*.bin` (records,
-   rate, clock restarts).
-4. Erase: `multinode_test.py erase --count 2`. (`offload … --erase-after` does
-   offload + erase in one go, wiping each node only after its offload verifies —
-   faster, but the block is then no longer recoverable from the node.)
-5. Re-mount — same node, same segment, same spot and orientation.
+1. **Nodes off** and flat on the charger: they drop to IDLE within ~8 s.
+2. **Offload** into a new folder per block while they charge (they stay
+   powered from their batteries):
+
+   ```bash
+   python tools/multinode_test.py offload --count 2 --out-dir ./capture/blockN --subject S01
+   ```
+
+   - Each node reports `COMPLETE — saved N bytes`. Missing records? Re-run the
+     same command: it re-requests only the holes, and an incomplete log stays
+     on the node.
+   - The folder gets `HULC-IMU-XXXX.bin` per node, a `HULC-IMU-XXXX.seg.json`
+     with the segment the node stores, and the block's `montage.json` built
+     from those (`--session` optional). Keep the folder whole. A
+     `montage.json` already there for the same nodes is kept; one for other
+     nodes is never overwritten.
+3. **Analyze** and read the block check (§6):
+
+   ```bash
+   python tools/analyze_session.py run --capture-dir ./capture/blockN --outdir ./out/blockN
+   ```
+
+   - The montage comes from the folder: its `montage.json`, else one built from
+     the `.seg.json` files (saved to the output folder). `--montage FILE`
+     overrides both, for a node that stored the wrong segment or logs from
+     firmware that did not store one. The run prints which it used and warns
+     if it disagrees with a node's header.
+   - Check the binding table it prints against the placement
+     (`n0 upper_arm_r <- HULC-IMU-485C.bin`, …).
+   - With OpenSim and the fetched models, every block is also solved on each
+     model (`--no-opensense` skips, `--opensense-model PATH` picks others); the
+     review page gets a **Sensors / model** switch and a **compare solvers**
+     overlay, and stretches where a model lost the sensors are shaded and left
+     out of its numbers.
+   - On the review page, **Neutral pose** then **Raw ↔ Calibrated**: the
+     segments should snap to the freeze pose in Calibrated. That toggle is the
+     calibration check.
+   - A faster look without the analysis:
+     `python tools/reconcile_nodes.py --inspect ./capture/blockN/*.bin` —
+     records, ~10 Hz while moving, and no `clock restarted` warning.
+4. **Erase**: `python tools/multinode_test.py erase --count 2`. An empty node
+   is skipped; one holding data asks `[y/N]` (`--yes` for scripts); do not
+   power off mid-wipe. Erasing only after the check keeps the block on the
+   node until then, a safety net if a transfer looked complete but was not.
+   (`offload … --erase-after` offloads and erases in one connect, wiping each
+   node only after its offload verifies — faster, but the block is then gone
+   from the node.)
+5. **Re-mount** — same node, same segment, same spot and orientation.
 
 **Why one block per folder.**
 
@@ -137,9 +276,31 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
   stores its segment, and the block's montage is built from what the nodes
   store. (A one-off swap can be fixed afterwards with `--montage`.)
 
+**Running the stages by hand.** `analyze_session.py` runs these in order; by
+hand, pass the logs to reconcile in montage column order (`n0` first), with
+`montage.json` the block's own (copy it from `./capture/blockN/`):
+
+```bash
+python tools/reconcile_nodes.py ./capture/blockN/<n0-id>.bin ./capture/blockN/<n1-id>.bin --out aligned.csv
+python tools/motion_capabilities.py montage.json
+python tools/calibrate_segments.py calibrate aligned.csv montage.json --out calibration.json
+python tools/metrics.py compute aligned.csv montage.json --calibration calibration.json --out metrics.json
+python tools/skeleton_viewer.py render aligned.csv montage.json --calibration calibration.json --metrics metrics.json --out session.html
+```
+
+**Re-don check (optional).** Taking a node off and putting it back can change
+its mounting; every block has its own freeze anyway, so this only confirms a
+cached calibration still holds. Record a short still hold, offload it into
+`./redon`, then:
+
+```bash
+python tools/reconcile_nodes.py ./redon/<n0-id>.bin ./redon/<n1-id>.bin --out redon.csv
+python tools/calibrate_segments.py verify redon.csv montage.json --calibration calibration.json
+```
+
 ---
 
-## 5. The block check, line by line
+## 6. The block check, line by line
 
 `analyze_session.py` ends with `BLOCK CHECK: OK` or `REDO` and one line per
 check (also saved as `block_check.json`). **REDO** means re-record the block;
@@ -159,7 +320,7 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 
 ---
 
-## 6. Common mistakes
+## 7. Common mistakes and troubleshooting
 
 | Mistake | What happens | Prevention |
 |---|---|---|
@@ -175,9 +336,21 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 | Battery dying mid-block | Clock restart; part of that node's log not analyzed | Charge before it runs out |
 | Splitting up a capture folder | The block loses its montage or a node's segment | Keep each block's folder whole; if `montage.json` is lost, the analysis rebuilds it from the `.seg.json` files |
 
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Offload takes minutes or hours | Windows `bleak` central forces a slow connection interval | iOS / Android / BlueZ central; `offload --count 1` prints the throughput |
+| Many `pass 2: re-requesting …` lines | Weak link, distance, the body blocking 2.4 GHz | Node close to the laptop, in line of sight; re-run offload to fill the holes |
+| Offload rejected or empty | Node not `IDLE`, or nothing recorded | Lay the nodes flat and wait ~8 s; check the block was recorded |
+| `sync_peak_ratio` < 1.25 | The nodes did not move together | Sync movement that moves every node (§2) |
+| `json … Expecting value: line 1 column 1` | A hand-edited `montage.json` is empty or UTF-16 | Re-save as UTF-8 |
+| Enroll: "N nodes advertising" | More than one board powered on | Power on only the board being enrolled |
+| Enroll: "no HULC node advertising" | Board off, or not advertising yet | Power it on, wait a few seconds, retry (a connected node stops advertising) |
+| `analyze: node log not found` | Wrong `--capture-dir`, or a node did not offload COMPLETE | Point at the block folder; re-run offload for the missing node |
+| `no montage: … cannot describe itself` | A log without a `.seg.json` (older firmware, or a node never enrolled) | Pass `--montage montage.json`, or enroll the node |
+
 ---
 
-## 7. Recordings made with earlier protocols
+## 8. Recordings made with earlier protocols
 
 - **Hold before the sync movement** (recordings before 2026-10): analyze with
   `--protocol hold-first` (or `"protocol": "hold-first"` under `calibration` in

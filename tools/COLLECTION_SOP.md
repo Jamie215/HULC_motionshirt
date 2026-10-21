@@ -2,8 +2,9 @@
 
 One page for the person running the session. The reasons, thresholds and
 troubleshooting behind every step are in
-[`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md); enrolment, strapping
-and BLE details are in [`COLLECTION_CHECKLIST.md`](COLLECTION_CHECKLIST.md).
+[`COLLECTION_REFERENCE.md`](COLLECTION_REFERENCE.md), which also covers
+setting up the laptop and nodes (enroll), where to strap each node, and the
+charging checkpoint in detail.
 
 ## Before the session
 

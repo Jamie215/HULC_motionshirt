@@ -204,12 +204,10 @@ the safer a threshold change.
 
 - [`COLLECTION_SOP.md`](tools/COLLECTION_SOP.md) — the one-page recording
   card: sync movement, freeze, task, nodes off, and the charger routine.
-- [`COLLECTION_REFERENCE.md`](tools/COLLECTION_REFERENCE.md) — why each step,
-  the setting behind every number, the block check line by line, and
-  troubleshooting.
-- [`COLLECTION_CHECKLIST.md`](tools/COLLECTION_CHECKLIST.md) — the end-to-end
-  run-sheet for a session, including the minimal-connect BLE workflow and
-  sensor-placement guidance.
+- [`COLLECTION_REFERENCE.md`](tools/COLLECTION_REFERENCE.md) — laptop and
+  node setup (enroll, link check), where to strap each node, why each step,
+  the setting behind every number, the charging checkpoint in detail, the
+  block check line by line, and troubleshooting.
 - [`MONTAGE_SCHEMA.md`](tools/MONTAGE_SCHEMA.md) — the montage format and the
   capability resolver contract.
 - [`SETUP_AND_CALIBRATION_PLAN.md`](tools/SETUP_AND_CALIBRATION_PLAN.md) — the

@@ -132,7 +132,7 @@ must not be conflated:
   A node that *did* reboot mid-log is caught by reconcile's clock-restart check.
 
 **Correction this supersedes:** the sync gesture is per-*block* (one mounting,
-one offload), not once-forever. See `COLLECTION_REFERENCE.md` §4.
+one offload), not once-forever. See `COLLECTION_REFERENCE.md` §5.
 
 ---
 
