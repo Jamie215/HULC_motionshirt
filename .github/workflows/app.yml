@@ -45,8 +45,20 @@ jobs:
         run: python packaging/build_app.py
       - name: Selftests inside the build
         run: |
-          "${{ matrix.exe }}" selftest || { cat "$HULC_HOME/app.log" 2>/dev/null; exit 1; }
-          cat "$HULC_HOME/app.log" 2>/dev/null | tail -15 || true
+          set +e
+          "${{ matrix.exe }}" selftest > selftest.log 2>&1
+          rc=$?
+          cat selftest.log
+          cat "$HULC_HOME/app.log" 2>/dev/null | tail -40
+          if [ $rc -ne 0 ]; then
+            # the failure, readable as a check annotation (no log download needed)
+            { grep -E "FAIL|Error|Traceback|failed|passed" selftest.log | tail -15
+              echo "--- last lines ---"; tail -25 selftest.log
+              cat "$HULC_HOME/app.log" 2>/dev/null | tail -20; } > failure.txt
+            msg=$(sed -e 's/%/%25/g' -e 's/\r//g' failure.txt | awk '{printf "%s%%0A", $0}')
+            echo "::error title=selftest failed (${{ matrix.name }})::$msg"
+          fi
+          exit $rc
       - name: Archive
         run: |
           mkdir -p out
