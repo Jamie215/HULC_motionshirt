@@ -43,16 +43,21 @@ motion). There are two ways to do it; both run the same analysis.
 ### Getting hulc-ms
 
 **Standalone app — no Python needed.** One program holding Python and every
-tool, built for each system by CI. Signed in to GitHub: **Actions → app → the
-latest run → Artifacts** (or the release page, once a version is tagged).
+tool, built for each system by CI. Download it from the repository's
+**[Releases](https://github.com/Jamie215/HULC_motionshirt/releases/latest)**
+page (no GitHub sign-in needed), from the latest release's assets:
 
-- **Windows:** download **hulc-ms-windows**, unzip it into a normal folder (do not
-  run it from inside the zip). First launch: "Windows protected your PC" →
-  **More info → Run anyway** (the app is not code-signed).
-- **macOS:** download **hulc-ms-macos**, unzip it, then unzip `hulc-ms-macos.zip`
-  inside it (the inner zip keeps the app's executable permission); open
-  `hulc-ms.app` with right-click → **Open** the first time.
-- **Linux:** download **hulc-ms-linux**, unzip it, `tar xzf hulc-ms-linux.tar.gz`.
+- **Windows:** `hulc-ms-windows.zip` — unzip it into a normal folder (do not run
+  it from inside the zip) and double-click `hulc-ms\hulc-ms.exe`. First launch:
+  "Windows protected your PC" → **More info → Run anyway** (the app is not
+  code-signed).
+- **macOS:** `hulc-ms-macos.zip` — unzip it and open `hulc-ms.app` with
+  right-click → **Open** the first time.
+- **Linux:** `hulc-ms-linux.tar.gz` — `tar xzf hulc-ms-linux.tar.gz`, then run
+  `hulc-ms/hulc-ms`.
+
+Builds of work not yet released are on each CI run of the **app** workflow
+(Actions → app → the run → Artifacts; signed in, kept 30 days).
 
 Body-model solves (OpenSim) are not in the standalone app.
 
