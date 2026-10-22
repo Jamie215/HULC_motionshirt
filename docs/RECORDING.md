@@ -42,6 +42,23 @@ development tools for the repository install.
 More tasks before charging? Carry on with step 4 — or, after a long break,
 repeat steps 2–3 first.
 
+```mermaid
+flowchart TB
+    subgraph B["During the block"]
+        direction LR
+        S["1 · Strap on,<br/>switch on"] --> Y["2 · Sync movement<br/>~10 s"] --> F["3 · Freeze<br/>~5 s"] --> T["4 · Task<br/>(repeat as needed)"]
+        T -. "after a long break" .-> Y
+    end
+    subgraph CH["At the charger"]
+        direction LR
+        O["5 · Nodes off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
+        C -- OK --> E["Erase"]
+        C -- "REDO: note what<br/>to change next time" --> E
+    end
+    T --> O
+    E -- "re-mount: next block" --> S
+```
+
 ### At the charger
 
 `hulc-ms` below is the HULC-MS command: `hulc-ms` in a Command Prompt in the hulc-ms or
@@ -53,7 +70,7 @@ Linux (the README's table has every case).
    The folder now holds everything about the block: each node's log, which
    body part it was on, and a `montage.json` built from that. Keep the folder
    together; there is no separate montage file to save.
-2. **Analyse** it, in either of the two ways:
+2. **Analyze** it, in either of the two ways:
    - **The HULC-MS app:** double-click **hulc-ms**, type the subject and drop
      `./capture/block1` on the page.
    - **The command:** `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1`
@@ -93,11 +110,29 @@ really were, then press **Apply** in the app (or **Copy command** and run it).
 
 | Step | Min / target / max | Why (the setting) |
 |---|---|---|
-| Sync movement | 4 / 10 / — s, 3–5 cycles of ~1–1.5 s | Clocks are aligned by matching the nodes' world angular-velocity vectors; one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognises it as every node moving (≥ 0.4 rad/s) **and turning together** (coherence of their rotation vectors ≥ 0.8) for ≥ 3 s (`SYNC_MIN_RAD_S`, `SYNC_MIN_COHERENCE`, `SYNC_MIN_MS`). Real twists ran the torso at only 0.4–0.8 rad/s but at coherence 0.84–0.96; strapping a node on moves the nodes independently (coherence 0.2–0.7), so it never counts. Faster than ~2 cycles/s aliases at 10 Hz. 10 s lets a node that wakes late still catch most of it. |
+| Sync movement | 4 / 10 / — s, 3–5 cycles of ~1–1.5 s | Clocks are aligned by matching the nodes' world angular-velocity vectors; one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognizes it as every node moving (≥ 0.4 rad/s) **and turning together** (coherence of their rotation vectors ≥ 0.8) for ≥ 3 s (`SYNC_MIN_RAD_S`, `SYNC_MIN_COHERENCE`, `SYNC_MIN_MS`). Real twists ran the torso at only 0.4–0.8 rad/s but at coherence 0.84–0.96; strapping a node on moves the nodes independently (coherence 0.2–0.7), so it never counts. Faster than ~2 cycles/s aliases at 10 Hz. 10 s lets a node that wakes late still catch most of it. |
 | Freeze | 3 / 5 / 8 s, starting within 20 s of the movement | The freeze is the **first still stretch after the sync movement lasting ≥ 3 s whose quietest 2 s averages ≤ 0.04 rad/s (~2°/s)** (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`) — pauses in motion only slow to ~0.06–0.09 rad/s, so **really freeze**. Over 10 s still, a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`): usable, but 5 s keeps 10 Hz. |
 | Rests in the task | 5–8 s | ≥ 5 s separates sets in the rep count (`REP_PAUSE_S`); ≤ 8 s keeps the nodes at 10 Hz. |
 | Still in the task | < 60 s | After 60 s without motion a node goes IDLE and stops logging until moved (`NOT_MOTION_TO_IDLE_MS`); the first moments after waking can be lost. After a long break, repeat steps 2–3. |
 | Nodes off | lying flat ≥ 10 s | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE); offload needs IDLE. |
+
+A typical block on one timeline (seconds; the task part varies):
+
+```mermaid
+gantt
+    dateFormat X
+    axisFormat %s s
+    section Subject
+    Strap on (not analyzed)       :a1, 0, 20
+    Sync movement (4–10 s)        :crit, a2, 20, 30
+    Freeze (3–8 s, within 20 s)   :crit, a3, 30, 35
+    Task set 1                    :a4, 35, 55
+    Rest (5–8 s)                  :a5, 55, 61
+    Task set 2                    :a6, 61, 81
+    Nodes off, flat (≥ 10 s)      :a7, 81, 95
+    section Analysis window
+    Calibrated and measured       :active, b1, 30, 81
+```
 
 #### The freeze pose (N-pose)
 
@@ -182,11 +217,19 @@ consistent flat spot.**
 | forearm | **lateral/dorsal**, distal third | the ulnar border (bone under the skin) | palm-side muscle bellies |
 | hand | flat on the **dorsum** | 2nd–3rd metacarpal | — |
 
+![Where each node goes on the body: torso flat on the sternum; upper arm lateral, distal third; forearm lateral/dorsal, distal third; hand on the dorsum](img/placement.svg)
+
+What a good mounting looks like: the node lies flat (no rocking when you
+press one edge), the strap is snug enough that the node doesn't slide when
+the skin is pushed, and the node's label or mark faces the same way every
+time (put a mark on the case, e.g. an arrow pointing toward the hand, and
+keep it the same on every wear).
+
 - **The torso node is anterior for a reason:** the facing is recovered on the
   assumption that the torso node's face points out of the chest
   (`TORSO_FORWARD_IN_SENSOR` in `calibrate_segments.py`). A side-of-trunk
   mount is flagged low-confidence and loses the facing; if the torso spot is
-  ever standardised elsewhere, that constant moves with it.
+  ever standardized elsewhere, that constant moves with it.
 - **Repeatability beats alignment.** The freeze lines the node up with the
   bone; the goal is the same placement every wear, which also lets
   `calibrate_segments.py verify` reuse a cached calibration.

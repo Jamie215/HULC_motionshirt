@@ -30,6 +30,27 @@ computer for analysis.
 
 ## State of things
 
+```mermaid
+flowchart LR
+    FW["Firmware<br/>logging, offload,<br/>power work"]:::built
+    LAP["Laptop offload<br/>hulc-ms nodes"]:::built
+    APP["Mobile app"]:::todo
+    CF[("Capture folder<br/>format")]:::built
+    AN["Analysis<br/>+ block check"]:::built
+    RV["Review page<br/>+ HULC-MS app"]:::built
+    VAL["Validation against<br/>a lab system"]:::unval
+    BAT["Battery life<br/>measurement"]:::unval
+    FW --> LAP --> CF --> AN --> RV
+    FW -.-> APP -.-> CF
+    AN -.- VAL
+    FW -.- BAT
+    classDef built fill:#dcefe4,stroke:#1a7f54,color:#16202b
+    classDef unval fill:#f6ead4,stroke:#a76500,color:#16202b
+    classDef todo fill:#f3dcdc,stroke:#b23b3b,color:#16202b,stroke-dasharray:5 5
+```
+
+Green: built and in use · amber: built, not yet validated · red, dashed: not started.
+
 **Built, and in use**
 
 - Firmware: autonomous logging (~10 Hz moving, ~1 Hz still, nothing in IDLE),

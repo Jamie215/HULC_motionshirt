@@ -10,10 +10,26 @@ self-contained HTML review page of the movement.
 The project has two halves that meet at one documented hand-over format, the
 **capture folder**:
 
-```
- THE WEARABLE                                  THE SOFTWARE
- nodes record to flash ──BLE offload──▶ capture folder ──▶ analysis ──▶ block check + review page
- firmware/                     (tools/multinode_test.py)     tools/
+```mermaid
+flowchart LR
+    subgraph W["The wearable (firmware/)"]
+        N1["Node: torso"]
+        N2["Node: upper arm"]
+        N3["Node: forearm"]
+    end
+    L["Laptop today:<br/>hulc-ms nodes offload"]
+    M["Mobile app<br/>(planned)"]
+    C[("Capture folder<br/>one per block")]
+    subgraph S["The software (tools/)"]
+        A["Analysis<br/>hulc-ms analyze / the app"]
+        B["Block check<br/>OK / REDO"]
+        V["Review page<br/>3-D movement, angles, ROM"]
+    end
+    W -- "BLE, at the charger" --> L
+    W -. "BLE, later" .-> M
+    L --> C
+    M -.-> C
+    C --> A --> B & V
 ```
 
 **Where it is heading:** the nodes will hand their logs to a **mobile app**
@@ -33,17 +49,17 @@ mobile app can replace today's laptop offload without changing it.
 
 ---
 
-## Analysing sessions
+## Analyzing sessions
 
 A session is recorded in **blocks** (one mounting, one charge). Each block is
-offloaded into its own capture folder. Analysing that folder gives a **block
+offloaded into its own capture folder. Analyzing that folder gives a **block
 check** (OK / REDO, and what to change) and a **review page** (3-D movement,
 joint angles, range of motion). There are two ways to do it, and both run the
 same analysis.
 
 | | **1. The HULC-MS app** | **2. `hulc-ms` commands** |
 |---|---|---|
-| For | analysing and reviewing blocks without a terminal | offloading the nodes, scripting, batches |
+| For | analyzing and reviewing blocks without a terminal | offloading the nodes, scripting, batches |
 | How | drop a block's folder on a page in the browser | `hulc-ms analyze --capture-dir …` in a terminal |
 | Get it | the standalone app (no Python), or the repository + Python | the same two installs |
 
@@ -88,7 +104,7 @@ folder. A browser tab opens at `http://127.0.0.1:8765/`.
    becomes its own session.
 2. Read the **block check** at the top, then the **review page** below it.
 3. If the freeze or the end was found in the wrong place, open **Timeline**,
-   drag it, and press **Apply**. The block is re-analysed in place.
+   drag it, and press **Apply**. The block is re-analyzed in place.
 4. **Keep as test case…** adds the block to the regression library.
    **Quit** stops the app.
 

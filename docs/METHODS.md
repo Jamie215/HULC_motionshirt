@@ -24,6 +24,17 @@ and improved independently of the code. The hardware side of the decision (why
 alignment is done offline, from the motion) is in
 [`WEARABLE.md`](WEARABLE.md#6-multi-node-time-alignment).
 
+```mermaid
+flowchart TD
+    L["Per-node logs<br/>(t_ms on each node's own clock + quaternion)"] --> V["World-frame angular velocity<br/>per node (A2.1)"]
+    V --> X["Cross-correlate against the reference node<br/>(n0) over all lags (A3)"]
+    X --> P{"Distinct peak?<br/>ρ ≥ 1.25 and c ≥ 0.10"}
+    P -- yes --> O["Lag → clock offset,<br/>parabolic sub-sample refinement (A3.1–A3.2)"]
+    P -- no --> SP["Fall back: angular speed (A2–A4)"] --> O
+    O --> D["Optional drift fit (A5),<br/>off by default"]
+    D --> M["Map every t_ms onto one timeline (A6)<br/>→ aligned.csv + aligned.quality.json"]
+```
+
 ### A1. The problem
 
 Each node timestamps its samples with its own free-running `millis()` counter,
@@ -109,7 +120,7 @@ the correlation of the vector signals is $\sum_k \boldsymbol\omega_A(k)\cdot\bol
 The lag is the arg-max with the same parabolic refinement (§A3.2).
 
 **Acceptance.** Nodes on different segments (torso vs. arm) mostly move on their
-own, so the overall normalised correlation $c$ (sum of dot products over the
+own, so the overall normalized correlation $c$ (sum of dot products over the
 overlap, divided by the two signals' norms) is low even when one shared sync
 gesture pins the lag exactly. What matters is whether the best peak is
 **distinct**:
@@ -312,7 +323,7 @@ synthetic data; it is **not** a validation against hardware ground truth (§A9).
   `millis()` at 0, so one log holds two unrelated clocks. The loader splits at
   any backward jump over `CLOCK_RESET_MS` (1 s), keeps the largest segment,
   warns, and records `clock_restarts` in the quality JSON; the other pieces
-  are not analysed. Offloading at every charge (one block per log) avoids it.
+  are not analyzed. Offloading at every charge (one block per log) avoids it.
 - **Speed fallback is a magnitude** — angular speed discards the rotation axis;
   two motions with identical speed profiles but different axes are
   indistinguishable to it. The default vector feature (§A2.1) keeps the axis.
@@ -492,14 +503,14 @@ Three rules gate every number, so a soft value never masquerades as a hard one:
   anatomical axes — more than 2% of samples outside the DOF's physiological
   limits. A failing joint gets a `plausibility_warning` naming the likely causes
   (calibration pose, facing, sensor slip) rather than silently reporting it.
-- **Only the protocol is analysed.** By default the stream is trimmed to the
+- **Only the protocol is analyzed.** By default the stream is trimmed to the
   *analysis window*: from the neutral hold (the freeze) to where the nodes come
   off (`trim_to_analysis`, both located by stage 5). Strapping on and the sync
   movement before, and taking the nodes off after, never enter ROM, reps or
   activity. Nothing is cut unless the calibration's freeze is this recording's
   own still window (a calibration reused from another take cuts nothing); when
   the nodes are not seen coming off the tail stays in and the run says so.
-  `--keep-pre-neutral` analyses the whole stream.
+  `--keep-pre-neutral` analyzes the whole stream.
 
 Session-level trust inputs from reconcile — `sync_confidence`, dropout — are **not**
 recomputed here; they travel alongside these numbers and should be surfaced with
@@ -699,7 +710,7 @@ All defined at the top of `metrics.py`:
 ### B8. Where the code is, and how to check it
 
 - Computation: `tools/metrics.py` — the function named in each row above.
-- Catalog / gating (which metrics unlock): `tools/motion_capabilities.py`,
+- Catalogue / gating (which metrics unlock): `tools/motion_capabilities.py`,
   [`ANALYSIS.md` §4.5](ANALYSIS.md#45-capability-tiers).
 - Body model (segments, joints, DOFs, Euler sequences): `motion_capabilities.JOINTS`.
 - Validation with no hardware:

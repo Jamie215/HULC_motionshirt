@@ -32,6 +32,20 @@ Each node is a:
 - **External 2 MB QSPI flash** (P25Q16H) for an append-only log — driven
   directly via `nrfx_qspi`, so the bootloader on internal flash is never at risk
 
+```mermaid
+flowchart LR
+    subgraph NODE["One node"]
+        BAT["Battery"]
+        MCU["Seeed XIAO nRF52840<br/>(MCU + BLE radio)"]
+        IMU["SparkFun BNO086<br/>9-DoF IMU, fusion on chip"]
+        FL["P25Q16H<br/>2 MB QSPI flash<br/>(on the XIAO)"]
+    end
+    IMU -- "I²C @ 100 kHz (addr 0x4B)<br/>+ INT (D2), RST (D3)" --- MCU
+    MCU -- "QSPI (nrfx_qspi)" --- FL
+    BAT --- MCU
+    MCU -. "BLE: advertises HULC-IMU-XXXX<br/>in IDLE only" .- C["Central<br/>(laptop / phone)"]
+```
+
 A "motion shirt" is several such nodes, one per body segment (e.g. torso,
 upper arm, forearm). Each advertises a unique BLE name `HULC-IMU-XXXX` (last 4
 hex of its MAC), so boards never collide and need no per-board reflash.
@@ -78,6 +92,23 @@ connected:
 - **Flash watermark** — past 80% full the node halves its ACTIVE rate
   (10 → 5 → 2 Hz). At 10 Hz that is after ~2.3 h of ACTIVE recording; it stops
   at ~2.6 h. Battery runs out first: plan blocks by battery, never past ~90 min.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> IDLE: power on
+    IDLE --> ACTIVE_RECORDING: motion (wake source, §7)
+    ACTIVE_RECORDING --> STATIC_POSTURE: 10 s without motion,<br/>or 3 s lying flat
+    STATIC_POSTURE --> ACTIVE_RECORDING: motion
+    STATIC_POSTURE --> IDLE: 60 s without motion,<br/>or 5 more s lying flat
+    ACTIVE_RECORDING --> IDLE: flash full
+    note right of ACTIVE_RECORDING: logs ~10 Hz
+    note right of STATIC_POSTURE: logs ~1 Hz
+    note left of IDLE
+        logs nothing, advertises,
+        offload / erase allowed
+    end note
+```
 
 How these timings shape the recording protocol is in
 [`RECORDING.md` §2](RECORDING.md#2-timings-and-the-settings-behind-them).
@@ -151,6 +182,25 @@ The command byte comes first, e.g. `[0x06, off0, off1, off2, off3, len0, len1, l
 
 ### 4.3 Getting the log off (offload)
 
+```mermaid
+sequenceDiagram
+    participant C as Central (laptop / app)
+    participant N as Node (in IDLE)
+    C->>N: connect, subscribe to A0010004
+    C->>N: write 0x04 (start offload)
+    N-->>C: header: [0xFFFFFFFF][total length]
+    loop every chunk
+        N-->>C: [offset][up to 196 bytes]
+    end
+    Note over C: stream quiet ~3 s:<br/>find missing ranges against the total
+    loop until complete (max 4 passes)
+        C->>N: write 0x06 [offset][length]
+        N-->>C: [offset][the missing bytes]
+    end
+    Note over C: write <node>.bin (holes zero-filled)<br/>+ <node>.seg.json from status bytes 4–5
+    C->>N: write 0x03 (erase), only after the transfer is verified
+```
+
 1. Connect to a node in IDLE (status byte 0 = 0). Subscribe to A0010004.
    The node requests a 15–30 ms connection interval (§6).
 2. Write `0x04`. The node first sends a **header notification**:
@@ -205,11 +255,23 @@ are in [`RECORDING.md` §4](RECORDING.md#4-setting-up-the-nodes).
 
 ## 5. The flash log
 
-- A 4 KB header (write pointer, segment code + config tag) followed by
-  20-byte records (`t_ms` + quaternion; layout in
-  [`ANALYSIS.md` §3.2](ANALYSIS.md#32-the-log-bin)), append-only.
-- Written through a RAM buffer flushed every `FSYNC_EVERY` (10) samples — a
-  4 KB sector erase + write + readback (~1 s at 10 Hz).
+```
+ 0x000000 ┌──────────────────────────── 4 KB header sector ─────────────────────────────┐
+          │ bytes 0–3 magic 0xC0DE0001 · 4–7 write pointer · 8 segment tag · 9 segment code │
+ 0x001000 ├──────────────────────────────────────────────────────────────────────────────┤
+          │ record 0: t_ms (uint32) · qw qx qy qz (4 × float32)          = 20 bytes        │
+          │ record 1 …                                                                     │
+          │ … append-only; past 80 % the ACTIVE rate is halved (watermark)                 │
+          │ … logging stops 200 KB before the end                                          │
+ 0x200000 └──────────────────────────────────────────────────────────────────────────────┘
+```
+
+- A 4 KB header sector followed by 20-byte records, append-only; offload
+  sends everything after the header (record layout:
+  [`ANALYSIS.md` §3.2](ANALYSIS.md#32-the-log-bin)).
+- The header (with the write pointer) is re-saved every `FSYNC_EVERY` (10)
+  samples — a 4 KB sector erase + write + readback, ~1 s at 10 Hz — so a power
+  cut loses at most ~1 s of samples.
 - **Erase between blocks.** The write pointer persists across reboots, so a
   node power-cycled without erasing *appends* the next recording, and since
   `millis()` restarts at 0 the log holds two sessions with a backward time
@@ -344,7 +406,7 @@ stretches.
 ## 8. Power
 
 **Measured now:** ~8.8 mA IDLE (detector), ~20–21 mA ACTIVE recording (full
-fusion). Before the optimisation work: ~12 mA / ~22 mA. Battery life on the
+fusion). Before the optimization work: ~12 mA / ~22 mA. Battery life on the
 current firmware has **not** been bench-measured yet (open item).
 
 ### 8.1 Landed

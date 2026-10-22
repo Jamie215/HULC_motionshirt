@@ -18,27 +18,33 @@ every metric, the solver comparison) is in [`METHODS.md`](METHODS.md).
 
 ## 1. The system: today and the target
 
-**The target:**
+```mermaid
+flowchart LR
+    N["Nodes<br/>record to flash"]
+    subgraph ACQ["Acquisition"]
+        L["Laptop: hulc-ms nodes<br/>(today, interim)"]
+        M["Mobile app<br/>enroll, offload, store every block<br/>(target, not built)"]
+    end
+    C[("Capture folders<br/>the seam")]
+    subgraph AN["Analysis (on a computer)"]
+        A["hulc-ms analyze<br/>block check + metrics"]
+        R["Review page<br/>HULC-MS app"]
+    end
+    N -- BLE --> L --> C
+    N -. BLE .-> M -. "export after the<br/>collection period" .-> C
+    C --> A --> R
+    classDef todo stroke-dasharray: 5 5
+    class M todo
+```
 
-```
- nodes ──BLE──▶ mobile app ──(after the collection period)──▶ computer ──▶ analysis ──▶ review
- (record to     (enroll, offload,        export of capture             (block check,     (review page,
-  flash)         store all blocks)        folders                        metrics)          HULC-MS app)
-```
-
-**What exists now:**
-
-```
- nodes ──BLE──▶ laptop: hulc-ms nodes offload ──▶ capture folder ──▶ analysis ──▶ review
-                (the interim stand-in for the mobile app)
-```
+Solid lines exist today; dashed lines are the target.
 
 The **capture folder** (§3) is the seam. Left of it is acquisition, right of
 it analysis, and neither side knows the other: the mobile app replaces
 `hulc-ms nodes` by writing the same folders, and the analysis, the HULC-MS app
 and the regression library work unchanged. A whole export (many blocks, many
 subjects) is just a tree of capture folders: `hulc-ms validate --recursive`
-checks it, and dropping its top folder on the HULC-MS app analyses every block.
+checks it, and dropping its top folder on the HULC-MS app analyzes every block.
 
 | Layer | Status | Code | Talks to the next layer through |
 |---|---|---|---|
@@ -58,23 +64,27 @@ can be computed depends entirely on where the nodes are placed — the
 **montage** (§4). The pipeline makes that dependency explicit and never
 fabricates a number a placement can't support.
 
-```
-   capture ──▶ offload ──▶ reconcile ──▶ montage/resolve ──▶ calibrate ──▶ metrics ──▶ visualize
-  (firmware)   (BLE)      align to one    which joints are    sensor→bone    ROM etc.    HTML viewer
-                          timeline        computable          mounting solve
-```
-
 `hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
 runs it for each dropped block. Each stage is a separate module that reads
 files and writes files, so it can be run, tested or replaced on its own
 (running them by hand: [`RECORDING.md` §5](RECORDING.md#5-blocks-the-charging-checkpoint-and-where-the-analysis-ends)):
 
-```
- capture folder ─▶ reconcile_nodes ─▶ aligned.csv ─▶ calibrate_segments ─▶ calibration.json
-                   (one timeline)                     (freeze, facing, end)        │
-                                                                                    ▼
- session.html ◀─ skeleton_viewer ◀─ metrics.json ◀──────────────────────────── metrics
- block_check.json ◀─ analyze_session (verdict)          (angles, ROM, reps)
+```mermaid
+flowchart TD
+    CF[("capture folder<br/>.bin + .seg.json + montage.json")]
+    RC["3 · reconcile_nodes<br/>align the clocks from the motion"]
+    MC["4 · motion_capabilities<br/>which joints the montage allows"]
+    CS["5 · calibrate_segments<br/>freeze, mounting offsets, facing, end"]
+    ME["6 · metrics<br/>angles, ROM, speed, reps, plausibility"]
+    SV["7 · skeleton_viewer<br/>the review page"]
+    OS["opensense_ik<br/>(optional OpenSim solve)"]
+    CF --> RC -- "aligned.csv<br/>aligned.quality.json" --> CS
+    CF --> MC -- "joints / blocked" --> ME
+    CS -- calibration.json --> ME
+    ME -- metrics.json --> SV
+    RC -.-> OS -.-> SV
+    SV --> H[/"session.html"/]
+    ME --> BC["analyze_session<br/>the block check<br/>(reads every stage's output)"] --> J[/"block_check.json"/]
 ```
 
 | Stage | Module | What it does |
@@ -110,7 +120,7 @@ everything after it (`hulc-ms analyze`, the HULC-MS app, the regression
 library) reads only this. Keep to it and the analysis needs no change when the
 acquisition side does.
 
-Check a folder, or a whole export of many blocks, before analysing:
+Check a folder, or a whole export of many blocks, before analyzing:
 
 ```bash
 hulc-ms validate --capture-dir ./capture/block1
@@ -168,7 +178,7 @@ Each record is 20 bytes, little-endian:
   dropped, so a transfer hole may be **zero-filled** (keep the offsets, never
   close the gap); trailing bytes that are not a whole record; a constant
   framing shift; a clock restart (a reboot mid-block: only the longest part is
-  analysed).
+  analyzed).
 
 ### 3.3 The header: `.seg.json`
 
@@ -254,6 +264,16 @@ nodes**:
 | shoulder | `torso` | `upper_arm` |
 | elbow | `upper_arm` | `forearm` |
 | wrist | `forearm` | `hand` |
+
+```mermaid
+flowchart LR
+    T(["torso"]) ---|shoulder| UA(["upper_arm"]) ---|elbow| FA(["forearm"]) ---|wrist| H(["hand"])
+```
+
+Each rounded box is a node on a segment; each labelled link is a joint, and
+it can be computed only when the nodes at **both** of its ends are worn. The
+same chain exists on the left and right sides (`_l` / `_r`); the torso is
+shared.
 
 - **A joint needs both of its nodes.** Drop the torso node and you can still
   report how the upper arm moved in space, but you **cannot** separate shoulder
@@ -419,6 +439,17 @@ Two quantities are refreshed at the start of a block. They are
   the freeze are one block-start routine. A node that reboots mid-log is
   caught by reconcile's clock-restart check.
 
+```mermaid
+flowchart LR
+    P["Node powers up<br/>(millis restarts at 0)"] --> TO["Time offset is lost"]
+    RM["Straps re-mounted"] --> MO["Mounting calibration is lost"]
+    CH["Charging between blocks"] --> RM
+    CH --> E["Offload + erase:<br/>a new log per block"] --> TO
+    TO --> S["Fixed by the sync movement<br/>(reconcile)"]
+    MO --> F["Fixed by the freeze<br/>(calibrate_segments)"]
+    S & F --> B["Every block starts with:<br/>sync movement, then freeze"]
+```
+
 ### 5.4 Calibration: the sensor→segment solve
 
 **In plain terms.** A sensor is like a compass strapped to the arm at some
@@ -497,6 +528,15 @@ editing files inside it does nothing useful.
 One-time setup: Python 3.11–3.13, then from the repository folder
 `pip install -r requirements.txt` (+ `requirements-opensense.txt` for OpenSim).
 
+```mermaid
+flowchart LR
+    B["Branch +<br/>edit tools/"] --> T["Try it:<br/>python hulc-ms.py"]
+    T --> C{"selftest +<br/>regress run<br/>all pass?"}
+    C -- no --> B
+    C -- yes --> PR["Pull request<br/>CI: selftests +<br/>standalone builds"]
+    PR --> M["Merge"] --> TAG["Tag vX.Y.Z"] --> REL["GitHub Release<br/>(builds attached)"] --> LAB["Lab machines<br/>download hulc-ms"]
+```
+
 1. **Branch**, then edit `tools/`:
 
    | To change | Edit |
@@ -574,7 +614,7 @@ What it has to do to replace `hulc-ms nodes` (protocol:
    with the subject id if the app knows it.
 3. Erase a node only after its transfer is verified.
 4. Export the stored folders to the computer as a tree; check it with
-   `hulc-ms validate --recursive`, then analyse (HULC-MS app or
+   `hulc-ms validate --recursive`, then analyze (HULC-MS app or
    `hulc-ms analyze`).
 
 The open items (M1–M9) are in [`HANDOFF.md`](../HANDOFF.md#open-work).

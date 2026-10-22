@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 520" width="560" height="520" font-family="Helvetica, Arial, sans-serif" font-size="14">
+  <title>Where each node goes (front view, right arm)</title>
+  <style>
+    .body { fill: #eef1f4; stroke: #5a6672; stroke-width: 2; }
+    .node { fill: #0e83a0; stroke: #ffffff; stroke-width: 2; }
+    .lbl  { fill: #16202b; }
+    .sub  { fill: #5a6672; font-size: 12px; }
+    .lead { stroke: #5a6672; stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; }
+    .bg   { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .body { fill: #1e2831; stroke: #9aa7b4; }
+      .node { stroke: #0d131a; fill: #35c1de; }
+      .lbl  { fill: #e7edf3; }
+      .sub  { fill: #9aa7b4; }
+      .lead { stroke: #9aa7b4; }
+      .bg   { fill: #0d131a; }
+    }
+  </style>
+  <rect class="bg" width="560" height="520" rx="8"/>
+  <!-- figure, facing the viewer: the subject's right arm is on the viewer's left -->
+  <g class="body">
+    <circle cx="300" cy="62" r="34"/>
+    <rect x="288" y="94" width="24" height="18"/>
+    <path d="M240 112 H360 Q378 112 380 132 L372 300 H228 L220 132 Q222 112 240 112 Z"/>
+    <!-- right arm (viewer's left), hanging, palm to thigh -->
+    <path d="M222 120 Q206 124 204 142 L196 262 Q195 274 207 275 L220 274 Z"/>
+    <path d="M196 268 L190 380 Q190 390 200 391 L212 391 Q220 390 220 380 L222 270 Z"/>
+    <path d="M188 388 Q184 420 194 438 Q204 446 214 436 L222 390 Z"/>
+    <!-- left arm (viewer's right), outline only -->
+    <path d="M378 120 Q394 124 396 142 L404 262 Q405 274 393 275 L380 274 Z"/>
+    <path d="M404 268 L410 380 Q410 390 400 391 L388 391 Q380 390 380 380 L378 270 Z"/>
+    <path d="M412 388 Q416 420 406 438 Q396 446 386 436 L378 390 Z"/>
+    <!-- legs -->
+    <path d="M232 300 H298 L292 500 H252 Z"/>
+    <path d="M302 300 H368 L348 500 H308 Z"/>
+  </g>
+  <!-- nodes -->
+  <rect class="node" x="288" y="150" width="24" height="30" rx="4"/>   <!-- sternum -->
+  <rect class="node" x="196" y="222" width="18" height="28" rx="4"/>   <!-- upper arm, distal third, lateral -->
+  <rect class="node" x="192" y="340" width="18" height="28" rx="4"/>   <!-- forearm, distal third -->
+  <rect class="node" x="194" y="404" width="16" height="20" rx="3"/>   <!-- hand dorsum -->
+  <!-- leaders + labels -->
+  <path class="lead" d="M312 165 H440"/>
+  <text class="lbl" x="446" y="162">torso</text>
+  <text class="sub" x="446" y="178">flat on the sternum</text>
+  <path class="lead" d="M196 236 H120"/>
+  <text class="lbl" x="20" y="232">upper arm</text>
+  <text class="sub" x="20" y="248">lateral, distal third,</text>
+  <text class="sub" x="20" y="262">above the elbow</text>
+  <path class="lead" d="M192 354 H120"/>
+  <text class="lbl" x="20" y="350">forearm</text>
+  <text class="sub" x="20" y="366">lateral/dorsal,</text>
+  <text class="sub" x="20" y="380">distal third (ulnar border)</text>
+  <path class="lead" d="M194 414 H120"/>
+  <text class="lbl" x="20" y="420">hand (optional)</text>
+  <text class="sub" x="20" y="436">dorsum, 2nd–3rd metacarpal</text>
+  <text class="sub" x="300" y="514" text-anchor="middle">Freeze pose: arms straight down, palms to the thighs. Subject's right arm shown on the left.</text>
+</svg>
