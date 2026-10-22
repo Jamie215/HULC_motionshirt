@@ -156,6 +156,7 @@ What it must do is in
 | Regression recordings (`.bin`) | **`TODO(handoff)`**: lab drive path. Not in git; point `--data` or `$HULC_REGRESS_DATA` at it |
 | Raw recordings from studies | **`TODO(handoff)`**: where they are stored, and who may access them |
 | Analyses made with the app | `~/HULC_sessions` on each lab computer |
+| Case design (3-D print) | `hardware/HULC_MS_Wearable_Case.stl`, in git ([`WEARABLE.md` §1.2](docs/WEARABLE.md#12-the-case)) |
 | Hardware: nodes, chargers, spare boards | **`TODO(handoff)`**: location, how many nodes, which are enrolled to which segment (`nodes_registry.json` on the enrolling laptop) |
 | GitHub repository admin / release rights | **`TODO(handoff)`** |
 | People: PIs, previous developer, clinical contacts | **`TODO(handoff)`** |

@@ -108,6 +108,8 @@ folder. A browser tab opens at `http://127.0.0.1:8765/`.
 4. **Keep as test case…** adds the block to the regression library.
    **Quit** stops the app.
 
+![The HULC-MS app after analyzing a block: the session list on the left, the block check (OK, with one NOTE) at the top, and the review page below](docs/img/app-block-check.png)
+
 The app runs only on this computer (127.0.0.1). It keeps copies of the dropped
 files and every analysis in `~/HULC_sessions` (`--workspace` changes this). The
 original files are never modified, and **Remove** deletes a session's copies.
@@ -154,6 +156,8 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 ```
 README.md, HANDOFF.md        start here
 docs/                        RECORDING, WEARABLE, ANALYSIS, METHODS (see "Start here")
+  img/                       photos, screenshots and figures (make_screenshots.cjs remakes the screenshots)
+hardware/                    the 3-D printed case (HULC_MS_Wearable_Case.stl)
 hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)
 hulc-ms.bat / .command       start the HULC-MS app from the repository; `hulc-ms …` commands
 requirements*.txt            pinned dependencies: analysis + nodes, OpenSim, build

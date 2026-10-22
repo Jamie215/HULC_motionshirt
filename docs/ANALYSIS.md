@@ -98,6 +98,8 @@ flowchart TD
 | (optional) OpenSense | `opensense_ik.py` | The same session solved on a published OpenSim model (Thoracoscapular Shoulder Model, right arm; or Rajagopal 2016), through the same metrics and page; fit-lost frames excluded. Why: [`METHODS.md` Part C](METHODS.md#part-c--choosing-the-pose-solver) |
 | Block check | `analyze_session.py` | Runs the stages; OK / REDO per check (sync, freeze, facing, end, trunk, joint limits, …) → `block_check.json` |
 
+![The review page (stage 7): the metrics panel on the left, the 3-D stickman mid-movement with live angles on the right, and the play / view controls along the bottom](img/review-page.png)
+
 Around the stages:
 
 | Module | Role |
@@ -471,6 +473,8 @@ the torso node › the elbow hinge axis (needs ≥ 30° of flexion) ›
 `--facing-deg` › none — stored as `anatomical_frame` in `calibration.json`.
 Joint angles are clinical only when it is present.
 
+![The same freeze before and after calibration, side view: Raw (left) shows the sensors' own orientation; Calibrated (right) shows the arm hanging straight, which is what the freeze pose should look like](img/review-neutral-raw-vs-calibrated.png)
+
 What `calibrate_segments.py` implements:
 
 - **Freeze window:** `--window` › the montage's `t_window_ms` *only if the data
@@ -562,6 +566,12 @@ flowchart LR
 5. **Merge, then tag a version** (`v0.2.0`, …): the builds are attached to a
    GitHub release, and the lab machines download the new `hulc-ms` there.
    (Building locally: `packaging/build_app.py`, with `requirements-build.txt`.)
+
+**When the app or the review page changes,** refresh the screenshots in
+`docs/img/`: `node docs/img/make_screenshots.cjs <capture folder>` (needs
+Node with Playwright). Any capture folder works; a regression-library case
+is a good choice. Check the images for anything identifying before
+committing them.
 
 ### 6.3 The regression library
 

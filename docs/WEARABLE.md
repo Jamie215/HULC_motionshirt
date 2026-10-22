@@ -24,25 +24,27 @@ truth: `firmware/firmware.ino` (its header comment, its numbered SECTIONs and
 
 Each node is a:
 
-- **Seeed XIAO nRF52840** (BLE MCU)
+- **Seeed XIAO nRF52840** (BLE MCU; also charges the battery from its USB-C port)
 - **SparkFun BNO086** 9-DoF IMU over I²C (100 kHz: this board's I²C is
   unstable at 400 kHz) — its fused, magnetometer-referenced Rotation Vector
   gives every node a quaternion in a **shared world frame** (gravity +
   magnetic north)
 - **External 2 MB QSPI flash** (P25Q16H) for an append-only log — driven
   directly via `nrfx_qspi`, so the bootloader on internal flash is never at risk
+- **3.7 V 600 mAh LiPo** battery
+- a **3-D printed case** (tray + lid): `hardware/HULC_MS_Wearable_Case.stl`
 
 ```mermaid
 flowchart LR
     subgraph NODE["One node"]
-        BAT["Battery"]
+        BAT["3.7 V 600 mAh LiPo"]
         MCU["Seeed XIAO nRF52840<br/>(MCU + BLE radio)"]
         IMU["SparkFun BNO086<br/>9-DoF IMU, fusion on chip"]
         FL["P25Q16H<br/>2 MB QSPI flash<br/>(on the XIAO)"]
     end
     IMU -- "I²C @ 100 kHz (addr 0x4B)<br/>+ INT (D2), RST (D3)" --- MCU
     MCU -- "QSPI (nrfx_qspi)" --- FL
-    BAT --- MCU
+    BAT -- "2-pin JST<br/>(battery pads)" --- MCU
     MCU -. "BLE: advertises HULC-IMU-XXXX<br/>in IDLE only" .- C["Central<br/>(laptop / phone)"]
 ```
 
@@ -54,6 +56,48 @@ hex of its MAC), so boards never collide and need no per-board reflash.
 and the XIAO's power LED are wired to the 3.3 V rail, not GPIOs, so firmware
 can't turn them off; cutting each board's `LED` solder jumper (reversible)
 saves ~1–3 mA each, 24/7.
+
+### 1.1 What a node looks like
+
+![The board stack: a Seeed XIAO nRF52840 mounted on top of the red SparkFun BNO086 breakout, joined by short hook-up wires](img/node-board.jpg)
+
+**The board stack.** The XIAO sits directly on top of the SparkFun BNO086
+(Qwiic) breakout. Four short hook-up wires carry the I²C bus (SDA, SCL) and
+the IMU's interrupt and reset lines (INT → D2, RST → D3, as set in
+`firmware.ino` Section 2); a red/black pair runs from the breakout's 3V3/GND
+pads to the XIAO. The white 2-pin JST connector on the XIAO's battery pads
+takes the battery lead. When you build a new node, check each wire against
+the pin labels printed on both boards; wire colours are not standardized
+between nodes.
+
+![The 3-D printed case with the LiPo battery in its back compartment and the board well empty in front](img/node-case-battery.jpg)
+
+**The case and battery.** The 3.7 V 600 mAh LiPo lies flat in the back
+compartment of the printed tray, its lead running round the side to the JST
+plug. The front well holds the board stack. The cut-out in the side wall lines
+up with the XIAO's USB-C port, which is how a node is charged and flashed
+without opening the case. The blue tape is the label written at enroll (the
+node's `HULC-IMU-XXXX` suffix), so a node can be identified without
+connecting to it.
+
+![A complete node: the board stack sitting in the front well over the battery lead, USB-C port at the side cut-out](img/node-assembly.jpg)
+
+**Assembled.** The board stack drops into the front well with the USB-C port
+in the side cut-out, and the battery plugs into the JST connector; the lid
+then closes over both. The node's orientation in the case is fixed by the
+cut-out, which is what makes "same node, same way round" repeatable when it
+is strapped on ([`RECORDING.md`, Where on each segment](RECORDING.md#where-on-each-segment)).
+
+### 1.2 The case
+
+![Render of the case STL: the tray with its battery compartment, board well and USB-C cut-out, and the lid beside it](img/case-preview.png)
+
+`hardware/HULC_MS_Wearable_Case.stl` holds both printed parts, laid out flat
+for printing: the **tray** (battery compartment, board well, USB-C cut-out)
+and the **lid**. About 48 mm wide; the tray is ~17 mm tall (model units,
+assumed mm).
+**`TODO(handoff)`:** printer, material and settings (layer height, infill,
+supports), and how the lid is held shut (friction fit, glue or tape).
 
 ## 2. Building and flashing
 

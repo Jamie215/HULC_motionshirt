@@ -584,6 +584,12 @@ ill-defined part). Affected DOFs carry
 `singularity_note`, and their series carry `NaN` at the masked samples so every
 downstream consumer skips them the same way.
 
+What the chain produces for one joint, as the review page graphs it (right
+elbow flexion over a block of six bends, the freeze shaded at the start, the
+session's max and min marked):
+
+![The review page's movement graph: right elbow flexion / extension over time, six bends up to 124° flexion, minimum −32°](img/review-graph.png)
+
 ---
 
 ### B3. Joint-tier metrics

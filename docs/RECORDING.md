@@ -73,10 +73,14 @@ Linux (the README's table has every case).
 2. **Analyze** it, in either of the two ways:
    - **The HULC-MS app:** double-click **hulc-ms**, type the subject and drop
      `./capture/block1` on the page.
+
+     ![The HULC-MS app before any block is dropped: the drop area, subject, session and order fields on the left](img/app-drop.png)
    - **The command:** `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1`
 3. **Read the `BLOCK CHECK`** (top of the app page, or the end of the output):
    - **OK** — keep going (read any NOTE lines).
    - **REDO** — do what the line under it says when you record the block again.
+
+   ![The block check at the top of the app: OK for sync, freeze, facing and session end, and one NOTE about the elbow angles](img/app-block-check.png)
 4. **Erase** the nodes: `hulc-ms nodes erase --count 2`
 5. **Re-mount** and start the next block at step 1.
 6. *Optional, but it is how the analysis gets better:* if the block was new in
@@ -322,6 +326,8 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
 **Copy command**: it is the same analysis command with `--window t0,t1` /
 `--end t` added. Values set by hand stay in the command on the next page.
 
+![The review page with the Timeline open: each node's speed over the whole log, the sync movement shaded, the green freeze band, the dashed end line, and the command box below](img/review-timeline.png)
+
 **The checkpoint, step by step.**
 
 1. **Nodes off** and flat on the charger: they drop to IDLE within ~8 s.
@@ -363,6 +369,8 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
    - On the review page, **Neutral pose** then **Raw ↔ Calibrated**: the
      segments should snap to the freeze pose in Calibrated. That toggle is the
      calibration check.
+
+     ![Neutral pose, side view. Left, Raw: the upper arm and forearm drawn as the sensors sit, pointing sideways. Right, Calibrated: the same moment with the arm hanging straight down](img/review-neutral-raw-vs-calibrated.png)
    - A faster look without the analysis: `hulc-ms validate --capture-dir
      ./capture/blockN` — every log present with its header, ~10 Hz while
      moving, no dropped records or clock restarts (the folder format is in
@@ -419,7 +427,17 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 
 `hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `REDO` and one line per
 check (also saved as `block_check.json`). **REDO** means re-record the block;
-**NOTE** means usable, read the note.
+**NOTE** means usable, read the note. A real one (upper arm + forearm):
+
+```
+===== BLOCK CHECK: OK (1 note) =====
+  OK    Sync         every node lined up on one clock
+  OK    Freeze       freeze found 3 s after the sync movement (15824–32360 ms): 34868–36868 ms
+  OK    Facing       from the elbow bending
+  OK    Session end  analysis ends at 68.1 s where the nodes came off
+  NOTE  Angles       Right elbow + forearm: implausible angles
+                     -> check the freeze pose (palms, elbows straight) and strap slip
+```
 
 | Check | Looks at | REDO / NOTE when | What to do |
 |---|---|---|---|
