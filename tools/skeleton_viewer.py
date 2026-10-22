@@ -5,8 +5,8 @@ HULC Motion Shirt — stage-7 visual: the skeleton review viewer.
 Orientation is exactly what the shirt measures — one magnetometer-referenced
 quaternion per segment per frame. This tool bakes the reconcile → (optional)
 calibrate stream into a single self-contained HTML viewer that connects the
-segments into a 3-D stickman by forward kinematics (SETUP_AND_CALIBRATION_PLAN.md
-§5, joint/chain tier): root the torso, place each segment's proximal end at its
+segments into a 3-D stickman by forward kinematics (the joint/chain
+tier): root the torso, place each segment's proximal end at its
 parent's joint, orient the bone by its quaternion, step down the chain. The
 CONNECTIVITY is real (the montage's kinematic chain, from
 motion_capabilities.JOINTS); the bone LENGTHS and joint offsets are ASSUMED

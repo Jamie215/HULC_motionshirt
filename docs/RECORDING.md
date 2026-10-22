@@ -1,21 +1,83 @@
-# Collection reference — setup, why each step, the numbers behind it, troubleshooting
+# Recording — running a session
 
-The companion to the one-page [recording card](COLLECTION_SOP.md). The card
-says what to do; this page covers setting up the laptop and the nodes, where
-to strap each node, why each step is there and which pipeline or firmware
-setting each number comes from, the charging checkpoint in detail, what the
-block check means, and what to do when something goes wrong. If you change one
-of the named settings, update both pages.
+For the person running a recording. **Part 1 is the recording card**: one
+page, print it. **Part 2 is the reference** behind it: setting up the laptop
+and the nodes, where to strap each node, why each step is there and which
+pipeline or firmware setting each number comes from, the charging checkpoint
+in detail, what the block check means, and troubleshooting. If you change one
+of the named settings, update both parts.
 
-Commands are `hulc-ms` commands (the README's "Analysing sessions" says what to
-type for `hulc-ms` on each system: the standalone app or the repository), with the
-nodes flashed from `firmware/firmware.ino`. The examples use two nodes
-(`--count 2`); for other montages only the segment names change. Commands
-written `python tools/…` are development tools for the repository install.
+Commands are `hulc-ms` commands (the README's [command table](../README.md#hulc-ms-commands)
+says what to type on each system), with the nodes flashed from
+`firmware/firmware.ino`. The examples use two nodes (`--count 2`); for other
+montages only the segment names change. Commands written `python tools/…` are
+development tools for the repository install.
+
+- [Part 1 — The recording card](#part-1--the-recording-card)
+- [Part 2 — Reference](#part-2--reference): [1 What each step gives](#1-what-each-step-gives-the-pipeline) · [2 Timings](#2-timings-and-the-settings-behind-them) · [3 Before the session](#3-before-the-session-in-detail) · [4 Setting up the nodes](#4-setting-up-the-nodes) · [5 Blocks and the checkpoint](#5-blocks-the-charging-checkpoint-and-where-the-analysis-ends) · [6 The block check](#6-the-block-check-line-by-line) · [7 Troubleshooting](#7-common-mistakes-and-troubleshooting) · [8 Older recordings](#8-recordings-made-with-earlier-protocols)
 
 ---
 
-## 1. What each step gives the pipeline
+## Part 1 — The recording card
+
+### Before the session
+
+- [ ] At least ~1 m from large metal and electronics (steel desk, radiator,
+      laptop on the lap). Same spot for the whole session.
+- [ ] Nodes for the question:
+      **shoulder** → torso + upper arm · **elbow / forearm** → upper arm + forearm.
+- [ ] Straps firm, on the flat of each segment. Same node on the same spot,
+      same way round, every time.
+
+### Each block
+
+| # | Do | Say |
+|---|---|---|
+| 1 | **Strap on and switch on** every node. Take as long as you need. | — |
+| 2 | **Sync movement, ~10 s.** Every node must move. | *Torso node:* "Hand on your hip. Twist your upper body left and right — five times." <br> *Arm only:* "Arm straight. Swing it forward and back — five times." |
+| 3 | **Freeze, ~5 s,** straight after. | "Arms down, palms to your legs. Freeze … two, three, four, five." |
+| 4 | **The task.** Smooth, at most ~1 repetition per second. Rest 5–8 s between sets. Never stay still for a minute or more. Arm-only sessions: include a few elbow bends. | e.g. "Raise your arm forward, as high as is comfortable, and down — five times." |
+| 5 | **Done:** nodes off, flat on the charger. | — |
+
+More tasks before charging? Carry on with step 4 — or, after a long break,
+repeat steps 2–3 first.
+
+### At the charger
+
+`hulc-ms` below is the HULC-MS command: `hulc-ms` in a Command Prompt in the hulc-ms or
+repository folder on Windows, `python3 hulc-ms.py` from the repository on macOS /
+Linux (the README's table has every case).
+
+1. **Offload** into a new folder for this block:
+   `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01`
+   The folder now holds everything about the block: each node's log, which
+   body part it was on, and a `montage.json` built from that. Keep the folder
+   together; there is no separate montage file to save.
+2. **Analyse** it, in either of the two ways:
+   - **The HULC-MS app:** double-click **hulc-ms**, type the subject and drop
+     `./capture/block1` on the page.
+   - **The command:** `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1`
+3. **Read the `BLOCK CHECK`** (top of the app page, or the end of the output):
+   - **OK** — keep going (read any NOTE lines).
+   - **REDO** — do what the line under it says when you record the block again.
+4. **Erase** the nodes: `hulc-ms nodes erase --count 2`
+5. **Re-mount** and start the next block at step 1.
+6. *Optional, but it is how the analysis gets better:* if the block was new in
+   some way (new person, montage, room) or the analysis got it wrong, keep it as
+   a test case: **Keep as test case…** in the app, or
+   `hulc-ms regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"`.
+
+Review the movement on the review page (in the app, or
+`out/block1/session.html`); **Neutral pose** should show the arms hanging,
+palms to the legs. If the freeze or the end was found in the wrong place,
+click **Timeline** and drag the green freeze band or the end line to where they
+really were, then press **Apply** in the app (or **Copy command** and run it).
+
+---
+
+## Part 2 — Reference
+
+### 1. What each step gives the pipeline
 
 | Step | What the pipeline gets from it | Without it |
 |---|---|---|
@@ -27,7 +89,7 @@ written `python tools/…` are development tools for the repository install.
 
 ---
 
-## 2. Timings and the settings behind them
+### 2. Timings and the settings behind them
 
 | Step | Min / target / max | Why (the setting) |
 |---|---|---|
@@ -37,7 +99,7 @@ written `python tools/…` are development tools for the repository install.
 | Still in the task | < 60 s | After 60 s without motion a node goes IDLE and stops logging until moved (`NOT_MOTION_TO_IDLE_MS`); the first moments after waking can be lost. After a long break, repeat steps 2–3. |
 | Nodes off | lying flat ≥ 10 s | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE); offload needs IDLE. |
 
-### The freeze pose (N-pose)
+#### The freeze pose (N-pose)
 
 - Standing upright, weight even, looking ahead. Seated is fine if the trunk is
   upright and the arms hang freely clear of the chair.
@@ -46,7 +108,7 @@ written `python tools/…` are development tools for the repository install.
   is what `metrics.py` and the OpenSense models assume.
 - No talking, weight shifting or looking around. Breathing is fine.
 
-### The sync movement, per montage
+#### The sync movement, per montage
 
 | Montage | Movement | Key points |
 |---|---|---|
@@ -54,7 +116,7 @@ written `python tools/…` are development tools for the repository install.
 | torso + upper arm | **Trunk twists** left–right, ±30–45°, with the hand **on the hip** | An arm swing leaves the torso still, so it cannot sync the torso node. |
 | torso + upper arm + forearm | **Trunk twists** as above, whole arm against the side | One movement moves all three nodes. |
 
-### Task rules
+#### Task rules
 
 - **Speed:** at 10 Hz, at most ~1 repetition per second, smooth. Fast snaps
   (>~300°/s) are where angles and model fits are worst.
@@ -69,7 +131,7 @@ written `python tools/…` are development tools for the repository install.
 
 ---
 
-## 3. Before the session, in detail
+### 3. Before the session, in detail
 
 - **Place.** Everything relies on the nodes sharing one magnetic-north frame. A
   metal object near one node and not the other breaks the sync, the facing and
@@ -103,7 +165,7 @@ written `python tools/…` are development tools for the repository install.
   still time costs little (1 sample/s). Plan blocks by battery, never past
   ~90 min of recording.
 
-### Where on each segment
+#### Where on each segment
 
 The freeze calibration measures however each node sits on its segment and
 subtracts it, so a static offset in the exact spot does **not** shift the
@@ -131,7 +193,7 @@ consistent flat spot.**
 
 ---
 
-## 4. Setting up the nodes
+### 4. Setting up the nodes
 
 **What a node does on its own.** Each node logs to its own flash. Moving, it
 records ~10 samples/s (`ACTIVE_RECORDING`); after 10 s still it drops to
@@ -150,7 +212,7 @@ first (slow, especially from Windows), so a routine block touches BLE twice:
 | Offload (at the charger) | yes |
 | Link check | only for a new rig or a flaky link |
 
-### Enroll — once per rig
+#### Enroll — once per rig
 
 Enroll maps each board to a body segment by **powering one node at a time**:
 with only one advertising, its `HULC-IMU-XXXX` id is unambiguous. On one
@@ -178,7 +240,7 @@ segments therefore means re-enrolling them.
 A `montage.json` edited by hand must stay UTF-8: the tools accept a UTF-8 BOM
 (Notepad, PowerShell `>`), but a UTF-16 file must be re-saved.
 
-### Link check — occasionally
+#### Link check — occasionally
 
 The analysis aligns the clocks from the motion, so the BLE time sync is not
 needed per session. For a new rig or a flaky link, with the nodes still:
@@ -189,11 +251,11 @@ hulc-ms nodes check --count 2 --duration 30
 
 Every node should read `synced=True` with a small, stable cross-node offset;
 a bad offset points at the link before a recording is wasted on it. Offload
-framing and recovery are in `firmware/MULTINODE_TESTING.md`.
+framing and recovery are in [`WEARABLE.md` §4.3](WEARABLE.md#43-getting-the-log-off-offload).
 
 ---
 
-## 5. Blocks, the charging checkpoint, and where the analysis ends
+### 5. Blocks, the charging checkpoint, and where the analysis ends
 
 A **block** is everything between two offloads: one charge, one mounting, one
 capture folder. The analysis of a block runs from the first freeze after the
@@ -261,7 +323,7 @@ really froze — it snaps to the quietest 2 s nearby — and/or the end line, th
    - A faster look without the analysis: `hulc-ms validate --capture-dir
      ./capture/blockN` — every log present with its header, ~10 Hz while
      moving, no dropped records or clock restarts (the folder format is in
-     [`DATA_FORMAT.md`](DATA_FORMAT.md)).
+     [`ANALYSIS.md` §3](ANALYSIS.md#3-the-capture-folder-data-format)).
 4. **Erase**: `hulc-ms nodes erase --count 2`. An empty node
    is skipped; one holding data asks `[y/N]` (`--yes` for scripts); do not
    power off mid-wipe. Erasing only after the check keeps the block on the
@@ -310,7 +372,7 @@ python tools/calibrate_segments.py verify redon.csv montage.json --calibration c
 
 ---
 
-## 6. The block check, line by line
+### 6. The block check, line by line
 
 `hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `REDO` and one line per
 check (also saved as `block_check.json`). **REDO** means re-record the block;
@@ -330,7 +392,7 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 
 ---
 
-## 7. Common mistakes and troubleshooting
+### 7. Common mistakes and troubleshooting
 
 | Mistake | What happens | Prevention |
 |---|---|---|
@@ -360,7 +422,7 @@ check (also saved as `block_check.json`). **REDO** means re-record the block;
 
 ---
 
-## 8. Recordings made with earlier protocols
+### 8. Recordings made with earlier protocols
 
 - **Hold before the sync movement** (recordings before 2026-10): analyze with
   `--protocol hold-first` (or `"protocol": "hold-first"` under `calibration` in

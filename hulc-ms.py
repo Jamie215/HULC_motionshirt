@@ -26,7 +26,7 @@ Commands
 
 `hulc-ms <command> --help` lists a command's options. The individual pipeline
 stages (tools/reconcile_nodes.py, calibrate_segments.py, …) stay runnable on
-their own for development; see docs/COLLECTION_REFERENCE.md §5.
+their own for development; see docs/RECORDING.md §5.
 """
 import importlib
 import os
