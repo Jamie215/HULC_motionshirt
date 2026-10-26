@@ -362,11 +362,11 @@ has its case mark facing the same way every time.
 
 | **#** | **Do** | **Say** |
 |---|---|---|
-| 1 | **Strap on and switch on** every node. Take as long as you need. | — |
+| 1 | **Strap on** every node. Take as long as you need. (There is no power switch: a node runs whenever its battery is plugged in.) | — |
 | 2 | **Sync movement, about 10 s.** Every node must move. | *With a torso node:* "Hand on your hip. Twist your upper body left and right, five times." *Arm only:* "Arm straight. Swing it forward and back, five times." |
 | 3 | **Freeze, about 5 s,** straight after. | "Arms down, palms to your legs. Freeze ... two, three, four, five." |
 | 4 | **The task.** Smooth, at most about 1 repetition per second. Rest 5–8 s between sets. Never stay still for a minute or more. Arm-only sessions: include a few elbow bends. | e.g. "Raise your arm forward, as high as is comfortable, and down, five times." |
-| 5 | **Done:** nodes off, flat on the charger. | — |
+| 5 | **Done:** nodes taken off, flat on the charger. | — |
 
 More tasks before charging? Carry on with step 4, or, after a long break,
 repeat steps 2–3 first. Figure 8 shows the whole cycle, including the
@@ -376,12 +376,12 @@ routine while charging (§7).
 flowchart TB
     subgraph B["During the block"]
         direction LR
-        S["1 · Strap on,<br/>switch on"] --> Y["2 · Sync movement<br/>~10 s"] --> F["3 · Freeze<br/>~5 s"] --> T["4 · Task<br/>(repeat as needed)"]
+        S["1 · Strap on"] --> Y["2 · Sync movement<br/>~10 s"] --> F["3 · Freeze<br/>~5 s"] --> T["4 · Task<br/>(repeat as needed)"]
         T -. "after a long break" .-> Y
     end
     subgraph CH["While charging"]
         direction LR
-        O["5 · Nodes off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
+        O["5 · Nodes taken off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
         C -- OK --> E["Erase"]
         C -- "UNUSABLE: note what<br/>to change next block" --> E
     end
@@ -423,7 +423,7 @@ shifting or looking around; breathing is fine.
 | Freeze | 3 / 5 / 8 s, starting within 20 s of the movement | It must be the first still stretch after the movement; pauses in motion are not still enough, so **really freeze** |
 | Rests in the task | 5–8 s | 5 s separates sets in the repetition count; 8 s or less keeps the nodes at 10 samples per second (after 10 s still they slow to 1) |
 | Still in the task | under 60 s | After 60 s still a node stops logging until moved; after a long break repeat steps 2–3 |
-| Nodes off | lying flat for at least 10 s | Offload needs the nodes in IDLE |
+| Nodes taken off | lying flat for at least 10 s | Offload needs the nodes in IDLE |
 
 The analysis uses only the part of the recording from the freeze to where
 the nodes come off (Figure 9).
@@ -439,7 +439,7 @@ gantt
     Task set 1                    :a4, 35, 55
     Rest (5–8 s)                  :a5, 55, 61
     Task set 2                    :a6, 61, 81
-    Nodes off, flat (≥ 10 s)      :a7, 81, 95
+    Nodes taken off, flat (≥ 10 s) :a7, 81, 95
     section Analysis window
     Calibrated and measured       :active, b1, 30, 81
 ```
@@ -448,7 +448,7 @@ gantt
 
 ## 7. While charging
 
-1.  **Nodes off** and flat on the charger. They reach IDLE within about 8 s.
+1.  **Nodes taken off** and flat on the charger. They reach IDLE within about 8 s.
 2.  **Offload** into a new folder for this block:
     `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01`
     Each node reports `COMPLETE — saved N bytes`. If records are missing, run

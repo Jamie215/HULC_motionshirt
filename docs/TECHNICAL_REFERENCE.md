@@ -890,26 +890,31 @@ Two quantities are refreshed at the start of a block. They are
 
 | | Aligns | Invalidated by | Cacheable? | Refreshed how |
 |---|---|---|---|---|
-| **Time offset** | the nodes' clocks (temporal) | every **power-up** | **No** | the sync movement (cross-correlation in reconcile) |
+| **Time offset** | the nodes' clocks (temporal) | **drift** (tens of ppm, a few s a day) and any **restart** | **No** | the sync movement (cross-correlation in reconcile) |
 | **Mounting calibration** | sensor→segment (spatial) | every **re-mount** | **Yes** | the freeze, or reuse-if-verified |
 
-- **Time offset cannot be cached:** `millis()` restarts at zero on boot. Within
-  a block it holds (drift is negligible over minutes; long sessions:
+- **Time offset is not cached.** The nodes stay powered while they charge, so
+  `millis()` keeps running between blocks, but each clock started when its
+  battery was plugged in and ticks at its own rate (tens of ppm apart, a few
+  seconds a day), and a node whose battery runs flat restarts at zero. Rather
+  than track the offset across a collection period, each block measures it
+  again from its own sync movement. Within a block it holds (drift is
+  negligible over minutes; long sessions:
   [§6.11](#611-long-session-drift-tracking-textoffsett-as-a-fitted-curve)).
 - **Mounting calibration survives a power cycle** (it is physical) and is
   broken only by re-mounting — so it *can* be cached and verified.
-- Charging between blocks trips **both**: the straps come off, and each charge
-  is also the offload-and-erase point, so every block starts a fresh log that
-  is reconciled and calibrated on its own. That is why the sync movement and
+- Charging between blocks refreshes **both**: the straps come off, and each
+  charge is also the offload-and-erase point, so every block starts a fresh
+  log that is reconciled and calibrated on its own. That is why the sync movement and
   the freeze are one block-start routine. A node that reboots mid-log is
   caught by reconcile's clock-restart check.
 
 ```mermaid
 flowchart LR
-    P["Node powers up<br/>(millis restarts at 0)"] --> TO["Time offset is lost"]
+    P["Clocks drift apart,<br/>or a node restarts"] --> TO["Time offset changes"]
     RM["Straps re-mounted"] --> MO["Mounting calibration is lost"]
     CH["Charging between blocks"] --> RM
-    CH --> E["Offload + erase:<br/>a new log per block"] --> TO
+    CH --> E["Offload + erase:<br/>a new log per block,<br/>analyzed on its own"] --> TO
     TO --> S["Fixed by the sync movement<br/>(reconcile)"]
     MO --> F["Fixed by the freeze<br/>(calibrate_segments)"]
     S & F --> B["Every block starts with:<br/>sync movement, then freeze"]
@@ -980,11 +985,11 @@ The [SOP](SOP.md) says what to do in a session; this section says why each step 
 
 | Step | What the pipeline gets from it | Without it |
 |---|---|---|
-| **1 Strap on, switch on** | Nothing yet — and nothing here is used. Nodes may power up one by one and sit still for minutes; the analysis only starts after the sync movement. | — |
+| **1 Strap on** | Nothing yet — and nothing here is used. Nodes may sit still for minutes; the analysis only starts after the sync movement. | — |
 | **2 Sync movement** | One strong motion shared by every node, so their independent clocks can be aligned (`reconcile_nodes.py`); the **landmark** calibration uses to find the freeze; and motion that wakes every node and settles its magnetic heading. | Clocks off by milliseconds to tens of seconds; the freeze cannot be told from setup stillness |
 | **3 Freeze** | The sensor→segment mounting offsets and the zero of every angle (`calibrate_segments.py`), plus which way the subject faces (torso node). Taken after the movement, so the nodes are awake and any strap shift from the twisting is already in the calibration. | Every angle measured against a wrong zero |
 | **4 Task** | The movement of interest; with no torso node, elbow bends also give the facing. | — |
-| **5 Nodes off** | Where the analysis ends: taken-off nodes lie still on the charger in a pose no body holds, then go IDLE. | — (detected; see SOP §7) |
+| **5 Nodes taken off** | Where the analysis ends: taken-off nodes lie still on the charger in a pose no body holds, then go IDLE. | — (detected; see SOP §7) |
 
 ---
 
@@ -996,7 +1001,7 @@ The [SOP](SOP.md) says what to do in a session; this section says why each step 
 | Freeze | 3 / 5 / 8 s, starting within 20 s of the movement | The freeze is the **first still stretch after the sync movement lasting ≥ 3 s whose quietest 2 s averages ≤ 0.04 rad/s (~2°/s)** (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`) — pauses in motion only slow to ~0.06–0.09 rad/s, so **really freeze**. Over 10 s still, a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`): usable, but 5 s keeps 10 Hz. |
 | Rests in the task | 5–8 s | ≥ 5 s separates sets in the rep count (`REP_PAUSE_S`); ≤ 8 s keeps the nodes at 10 Hz. |
 | Still in the task | < 60 s | After 60 s without motion a node goes IDLE and stops logging until moved (`NOT_MOTION_TO_IDLE_MS`); the first moments after waking can be lost. After a long break, repeat steps 2–3. |
-| Nodes off | lying flat ≥ 10 s | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE); offload needs IDLE. |
+| Nodes taken off | lying flat ≥ 10 s | IDLE needs ON_TABLE (3 s → STATIC, then 5 s → IDLE); offload needs IDLE. |
 
 A typical block on one timeline (seconds; the task part varies):
 
@@ -1011,7 +1016,7 @@ gantt
     Task set 1                    :a4, 35, 55
     Rest (5–8 s)                  :a5, 55, 61
     Task set 2                    :a6, 61, 81
-    Nodes off, flat (≥ 10 s)      :a7, 81, 95
+    Nodes taken off, flat (≥ 10 s) :a7, 81, 95
     section Analysis window
     Calibrated and measured       :active, b1, 30, 81
 ```
@@ -1126,17 +1131,17 @@ flowchart TD
 ### 6.1 The problem
 
 Every node stamps its samples with its own millisecond counter (`millis()`),
-which starts at zero when the node is switched on and ticks on the node's own
+which starts at zero when the node powers on (its battery is plugged in) and ticks on the node's own
 crystal. If a real event happens at time $\tau$, node $X$ records it at
 
 ```math
 t_X(\tau) = \bigl(\tau - \text{boot}_X\bigr)\cdot 1000 \quad[\text{ms since node } X \text{ booted}]
 ```
 
-where $\text{boot}_X$ is when node $X$ was switched on. Two nodes therefore
+where $\text{boot}_X$ is when node $X$ powered on. Two nodes therefore
 disagree in two ways:
 
-1. **Offset.** They were switched on at different times
+1. **Offset.** They powered on at different times
    ($\text{boot}_A \neq \text{boot}_B$), so their clocks start from different
    points.
 2. **Drift (skew).** Their crystals tick at slightly different rates (tens of
