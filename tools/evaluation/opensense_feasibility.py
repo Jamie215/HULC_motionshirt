@@ -7,7 +7,7 @@ through a known upper-body motion, read off the world orientation of virtual
 IMUs (random strap mounting, Z-up sensor world, subject facing 37° off north,
 ~1° noise), write OpenSense .sto files, then run IMUPlacer +
 IMUInverseKinematicsTool for several node subsets and compare the recovered
-joint coordinates against truth. Findings: docs/METHODS.md §C5.
+joint coordinates against truth. Findings: docs/TECHNICAL_REFERENCE.md §8.7.
 
 This is an evaluation harness, not part of the pipeline. Needs:
     pip install opensim numpy        # official Stanford wheels, Python 3.11-3.13

@@ -20,7 +20,7 @@ declares for the montage, so what appears is exactly what the placement supports
 ROM and the per-DOF read-out came first; the rest ride on the same decomposition and the same honesty contract.
 
 Every metric's meaning, formula, units, and calibration gate are catalogued in
-docs/METHODS.md Part B (this module is the implementation it indexes).
+docs/TECHNICAL_REFERENCE.md chapter 7 (this module is the implementation it indexes).
 
 How a joint angle is computed (the whole chain in five lines)
 -------------------------------------------------------------

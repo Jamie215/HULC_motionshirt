@@ -66,9 +66,9 @@ Green: built and in use · amber: built, not yet validated · red, dashed: not s
 - Safety net: selftests in CI, and a regression library of real recordings
   (5 cases so far, in `tools/regress_cases/`).
 - The hand-over format between acquisition and analysis: the capture folder
-  ([`docs/ANALYSIS.md` §3](docs/ANALYSIS.md#3-the-capture-folder-data-format)),
+  ([Technical reference chapter 2](docs/TECHNICAL_REFERENCE.md#2-the-capture-folder-data-format)),
   checked by `hulc-ms validate`, and the BLE protocol written out for a phone
-  ([`docs/WEARABLE.md` §4](docs/WEARABLE.md#4-ble-protocol--talking-to-a-node)).
+  ([Technical reference §4.3](docs/TECHNICAL_REFERENCE.md#43-ble-protocol--talking-to-a-node)).
 
 **Built, not yet validated.** See V1–V6 below. In particular, the joint angles
 have not been compared against a lab motion-capture system, and battery life
@@ -81,7 +81,7 @@ on the current firmware has not been measured.
 ### The mobile app (replaces `hulc-ms nodes`)
 
 What it must do is in
-[`docs/ANALYSIS.md` §7](docs/ANALYSIS.md#7-integrating-the-mobile-app).
+[Technical reference §9.6](docs/TECHNICAL_REFERENCE.md#96-integrating-the-mobile-app).
 
 | # | Item | Notes |
 |---|---|---|
@@ -109,9 +109,9 @@ What it must do is in
 |---|---|
 | V1 | Motion-capture validation: per-DOF RMSE and Bland–Altman against a lab system |
 | V2 | Grow the regression library to 20–30 recordings across people, montages and rooms |
-| V3 | Bench-measure battery life on the current firmware (also the write energy of the ~1 Hz STATIC logging and the exact-rate ACTIVE gate: [`WEARABLE.md` §8.1](docs/WEARABLE.md#81-landed) items 9–10) |
+| V3 | Bench-measure battery life on the current firmware (also the write energy of the ~1 Hz STATIC logging and the exact-rate ACTIVE gate: [Technical reference §4.7.1](docs/TECHNICAL_REFERENCE.md#471-landed) items 9–10) |
 | V4 | Decide the plane-of-elevation cutoff (10° now, or 20–30°) |
-| V5 | Choose the left-arm body model (mirrored shoulder model or Rajagopal), [`METHODS.md` C4](docs/METHODS.md#c4-recommendations) |
+| V5 | Choose the left-arm body model (mirrored shoulder model or Rajagopal), [Technical reference §8.5](docs/TECHNICAL_REFERENCE.md#85-recommendations) |
 | V6 | Check offload writing `montage.json` on hardware, and the standalone app on a Mac |
 
 ### Firmware
@@ -123,16 +123,17 @@ What it must do is in
 | F3 | Faster offload if ever needed: ~30% of the measured offload time is the fixed 3 ms `OFFLOAD_PACING_MS`; backpressure already paces it, so it could be reduced |
 | F4 | Ground-truth alignment on hardware with a shared physical event (tap all nodes together) |
 | F5 | Check the simultaneous-connection ceiling before going past 2–3 nodes |
-| F6 | Production build: drop USB/serial; cut the LED jumpers on every node. The rest of the power backlog is in [`WEARABLE.md` §8.2](docs/WEARABLE.md#82-backlog--worth-exploring) |
+| F6 | Production build: drop USB/serial; cut the LED jumpers on every node. The rest of the power backlog is in [Technical reference §4.7.2](docs/TECHNICAL_REFERENCE.md#472-backlog--worth-exploring) |
 
 ## Your first week
 
 1. **Install.** Download the standalone app from Releases, or clone and
    `pip install -r requirements.txt` (Python 3.11–3.13). Run
    `hulc-ms selftest`: every tool should pass.
-2. **Read** [`docs/RECORDING.md` Part 1](docs/RECORDING.md#part-1--the-recording-card)
-   (one page). It is the whole workflow.
-3. **Flash a node** ([`docs/WEARABLE.md` §2](docs/WEARABLE.md#2-building-and-flashing))
+2. **Read** [SOP §6](docs/SOP.md#6-recording-a-block) and
+   [§7](docs/SOP.md#7-at-the-charger) (recording a block and the charger
+   routine). Together they are the whole workflow.
+3. **Flash a node** ([SOP §3.2](docs/SOP.md#32-flashing-a-node))
    and watch it on the serial monitor: `Advertising as HULC-IMU-XXXX`, then
    state changes as you move it.
 4. **Enroll two nodes** (`hulc-ms nodes enroll --segments upper_arm_r,forearm_r`),
@@ -143,7 +144,7 @@ What it must do is in
    `hulc-ms regress run --data <regression data folder>`. Every case should
    pass. Do this before and after any change to the analysis.
 6. **Make a small change end to end:** a branch, a pull request, CI green,
-   then a release tag ([`docs/ANALYSIS.md` §6](docs/ANALYSIS.md#6-changing-the-analysis-safely)).
+   then a release tag ([Technical reference chapter 9](docs/TECHNICAL_REFERENCE.md#9-changing-the-software-safely)).
 
 ## Where things live
 
@@ -156,7 +157,7 @@ What it must do is in
 | Regression recordings (`.bin`) | **`TODO(handoff)`**: lab drive path. Not in git; point `--data` or `$HULC_REGRESS_DATA` at it |
 | Raw recordings from studies | **`TODO(handoff)`**: where they are stored, and who may access them |
 | Analyses made with the app | `~/HULC_sessions` on each lab computer |
-| Case design (3-D print) | `hardware/HULC_MS_Wearable_Case.stl`, in git ([`WEARABLE.md` §1.2](docs/WEARABLE.md#12-the-case)) |
+| Case design (3-D print) | `hardware/HULC_MS_Wearable_Case.stl`, in git ([SOP §2.3](docs/SOP.md#23-case)) |
 | Hardware: nodes, chargers, spare boards | **`TODO(handoff)`**: location, how many nodes, which are enrolled to which segment (`nodes_registry.json` on the enrolling laptop) |
 | GitHub repository admin / release rights | **`TODO(handoff)`** |
 | People: PIs, previous developer, clinical contacts | **`TODO(handoff)`** |
@@ -165,10 +166,10 @@ What it must do is in
 
 1. This page.
 2. [`README.md`](README.md): install and the `hulc-ms` commands.
-3. [`docs/RECORDING.md`](docs/RECORDING.md): Part 1 now, Part 2 when something
-   goes wrong or you change a threshold.
-4. [`docs/ANALYSIS.md`](docs/ANALYSIS.md) §1–3 and §6, then
-   [`docs/WEARABLE.md`](docs/WEARABLE.md) §1–5. That is enough to work on
-   either half.
-5. The rest of ANALYSIS and WEARABLE, and [`docs/METHODS.md`](docs/METHODS.md),
-   when you change something they cover.
+3. [`docs/SOP.md`](docs/SOP.md): chapters 1–7 now (building, setup, recording,
+   the charger routine); the rest when you review data or something goes wrong.
+4. [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) chapters 1–4 (the
+   system, the data format, the montage, the nodes' firmware) and chapter 9
+   (changing the software). That is enough to work on either half.
+5. The rest of the technical reference (design decisions, clock alignment,
+   metrics, the solver comparison) when you change something it covers.

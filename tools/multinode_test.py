@@ -295,7 +295,7 @@ def report_offsets(nodes: list) -> None:
         print(f"\n  NOTE: read windows of ~{best_unc:.0f}-{med_unc:.0f} ms floor this")
         print("  measurement. Treat the offset as an upper bound, not a")
         print("  calibrated value. For true ms-level validation use a shared")
-        print("  physical event (see docs/WEARABLE.md §9).")
+        print("  physical event (see docs/SOP.md Appendix D).")
     print("====================================\n")
 
 

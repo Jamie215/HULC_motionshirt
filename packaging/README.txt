@@ -18,4 +18,4 @@ hulc-ms.app/Contents/MacOS/hulc-ms; Linux: ./hulc-ms):
   hulc-ms selftest
 
 The recording card and the full documentation are in the repository:
-docs/RECORDING.md (Part 1 is the recording card).
+docs/SOP.md (the operating manual; §6 is the recording routine).

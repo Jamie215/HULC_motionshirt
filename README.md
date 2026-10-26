@@ -42,10 +42,8 @@ mobile app can replace today's laptop offload without changing it.
 | You want to… | Read |
 |---|---|
 | take over the project: current state, open work, first steps | [`HANDOFF.md`](HANDOFF.md) |
-| run a recording session | [`docs/RECORDING.md`](docs/RECORDING.md) (Part 1 is the printable recording card) |
-| work on the nodes: hardware, firmware, BLE protocol, power | [`docs/WEARABLE.md`](docs/WEARABLE.md) |
-| work on the software: pipeline, data format, how to change it and ship a build | [`docs/ANALYSIS.md`](docs/ANALYSIS.md) |
-| check the math: clock alignment, every metric, the solver comparison | [`docs/METHODS.md`](docs/METHODS.md) |
+| build a node, install the software, run a session, review it, troubleshoot | [`docs/SOP.md`](docs/SOP.md), the operating manual ([§6](docs/SOP.md#6-recording-a-block) is the recording routine) |
+| understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
 
 ---
 
@@ -155,7 +153,7 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 
 ```
 README.md, HANDOFF.md        start here
-docs/                        RECORDING, WEARABLE, ANALYSIS, METHODS (see "Start here")
+docs/                        SOP.md (operating manual), TECHNICAL_REFERENCE.md (how it works, and why)
   img/                       photos, screenshots and figures (make_screenshots.cjs remakes the screenshots)
 hardware/                    the 3-D printed case (HULC_MS_Wearable_Case.stl)
 hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)
@@ -164,7 +162,7 @@ requirements*.txt            pinned dependencies: analysis + nodes, OpenSim, bui
 firmware/
   firmware.ino               node firmware (state machine + BLE + QSPI log)
   state_machine_test/        stripped-down harness used for the IDLE-reset investigation
-tools/                       the analysis code (module by module: docs/ANALYSIS.md §2)
+tools/                       the analysis code (module by module: docs/TECHNICAL_REFERENCE.md §1.2)
   app.py                     the HULC-MS app (local web page)
   analyze_session.py         hulc-ms analyze: stages 3-7 + the block check
   multinode_test.py          hulc-ms nodes: enroll / offload / erase / check (BLE)
