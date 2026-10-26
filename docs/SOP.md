@@ -54,8 +54,10 @@ Key terms used in this SOP:
 - **Montage.** Which node is on which segment. A joint can be measured only
   if both of its segments have a node (shoulder: torso + upper arm; elbow:
   upper arm + forearm).
-- **Block.** Everything between two offloads: one mounting of the nodes, one
-  charge. Each block has its own **capture folder**.
+- **Block.** One segment of the data collection: mount the nodes, collect
+  (starting with the sync movement and the freeze), then offload and erase
+  while charging. Each block gives one **capture folder**, analyzed on its
+  own. Re-mounting the nodes, or a strap slipping, starts a new block.
 - **hulc-ms.** The analysis program. It runs as the **HULC-MS app** (a page
   in your web browser that runs entirely on your computer; no internet
   connection is needed) or as `hulc-ms` commands in a terminal (§3.3).

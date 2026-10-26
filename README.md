@@ -49,7 +49,7 @@ mobile app can replace today's laptop offload without changing it.
 
 ## Analyzing sessions
 
-A session is recorded in **blocks** (one mounting, one charge). Each block is
+A session is recorded in **blocks** (mount, collect, offload). Each block is
 offloaded into its own capture folder. Analyzing that folder gives a **block
 check** (OK / UNUSABLE, and what to change for the next block) and a **review page** (3-D movement,
 joint angles, range of motion). There are two ways to do it, and both run the

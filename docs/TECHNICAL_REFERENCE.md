@@ -159,9 +159,9 @@ hulc-ms validate --capture-dir ./phone_export --recursive
 
 ### 2.1 One folder per block
 
-A **block** is one mounting of the nodes, from strapping on to taking off
-([SOP §6](SOP.md#6-recording-a-block)). Its folder
-holds, for every node:
+A **block** is one segment of the data collection: mount the nodes, collect,
+then offload and erase ([SOP §6](SOP.md#6-recording-a-block)). It is one
+mounting and one log per node. Its folder holds, for every node:
 
 | File | Required | Content |
 |---|---|---|
