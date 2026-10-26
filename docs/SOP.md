@@ -367,7 +367,7 @@ has its case mark facing the same way every time.
 
 More tasks before charging? Carry on with step 4, or, after a long break,
 repeat steps 2–3 first. Figure 8 shows the whole cycle, including the
-charger routine (§7).
+routine while charging (§7).
 
 ```mermaid
 flowchart TB
@@ -386,7 +386,7 @@ flowchart TB
     E -- "re-mount: next block" --> S
 ```
 
-*Figure 8. One block, from strapping on to the charger.*
+*Figure 8. One block, from strapping on to charging.*
 
 ### 6.3 The sync movement and the freeze
 
