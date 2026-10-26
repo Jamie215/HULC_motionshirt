@@ -1,6 +1,7 @@
 // =============================================================================
 // HULC Motion Shirt — STATE MACHINE TEST BUILD
 // State transitions ONLY. No Bluetooth. No flash storage.
+// Used for the ~6.5 s IDLE reset investigation: see docs/TECHNICAL_REFERENCE.md §4.6.2.
 //
 // PURPOSE:
 //   A stripped-down copy of firmware.ino for verifying the state machine

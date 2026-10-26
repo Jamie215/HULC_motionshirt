@@ -47,7 +47,7 @@ Usage
     # validate the model + resolver logic with no montage file:
     python tools/motion_capabilities.py --selftest
 
-Montage schema (see docs/MONTAGE_SCHEMA.md for the full write-up)
+Montage schema (see docs/TECHNICAL_REFERENCE.md chapter 3 for the full write-up)
 -----------------------------------------------------------------
     {
       "schema_version": "1.0",
@@ -101,7 +101,7 @@ SEGMENTS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # 1a-0. Canonical segment codes — the ONE uint8 enum shared with the firmware.
 #     A node stores its own segment as a 1-byte code in its log header (see
-#     SETUP_AND_CALIBRATION_PLAN.md §2.1), so the offloaded log is self-describing.
+#     docs/TECHNICAL_REFERENCE.md §5.2), so the offloaded log is self-describing.
 #     The code is the segment's INDEX in SEGMENTS above, pinned here explicitly so
 #     that reordering the dict can never silently reassign a node's stored code.
 #     APPEND new segments at the END only — never renumber an existing one, or old
@@ -453,7 +453,7 @@ def build_montage(assignments, subject_id="S01", session_id="", notes=""):
 def capture_logs(capture_dir: str):
     """The node logs in a capture folder, keyed by node id.
 
-    The capture-folder contract (docs/DATA_FORMAT.md): each node's log is a
+    The capture-folder contract (docs/TECHNICAL_REFERENCE.md chapter 2): each node's log is a
     `.bin` with a `.seg.json` header next to it (same name, other extension)
     naming the node and its segment. The node id comes from the header, so the
     file names themselves are free (offload writes `<node_id>.bin`; a mobile
@@ -490,7 +490,7 @@ def montage_from_capture(capture_dir: str, subject_id: str = "S01",
     """Build a montage from a capture folder's own files.
 
     Every node log in the folder has a `.seg.json` header with the segment the
-    node stores (SETUP_AND_CALIBRATION_PLAN.md §2.1; docs/DATA_FORMAT.md), so
+    node stores (docs/TECHNICAL_REFERENCE.md chapter 2 and §5.2), so
     the folder already says which node was on which body part. Columns follow
     the canonical segment code (deterministic, as `read-segments`). `labels`:
     optional {node_id: landmark} (e.g. from nodes_registry.json); otherwise a

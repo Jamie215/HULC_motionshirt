@@ -26,7 +26,7 @@ Offload names each file by node id (e.g. HULC-IMU-485C.bin), so this tool
 resolves every node's log from --capture-dir and feeds reconcile the files in
 the RIGHT order.
 Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
-its own folder — see COLLECTION_SOP.md, the one-page recording card).
+its own folder — see docs/SOP.md §6, the recording routine).
 
 Usage (`hulc-ms analyze …` runs this; `python tools/analyze_session.py run …` too)
 -----
@@ -143,7 +143,7 @@ def warn_segment_disagreements(nodes, capture_dir):
 
     Offload writes a `<node_id>.seg.json` sidecar carrying the segment the node
     reported for itself. The montage stays AUTHORITATIVE (source-of-truth rule,
-    SETUP_AND_CALIBRATION_PLAN.md §2.1) — this only warns, so a swapped or
+    docs/TECHNICAL_REFERENCE.md §3.3) — this only warns, so a swapped or
     mislabeled node surfaces instead of silently binding to the wrong body part.
     Non-fatal and best-effort: a node captured on older firmware has no sidecar.
     """
@@ -204,7 +204,7 @@ def resolve_opensense_models(requested):
 
 
 # ---------------------------------------------------------------------------
-# Block check — accept or redo, read off the run's own outputs
+# Block check — usable or not, read off the run's own outputs
 # ---------------------------------------------------------------------------
 MIN_ACTIVE_HZ = 8.0          # median logging rate below this = old firmware / throttle
 PEAK_RATIO_MIN = 1.25        # reconcile_nodes.VECTOR_PEAK_RATIO_MIN
@@ -215,7 +215,7 @@ NOISY_POSE_DEG = 3.0         # calibrate's "noisy pose" flag
 TRUNK_MAX_MEDIAN_DEG = 30.0
 # A joint spending more than this share of the session outside physiological
 # limits is calibrated wrong, not moving oddly (`plausibility.outside_limits_frac`).
-OUTSIDE_LIMITS_REDO_FRAC = 0.25
+OUTSIDE_LIMITS_UNUSABLE_FRAC = 0.25
 
 
 def _log_rate_hz(path):
@@ -229,10 +229,12 @@ def _log_rate_hz(path):
 
 
 def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None):
-    """The accept/redo verdict for one block, from the run's own outputs.
+    """The usable / unusable verdict for one block, from the run's own outputs.
 
-    Returns {"verdict": "OK" | "REDO", "checks": [{check, status, detail, fix}]};
-    status is OK, NOTE (usable, but read the note) or REDO (re-record)."""
+    Returns {"verdict": "OK" | "UNUSABLE", "checks": [{check, status, detail, fix}]};
+    status is OK, NOTE (usable, but read the note) or UNUSABLE (the block's
+    numbers can't be trusted unless fixed in analysis, e.g. on the Timeline).
+    A collection period can't be re-run, so each fix is for the next block."""
     checks = []
 
     def add(check, status, detail, fix=""):
@@ -248,8 +250,8 @@ def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None
     if quality is None:
         add("Sync", "NOTE", "no sync summary (aligned.quality.json) to check")
     elif bad:
-        add("Sync", "REDO", f"clocks could not be aligned for {', '.join(bad)}",
-            "make the sync movement bigger, moving EVERY node: trunk twists with "
+        add("Sync", "UNUSABLE", f"clocks could not be aligned for {', '.join(bad)}",
+            "next block: make the sync movement bigger, moving EVERY node: trunk twists with "
             "the hand on the hip (torso node), straight-arm swings (arm only)")
     else:
         add("Sync", "OK", "every node lined up on one clock")
@@ -267,9 +269,10 @@ def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None
     neu = (calibration or {}).get("neutral", {})
     found = neu.get("found_by", "")
     if "!" in found or not neu.get("still_ok", True):
-        add("Freeze", "REDO", found.split("— ")[-1] if found else "not found",
-            "right after the sync movement, arms straight down, palms to the "
-            "thighs, freeze ~5 s")
+        add("Freeze", "UNUSABLE", found.split("— ")[-1] if found else "not found",
+            "if there was a still hold, set it on the Timeline; next block: right "
+            "after the sync movement, arms straight down, palms to the thighs, "
+            "freeze ~5 s")
     elif "--protocol hold-first" in found:
         add("Freeze", "NOTE", "a still hold ends right as the sync movement "
             "starts — this looks like an old-order recording (hold first)",
@@ -308,22 +311,22 @@ def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None
     tilt = ((torso or {}).get("elevation") or {}).get("median_deg")
     if tilt is not None:
         if tilt > TRUNK_MAX_MEDIAN_DEG:
-            add("Trunk", "REDO", f"the torso reads {tilt:.0f}° tilted for most of the "
+            add("Trunk", "UNUSABLE", f"the torso reads {tilt:.0f}° tilted for most of the "
                 "session — it was calibrated in the wrong pose (node not yet on the "
                 "chest?) or its strap moved",
-                "strap the torso node on before the sync movement and freeze "
-                "upright; or re-run with --window <freeze t0,t1>")
+                "set the freeze on the Timeline (or --window <t0,t1>); next block: "
+                "strap the torso node on before the sync movement and freeze upright")
         else:
             add("Trunk", "OK", f"upright (median tilt {tilt:.0f}° from the freeze)")
     for j in (metrics or {}).get("joints", []):
         worst = max((d.get("plausibility") or {}).get("outside_limits_frac") or 0.0
                     for d in j.get("dofs", [{}]))
         name = j.get("name", j.get("key"))
-        if worst > OUTSIDE_LIMITS_REDO_FRAC:
-            add("Angles", "REDO", f"{name}: outside physiological limits {worst:.0%} "
+        if worst > OUTSIDE_LIMITS_UNUSABLE_FRAC:
+            add("Angles", "UNUSABLE", f"{name}: outside physiological limits {worst:.0%} "
                 "of the session — a calibration or facing error, not real motion",
-                "check the freeze pose (palms to the thighs, elbows straight), the "
-                "facing line, and strap slip")
+                "check the freeze on the Timeline; next block: freeze pose (palms "
+                "to the thighs, elbows straight), facing line, and strap slip")
         elif j.get("plausibility_warning"):
             add("Angles", "NOTE", f"{name}: implausible angles", "check the freeze "
                 "pose (palms, elbows straight) and strap slip")
@@ -335,7 +338,7 @@ def block_check(quality, calibration, metrics, solver_reports=(), log_rates=None
             add("Model fit", "NOTE", f"{ps.get('model_title', 'model')}: lost the "
                 f"sensors for {lost:.0f} s (left out of its numbers)",
                 "compare with the Sensors view there")
-    verdict = "REDO" if any(c["status"] == "REDO" for c in checks) else "OK"
+    verdict = "UNUSABLE" if any(c["status"] == "UNUSABLE" for c in checks) else "OK"
     return {"verdict": verdict, "checks": checks}
 
 
@@ -345,9 +348,9 @@ def print_block_check(bc):
           + (f" ({notes} note{'s' if notes != 1 else ''})" if notes else "")
           + " =====")
     for c in bc["checks"]:
-        print(f"  {c['status']:<5} {c['check']:<12} {c['detail']}")
+        print(f"  {c['status']:<8} {c['check']:<12} {c['detail']}")
         if c["status"] != "OK" and c["fix"]:
-            print(f"        {'':<12} -> {c['fix']}")
+            print(f"           {'':<12} -> {c['fix']}")
 
 
 def rerun_command(montage_path, capture_dir, out_html, outdir, fs, facing_deg,
@@ -482,7 +485,7 @@ def run(montage_path, capture_dir, out_html, outdir, window, fs,
         print("  model solves   : none" + (f" — {os_hint}" if os_hint and not models
                                            else ""))
 
-    # accept or redo, from the run's own outputs
+    # usable or not, from the run's own outputs
     def _read(path):
         try:
             with open(path, encoding="utf-8-sig") as f:
@@ -630,14 +633,14 @@ def selftest():
         bcp = os.path.join(tmp, "block_check.json")
         with open(bcp) as f:
             bc_run = json.load(f)
-        made_bc = bc_run.get("verdict") in ("OK", "REDO") and bc_run.get("checks")
+        made_bc = bc_run.get("verdict") in ("OK", "UNUSABLE") and bc_run.get("checks")
         ok = ok and bool(made_bc)
         check(bool(made_bc), f"block check written (verdict {bc_run.get('verdict')})")
     except SystemExit as e:
         ok = False; check(False, f"end-to-end run failed: {e}")
 
     # the verdict logic on its own: a failed sync and a missing freeze are
-    # REDO; an unknown facing alone is a NOTE
+    # UNUSABLE; an unknown facing alone is a NOTE
     good_q = {"nodes": [{"column": "n0", "reference": True},
                         {"column": "n1", "sync_reliable": True,
                          "sync_method": "vector", "sync_peak_ratio": 1.7}]}
@@ -665,18 +668,18 @@ def selftest():
         "dofs": [{"plausibility": {"outside_limits_frac": 0.6}}]}]})
     vok = (v_good["verdict"] == "OK"
            and all(c["status"] == "OK" for c in v_good["checks"])
-           and v_bad["verdict"] == "REDO"
-           and {c["check"] for c in v_bad["checks"] if c["status"] == "REDO"}
+           and v_bad["verdict"] == "UNUSABLE"
+           and {c["check"] for c in v_bad["checks"] if c["status"] == "UNUSABLE"}
            == {"Sync", "Freeze"}
            and v_face["verdict"] == "OK"
            and any(c["check"] == "Facing" and c["status"] == "NOTE"
                    for c in v_face["checks"])
-           and v_flat["verdict"] == "REDO" and v_up["verdict"] == "OK"
-           and v_lim["verdict"] == "REDO")
+           and v_flat["verdict"] == "UNUSABLE" and v_up["verdict"] == "OK"
+           and v_lim["verdict"] == "UNUSABLE")
     ok = ok and vok
-    check(vok, "block check: clean block OK; weak sync + no freeze -> REDO on "
+    check(vok, "block check: clean block OK; weak sync + no freeze -> UNUSABLE on "
           "both; unknown facing alone -> NOTE; torso tilted 82° all session -> "
-          "REDO; elbow outside its limits 60% of the time -> REDO")
+          "UNUSABLE; elbow outside its limits 60% of the time -> UNUSABLE")
 
     print(f"\n[selftest] {'PASS' if ok else 'FAIL'} — log binding/ordering, the "
           f"missing-log guard, and the full reconcile->render chain "

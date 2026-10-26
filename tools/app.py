@@ -510,9 +510,9 @@ APP_PAGE = r"""<!doctype html>
 <title>HULC-MS</title>
 <style>
 :root{--bg:#f6f7f9;--panel:#fff;--ink:#1d232b;--muted:#5f6b78;--line:#dde2e8;
-  --accent:#2563c9;--ok:#1a7f54;--redo:#b42318;--note:#a76500;--soft:#eef2f7}
+  --accent:#2563c9;--ok:#1a7f54;--bad:#b42318;--note:#a76500;--soft:#eef2f7}
 @media (prefers-color-scheme:dark){:root{--bg:#121519;--panel:#1a1f25;--ink:#e6eaef;
-  --muted:#9aa5b1;--line:#2c333b;--accent:#6aa0ff;--ok:#3ecf8e;--redo:#ff7a6b;
+  --muted:#9aa5b1;--line:#2c333b;--accent:#6aa0ff;--ok:#3ecf8e;--bad:#ff7a6b;
   --note:#e0a44a;--soft:#222831}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -544,8 +544,8 @@ button:disabled{opacity:.55;cursor:default}
 .item .m{color:var(--muted);font-size:12px}
 .badge{font-size:11px;font-weight:700;padding:1px 7px;border-radius:9px;
   background:var(--soft);color:var(--muted);white-space:nowrap}
-.badge.OK{color:var(--ok)} .badge.REDO{color:var(--redo)}
-.badge.failed{color:var(--redo)} .badge.running,.badge.queued{color:var(--accent)}
+.badge.OK{color:var(--ok)} .badge.UNUSABLE,.badge.REDO{color:var(--bad)}
+.badge.failed{color:var(--bad)} .badge.running,.badge.queued{color:var(--accent)}
 main{display:flex;flex-direction:column;min-width:0;min-height:0}
 #bar{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);
   display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -555,7 +555,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 #checks table{border-collapse:collapse;width:100%}
 #checks td{padding:2px 8px 2px 0;vertical-align:top}
 #checks .st{font-weight:700;width:46px} .st.OK{color:var(--ok)}
-.st.REDO{color:var(--redo)} .st.NOTE{color:var(--note)}
+.st.UNUSABLE,.st.REDO{color:var(--bad)} .st.NOTE{color:var(--note)}
 #checks .fix{color:var(--muted)}
 #frame{flex:1;border:0;width:100%;background:var(--bg);min-height:0}
 #empty{flex:1;display:flex;align-items:center;justify-content:center;
@@ -880,7 +880,7 @@ def selftest():
 
     req("POST", f"/api/sessions/{sid}/run", {})
     st = wait(sid)
-    check(st["status"] == "done" and st["verdict"] in ("OK", "REDO")
+    check(st["status"] == "done" and st["verdict"] in ("OK", "UNUSABLE")
           and st["block_check"] and st["has_page"],
           f"analyzed in the background (verdict {st.get('verdict')})")
     with open(os.path.join(ws, sid, "capture", "montage.json")) as f:

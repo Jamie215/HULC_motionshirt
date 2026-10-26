@@ -5,7 +5,7 @@ HULC Motion Shirt — offline multi-node reconciliation & alignment.
 Takes the binary quaternion logs offloaded from two (or more) IMU nodes and
 puts them on ONE common timeline, so the streams can be analyzed together —
 the production sync path for the wireless, post-collection design (see
-firmware/MULTINODE_SYNC_DESIGN.md).
+docs/TECHNICAL_REFERENCE.md §4.5; the math is its chapter 6).
 
 How it works
 ------------
