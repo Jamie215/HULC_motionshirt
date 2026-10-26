@@ -124,7 +124,7 @@ flowchart TD
 | 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window → range of motion, angular velocity, rep bouts, plausibility flags, plus segment and derived tiers → `metrics.json`. Every metric: [chapter 7](#7-metrics) |
 | 7 Visualize | `skeleton_viewer.py` | The review page (one self-contained HTML file): the segments as a stickman, Front / Side / Top views, the metrics panel, the Timeline, and a switch to each OpenSense solve |
 | (optional) OpenSense | `opensense_ik.py` | The same session solved on a published OpenSim model (Thoracoscapular Shoulder Model, right arm; or Rajagopal 2016), through the same metrics and page; fit-lost frames excluded. Why: [chapter 8](#8-choosing-the-pose-solver) |
-| Block check | `analyze_session.py` | Runs the stages; OK / REDO per check (sync, freeze, facing, end, trunk, joint limits, …) → `block_check.json` |
+| Block check | `analyze_session.py` | Runs the stages; OK / UNUSABLE per check (sync, freeze, facing, end, trunk, joint limits, …) → `block_check.json` |
 
 ![The review page (stage 7): the metrics panel on the left, the 3-D stickman mid-movement with live angles on the right, and the play / view controls along the bottom](img/review-page.png)
 
@@ -263,7 +263,7 @@ positions. The full format is in §3.2; the minimum:
 
 | File | Content |
 |---|---|
-| `block_check.json` | the verdict (OK / REDO) and one line per check |
+| `block_check.json` | the verdict (OK / UNUSABLE) and one line per check |
 | `session.html` | the review page, self-contained |
 | `metrics.json` | per-joint, per-DOF angles: range of motion, speed, reps, plausibility; segment and derived metrics ([chapter 7](#7-metrics)) |
 | `calibration.json` | the freeze window, mounting offsets, facing, session end |
@@ -1073,22 +1073,33 @@ either detection, which re-runs the analysis with `--window t0,t1` /
 
 #### 5.5.5 The block check: what each line reads
 
-`hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `REDO` and one
-line per check, also saved as `block_check.json`. What each check is computed
+`hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `UNUSABLE` and
+one line per check, also saved as `block_check.json`. What each check is computed
 from (the operator's version, with what to do, is
 [SOP §10.1](SOP.md#101-the-block-check-line-by-line)):
 
-| Check | Looks at | REDO / NOTE when | What to do |
+| Check | Looks at | UNUSABLE / NOTE when | For the next block |
 |---|---|---|---|
-| Sync | `aligned.quality.json` | REDO: a node not aligned, or vector peak ratio < 1.25 | Bigger sync movement that moves every node |
+| Sync | `aligned.quality.json` | UNUSABLE: a node not aligned, or vector peak ratio < 1.25 | Bigger sync movement that moves every node |
 | Clock | `clock_restarts` | NOTE: a node rebooted mid-block | Charge before the battery runs out |
 | Logging rate | each log's median rate | NOTE: under 8 Hz | Firmware version, flash watermark |
-| Freeze | calibration `neutral.found_by` | REDO: no clean freeze after the sync movement (calibration fell back to a weaker choice); NOTE: a node was not fully still (pose spread > 3°) | Freeze ~5 s right after the movement, palms to the thighs |
+| Freeze | calibration `neutral.found_by` | UNUSABLE: no clean freeze after the sync movement (calibration fell back to a weaker choice); NOTE: a node was not fully still (pose spread > 3°) | Freeze ~5 s right after the movement, palms to the thighs |
 | Facing | calibration `heading` | NOTE: front direction unknown, angles relative only | Torso node flat on the sternum; no torso node: include elbow bends |
 | Session end | calibration `end` | NOTE: nodes not seen coming off | `--end <t_ms>` if the tail includes taking them off |
-| Trunk | metrics: torso median tilt from the freeze | REDO: over 30° for most of the session — the torso was calibrated in the wrong pose (e.g. its node still on the table) or its strap moved | Strap the torso node on before the sync movement; or `--window` the real freeze |
-| Angles | metrics plausibility | REDO: a joint outside physiological limits for > 25% of the session (a calibration / facing error); NOTE: implausible angles | Check the freeze pose, the facing and strap slip |
+| Trunk | metrics: torso median tilt from the freeze | UNUSABLE: over 30° for most of the session — the torso was calibrated in the wrong pose (e.g. its node still on the table) or its strap moved | Strap the torso node on before the sync movement; or `--window` the real freeze |
+| Angles | metrics plausibility | UNUSABLE: a joint outside physiological limits for > 25% of the session (a calibration / facing error); NOTE: implausible angles | Check the freeze pose, the facing and strap slip |
 | Model fit | OpenSense `fit_lost` | NOTE: the model lost the sensors for some seconds | Compare with the Sensors view there |
+
+Only four checks can make a block UNUSABLE: Sync, Freeze, Trunk and Angles.
+Each of these makes every angle in the block wrong, not just part of it. The
+rest are NOTEs, because the numbers stay usable with a caveat. A collection
+period cannot be repeated, so UNUSABLE does not mean "record again". It
+means "keep these numbers out of the results unless the analysis can fix
+them". The freeze and the end can be set on the Timeline (`--window`,
+`--end`), which fixes the Freeze and Trunk cases when a real still hold
+exists. The "For the next block" column is what the operator changes for the
+blocks still to come. So far no real recording has been UNUSABLE: the five
+in the regression library are all OK, and one has a NOTE.
 
 ---
 
@@ -1332,7 +1343,7 @@ r \ge r_{\min} \quad (r_{\min} = 0.40) \quad (9)
 
 Below that, the offset is reported as unreliable: reconcile prints a
 low-confidence warning, `aligned.quality.json` records it, and the block check
-says REDO with a bigger sync movement [`_pearson_at_lag()`, `CONFIDENCE_MIN`].
+says UNUSABLE and asks for a bigger sync movement next block [`_pearson_at_lag()`, `CONFIDENCE_MIN`].
 
 This is the method's main limitation. Cross-correlation needs **shared
 motion**: two nodes on limbs that move independently (one arm swinging, the

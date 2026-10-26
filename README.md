@@ -22,7 +22,7 @@ flowchart LR
     C[("Capture folder<br/>one per block")]
     subgraph S["The software (tools/)"]
         A["Analysis<br/>hulc-ms analyze / the app"]
-        B["Block check<br/>OK / REDO"]
+        B["Block check<br/>OK / UNUSABLE"]
         V["Review page<br/>3-D movement, angles, ROM"]
     end
     W -- "BLE, while charging" --> L
@@ -51,7 +51,7 @@ mobile app can replace today's laptop offload without changing it.
 
 A session is recorded in **blocks** (one mounting, one charge). Each block is
 offloaded into its own capture folder. Analyzing that folder gives a **block
-check** (OK / REDO, and what to change) and a **review page** (3-D movement,
+check** (OK / UNUSABLE, and what to change for the next block) and a **review page** (3-D movement,
 joint angles, range of motion). There are two ways to do it, and both run the
 same analysis.
 

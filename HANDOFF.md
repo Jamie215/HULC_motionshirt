@@ -19,7 +19,7 @@ whoever is handing over fills them in.
 IMU nodes record orientation on the body with nothing connected, and are
 offloaded over BLE while charging, one **capture folder** per block. The
 analysis turns each folder into joint angles, range of motion, a block check
-(OK / REDO) and a review page. Today a laptop does the offload; the plan is a
+(OK / UNUSABLE) and a review page. Today a laptop does the offload; the plan is a
 **mobile app**. The full picture is in the [README](README.md) and
 [Technical reference chapter 1](docs/TECHNICAL_REFERENCE.md#1-the-system-and-the-pipeline).
 

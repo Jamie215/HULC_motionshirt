@@ -42,7 +42,7 @@ it. While the nodes charge, the laptop
 copies each node's recording into a folder (one folder per block). The
 analysis lines up the nodes' clocks from a short shared movement, calibrates
 each node to its bone from a 5-second freeze, and reports joint angles and
-range of motion, with an OK / REDO check of the recording and a 3-D review
+range of motion, with an OK / UNUSABLE check of the recording and a 3-D review
 page.
 
 Key terms used in this SOP:
@@ -63,7 +63,8 @@ Key terms used in this SOP:
 - **Sync movement / freeze.** The short shared movement and the 5-second
   still pose at the start of every block (§6.2).
 - **Block check.** The analysis's verdict on a block: **OK**, **NOTE** (usable,
-  read the note) or **REDO** (record the block again) (§7, §10.1).
+  read the note) or **UNUSABLE** (its numbers can't be trusted unless fixed in
+  the analysis) (§7, §10.1).
 
 ### 1.1 The node's states
 
@@ -380,7 +381,7 @@ flowchart TB
         direction LR
         O["5 · Nodes off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
         C -- OK --> E["Erase"]
-        C -- "REDO: note what<br/>to change next time" --> E
+        C -- "UNUSABLE: note what<br/>to change next block" --> E
     end
     T --> O
     E -- "re-mount: next block" --> S
@@ -472,8 +473,12 @@ gantt
 4.  **Read the block check** at the top of the app page (Figure 10), or at
     the end of the command's output:
     - **OK:** keep going (read any NOTE lines).
-    - **REDO:** do what the line under it says when you record the block
-      again. Each line is explained in §10.1.
+    - **UNUSABLE:** first try the fix in the analysis (set the freeze or the
+      end on the Timeline, §8). If that does not help, note the block as
+      unusable in the session notes, and apply what the line under it says
+      to the next block. A collection period cannot be repeated, so the
+      check is there to keep spoiled data out of the results and to improve
+      the blocks still to come. Each line is explained in §10.1.
 
 ![The app after analyzing a block: the block check at the top (OK, with one NOTE), the review page below.](img/app-block-check.png)
 
@@ -546,7 +551,7 @@ What the analysis writes (in `./out/block1`, or in the app's session folder):
 
 | **File** | **Content** |
 |---|---|
-| `block_check.json` | The verdict (OK / REDO) and one line per check |
+| `block_check.json` | The verdict (OK / UNUSABLE) and one line per check |
 | `session.html` | The review page; opens in any browser, no installation needed |
 | `metrics.json` | Range of motion, speed, repetitions and plausibility per joint and movement; segment and derived metrics |
 | `calibration.json` | The freeze window, mounting offsets, facing, and where the recording ends |
@@ -573,7 +578,7 @@ What the analysis writes (in `./out/block1`, or in the app's session folder):
 
 ### 10.1 The block check, line by line
 
-The analysis ends with `BLOCK CHECK: OK` or `REDO` and one line per check
+The analysis ends with `BLOCK CHECK: OK` or `UNUSABLE` and one line per check
 (also saved as `block_check.json`). A real one, from an upper arm + forearm
 block:
 
@@ -589,16 +594,16 @@ block:
 
 What each line means, and what to do:
 
-| **Check** | **REDO / NOTE when** | **Action** |
+| **Check** | **UNUSABLE / NOTE when** | **For the next block** |
 |---|---|---|
-| Sync | REDO: a node was not aligned, or the match was weak | A bigger sync movement that moves every node (§6.3) |
+| Sync | UNUSABLE: a node was not aligned, or the match was weak | A bigger sync movement that moves every node (§6.3) |
 | Clock | NOTE: a node rebooted mid-block | Charge before the battery runs out |
 | Logging rate | NOTE: under 8 samples per second | Check the firmware version; the flash may be nearly full |
-| Freeze | REDO: no clean freeze after the sync movement; NOTE: a node was not fully still | Freeze about 5 s right after the movement, palms to the thighs |
+| Freeze | UNUSABLE: no clean freeze after the sync movement; NOTE: a node was not fully still | Freeze about 5 s right after the movement, palms to the thighs (this block: set the freeze on the Timeline if there was a still hold) |
 | Facing | NOTE: front direction unknown, angles relative only | Torso node flat on the sternum; no torso node: include elbow bends |
 | Session end | NOTE: the nodes were not seen coming off | Set the end on the Timeline (§8) |
-| Trunk | REDO: the torso tilted over 30° for most of the session (calibrated in the wrong pose, or its strap moved) | Strap the torso node on before the sync movement; or set the freeze on the Timeline |
-| Angles | REDO: a joint outside physiological limits for over 25% of the session; NOTE: some implausible angles | Check the freeze pose, the facing, and strap slip |
+| Trunk | UNUSABLE: the torso tilted over 30° for most of the session (calibrated in the wrong pose, or its strap moved) | Strap the torso node on before the sync movement (this block: set the freeze on the Timeline) |
+| Angles | UNUSABLE: a joint outside physiological limits for over 25% of the session; NOTE: some implausible angles | Check the freeze pose, the facing, and strap slip |
 | Model fit | NOTE: the body model lost the sensors for some seconds | Compare with the Sensors view on the review page |
 
 ### 10.2 Common problems
@@ -623,7 +628,7 @@ What each line means, and what to do:
     read (§7).
 2.  Copy the capture folders and the analysis to the study storage (§9).
 3.  Erase the nodes (§4.3), then charge them.
-4.  Note any problems (REDO blocks, slow offloads, a node that would not
+4.  Note any problems (UNUSABLE blocks, slow offloads, a node that would not
     connect) for the next session.
 
 ## Appendix A. hulc-ms command reference
