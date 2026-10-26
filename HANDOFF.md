@@ -16,17 +16,12 @@ whoever is handing over fills them in.
 
 ## The project in one paragraph
 
-IMU nodes (XIAO nRF52840 + BNO086 + 2 MB flash) are strapped one per body
-segment. They record their orientation on their own, with no phone or laptop
-connected, and are offloaded over BLE at the charger between **blocks** (one
-mounting, one charge). Each block becomes a **capture folder**: one `.bin` log
-and one `.seg.json` per node. That folder is the only thing the analysis
-reads. The analysis aligns the node clocks from the motion itself, calibrates
-each node to its bone from a 5-second freeze, computes joint angles and range
-of motion, and produces a block check (OK / REDO) and a review page. Today a
-laptop does the offload (`hulc-ms nodes`); the plan is a **mobile app** that
-stores every block during a collection period and exports the folders to a
-computer for analysis.
+IMU nodes record orientation on the body with nothing connected, and are
+offloaded over BLE while charging, one **capture folder** per block. The
+analysis turns each folder into joint angles, range of motion, a block check
+(OK / REDO) and a review page. Today a laptop does the offload; the plan is a
+**mobile app**. The full picture is in the [README](README.md) and
+[Technical reference chapter 1](docs/TECHNICAL_REFERENCE.md#1-the-system-and-the-pipeline).
 
 ## State of things
 
@@ -90,7 +85,7 @@ What it must do is in
 | M3 | Offload with framing and range re-requests until complete | port `measure_offload()` / `_missing_ranges()` from `tools/multinode_test.py`; IDLE only |
 | M4 | Store each block as a capture folder (`.bin` + `.seg.json`, `montage.json` with subject / session) | keep zero-filled holes at their offsets |
 | M5 | Erase a node only after its transfer is verified | the node keeps its log until `0x03` |
-| M6 | Subject / session entry, block list, charge reminders | blocks are planned by battery (~90 min of recording) |
+| M6 | Subject / session entry, block list, charge reminders | a block lasts until the flash fills: ~2.3 h of continuous movement, longer with rests |
 | M7 | Export to the computer at the end of the collection period | a folder tree of capture folders; check with `hulc-ms validate --recursive` |
 | M8 | Data protection on the phone (encryption at rest, who can export) | recordings are research data |
 | M9 | Test against the regression library | export the library's recordings through the app path and confirm `hulc-ms regress run` still passes |
@@ -131,8 +126,8 @@ What it must do is in
    `pip install -r requirements.txt` (Python 3.11–3.13). Run
    `hulc-ms selftest`: every tool should pass.
 2. **Read** [SOP §6](docs/SOP.md#6-recording-a-block) and
-   [§7](docs/SOP.md#7-at-the-charger) (recording a block and the charger
-   routine). Together they are the whole workflow.
+   [§7](docs/SOP.md#7-while-charging) (recording a block and the routine
+   while charging). Together they are the whole workflow.
 3. **Flash a node** ([SOP §3.2](docs/SOP.md#32-flashing-a-node))
    and watch it on the serial monitor: `Advertising as HULC-IMU-XXXX`, then
    state changes as you move it.
@@ -167,7 +162,7 @@ What it must do is in
 1. This page.
 2. [`README.md`](README.md): install and the `hulc-ms` commands.
 3. [`docs/SOP.md`](docs/SOP.md): chapters 1–7 now (building, setup, recording,
-   the charger routine); the rest when you review data or something goes wrong.
+   the routine while charging); the rest when you review data or something goes wrong.
 4. [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) chapters 1–4 (the
    system, the data format, the montage, the nodes' firmware) and chapter 9
    (changing the software). That is enough to work on either half.

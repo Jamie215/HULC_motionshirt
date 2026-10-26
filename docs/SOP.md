@@ -15,7 +15,7 @@ nodes and the analysis work inside, and why, is in
 - [4. Setting up the nodes (once per rig)](#4-setting-up-the-nodes-once-per-rig)
 - [5. Pre-session checklist](#5-pre-session-checklist)
 - [6. Recording a block](#6-recording-a-block)
-- [7. At the charger](#7-at-the-charger)
+- [7. While charging](#7-while-charging)
 - [8. Reviewing the analysis](#8-reviewing-the-analysis)
 - [9. Data handling](#9-data-handling)
 - [10. Troubleshooting](#10-troubleshooting)
@@ -37,7 +37,8 @@ to the body, offloaded over Bluetooth from a laptop, and analyzed by the
 **How it works.** Each node is a small board with an orientation sensor,
 strapped to one body segment (for example the upper arm). While the
 participant moves, every node records its orientation about 10 times a second
-to its own memory, with nothing connected to it. At the charger, the laptop
+(about once a second when still) to its own memory, with nothing connected to
+it. While the nodes charge, the laptop
 copies each node's recording into a folder (one folder per block). The
 analysis lines up the nodes' clocks from a short shared movement, calibrates
 each node to its bone from a 5-second freeze, and reports joint angles and
@@ -114,7 +115,7 @@ in a well-ventilated area.
 
 | **Qty** | **Item** | **Notes** |
 |---|---|---|
-| 1 | Seeed Studio XIAO nRF52840 | Microcontroller with Bluetooth, 2 MB flash for the log, and a battery charger on its USB-C port |
+| 1 | Seeed Studio XIAO nRF52840 | Microcontroller with Bluetooth, onboard 2 MB flash for the log, and a battery charger on its USB-C port |
 | 1 | SparkFun BNO086 IMU breakout (Qwiic) | Orientation sensor; connected over I²C |
 | 1 | 3.7 V 600 mAh LiPo battery | With a 2-pin JST plug |
 | 1 | 2-pin JST socket | Soldered to the XIAO's battery pads, so the battery can be unplugged |
@@ -295,7 +296,7 @@ A `montage.json` edited by hand must stay UTF-8. The tools accept a UTF-8 BOM
 **Connections are the slow part.** Every Bluetooth command connects to each
 node first (slow, especially from Windows), so a routine block touches
 Bluetooth only twice: erase before strapping on (skipped if the node is
-already empty) and offload at the charger. Nothing is connected while the
+already empty) and offload while charging. Nothing is connected while the
 participant records.
 
 ### 4.2 Link check (new rig, or a flaky link)
@@ -324,8 +325,9 @@ each; empty nodes are skipped). Do not power a node off mid-wipe.
 - [ ] Straps are ready: firm, on the flat of each segment. Strap wobble is
   the largest error left at 10 samples per second (about 3° RMS of wobble
   doubles every angle error in simulation).
-- [ ] Each block is planned for **no more than about 90 minutes** of
-  recording (battery).
+- [ ] Each block fits in the flash: about **2.3 hours of continuous
+  movement**, longer with rests (the rate drops when still). The battery
+  should last longer than that (not yet measured).
 
 ## 6. Recording a block
 
@@ -374,7 +376,7 @@ flowchart TB
         S["1 · Strap on,<br/>switch on"] --> Y["2 · Sync movement<br/>~10 s"] --> F["3 · Freeze<br/>~5 s"] --> T["4 · Task<br/>(repeat as needed)"]
         T -. "after a long break" .-> Y
     end
-    subgraph CH["At the charger"]
+    subgraph CH["While charging"]
         direction LR
         O["5 · Nodes off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
         C -- OK --> E["Erase"]
@@ -441,7 +443,7 @@ gantt
 
 *Figure 9. A typical block on one timeline (seconds; the task part varies).*
 
-## 7. At the charger
+## 7. While charging
 
 1.  **Nodes off** and flat on the charger. They reach IDLE within about 8 s.
 2.  **Offload** into a new folder for this block:
@@ -640,7 +642,7 @@ What to type for `hulc-ms`:
 | `hulc-ms` | Starts the HULC-MS app |
 | `hulc-ms nodes enroll --segments torso,upper_arm_r` | Once per rig: power one node at a time; each node stores its segment |
 | `hulc-ms nodes read-segments` | Shows the segment each node stores |
-| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | At the charger: each node's log and the block's montage into the folder |
+| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | While charging: each node's log and the block's montage into the folder |
 | `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | The analysis: block check at the end, review page `out/block1/session.html` |
 | `hulc-ms validate --capture-dir ./capture/block1` | Checks a capture folder (`--recursive`: a whole export of many blocks) |
 | `hulc-ms nodes erase --count 2` | Wipes the nodes for the next block |

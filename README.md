@@ -25,7 +25,7 @@ flowchart LR
         B["Block check<br/>OK / REDO"]
         V["Review page<br/>3-D movement, angles, ROM"]
     end
-    W -- "BLE, at the charger" --> L
+    W -- "BLE, while charging" --> L
     W -. "BLE, later" .-> M
     L --> C
     M -.-> C
@@ -129,7 +129,7 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 |---|---|
 | `hulc-ms` (no command) | the HULC-MS app |
 | `hulc-ms nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
-| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | at the charger: each node's log + the block's `montage.json` into the folder |
+| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | while charging: each node's log + the block's `montage.json` into the folder |
 | `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
 | `hulc-ms validate --capture-dir ./capture/block1` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
 | `hulc-ms nodes erase --count 2` | wipe the nodes for the next block |

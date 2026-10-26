@@ -95,7 +95,7 @@ fabricates a number a placement can't support.
 `hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
 runs it for each dropped block. Each stage is a separate module that reads
 files and writes files, so it can be run, tested or replaced on its own
-(running them by hand: [SOP §7](SOP.md#7-at-the-charger)):
+(running them by hand: [SOP §7](SOP.md#7-while-charging)):
 
 ```mermaid
 flowchart TD
@@ -426,7 +426,8 @@ In short, each node is a Seeed XIAO nRF52840 (Bluetooth microcontroller)
 with a SparkFun BNO086 over I²C at 100 kHz (this board's I²C is unstable at
 400 kHz). The BNO086's fused, magnetometer-referenced Rotation Vector gives
 every node a quaternion in the same world frame (gravity and magnetic north).
-The log goes to the XIAO's external 2 MB QSPI flash (P25Q16H), driven directly
+The log goes to the XIAO's onboard 2 MB QSPI flash (P25Q16H, a separate chip
+on the board, not the microcontroller's internal flash), driven directly
 through `nrfx_qspi`, so the bootloader on the internal flash is never at
 risk. Each node advertises a unique name, `HULC-IMU-XXXX` (the last four hex
 digits of its Bluetooth address), so boards never collide and need no
@@ -462,7 +463,9 @@ connected:
   recording and connects afterwards.
 - **Flash watermark** — past 80% full the node halves its ACTIVE rate
   (10 → 5 → 2 Hz). At 10 Hz that is after ~2.3 h of ACTIVE recording; it stops
-  at ~2.6 h. Battery runs out first: plan blocks by battery, never past ~90 min.
+  at ~2.6 h. Still and idle time cost far less, so a block with rests lasts
+  longer. On paper the battery lasts ~28 h of recording (600 mAh at ~21 mA,
+  not yet measured), so the flash, not the battery, is the expected limit.
 
 ```mermaid
 stateDiagram-v2
@@ -678,8 +681,8 @@ remains for link checks.
 **The BLE connection interval is the crux** for offload speed. Measured: the
 bottleneck was the **central**, not the firmware — a Windows desktop `bleak`
 central imposes slow intervals (~850 ms per read; a full flash would take
-hours), while an **iPhone offloaded a 48 KB log in 2.46 s (~20 KB/s,
-~10 ms/chunk)**, i.e. a full 2 MB flash in ~1.7 min. The firmware requests
+hours), while in an early test with the nRF Connect app an **iPhone moved a 48 KB log
+in 2.46 s (~20 KB/s, ~10 ms/chunk)**, i.e. a full 2 MB flash in ~1.7 min. The firmware requests
 **15–30 ms** (`setConnectionInterval(12, 24)`); 15 ms is the floor because
 Apple requires Interval Min ≥ 15 ms or iOS falls back to its slow default.
 **The product's central should be iOS, Android or Linux (BlueZ), not a Windows
