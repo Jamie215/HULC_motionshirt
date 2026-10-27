@@ -15,7 +15,7 @@ nodes and the analysis work inside, and why, is in
 - [4. Setting up the nodes (once per rig)](#4-setting-up-the-nodes-once-per-rig)
 - [5. Pre-session checklist](#5-pre-session-checklist)
 - [6. Recording a block](#6-recording-a-block)
-- [7. While charging](#7-while-charging)
+- [7. After the block](#7-after-the-block)
 - [8. Reviewing the analysis](#8-reviewing-the-analysis)
 - [9. Data handling](#9-data-handling)
 - [10. Troubleshooting](#10-troubleshooting)
@@ -37,9 +37,7 @@ to the body, offloaded over Bluetooth from a laptop, and analyzed by the
 **How it works.** Each node is a small board with an orientation sensor,
 strapped to one body segment (for example the upper arm). While the
 participant moves, every node records its orientation about 10 times a second
-(about once a second when still) to its own memory, with nothing connected to
-it. While the nodes charge, the laptop
-copies each node's recording into a folder (one folder per block). The
+(about once a second when still) to its own memory. While the nodes are idle, the laptop copies each node's recording into a folder (one folder per block). The
 analysis lines up the nodes' clocks from a short shared movement, calibrates
 each node to its bone from a freeze held for about 5 seconds (s), and reports
 joint angles and range of motion, with an OK / UNUSABLE check of the
@@ -55,8 +53,7 @@ Key terms used in this SOP:
   if both of its segments have a node (shoulder: torso + upper arm; elbow:
   upper arm + forearm).
 - **Block.** One segment of the data collection: mount the nodes, collect
-  (starting with the sync movement and the freeze), then offload and erase
-  while charging. Each block gives one **capture folder**, analyzed on its
+  (starting with the sync movement and the freeze), then offload and erase. Each block gives one **capture folder**, analyzed on its
   own. Re-mounting the nodes, or a strap slipping, starts a new block.
 - **hulc-ms.** The analysis program. It runs as the **HULC-MS app** (a page
   in your web browser that runs entirely on your computer; no internet
@@ -132,7 +129,7 @@ in a well-ventilated area.
 |  | Multimeter | To check the joints and the battery polarity |
 | 1 | 3D printed case (tray + lid) | Printed from `hardware/HULC_MS_Wearable_Case.stl` in the repository |
 |  | Label tape | To mark each node with its ID (§4.1) |
-|  | Straps | To hold each node firmly on its segment. `TODO(handoff)`: strap type used |
+|  | Elastic straps | To hold each node firmly on its segment; other secure mountings can be used instead |
 
 ### 2.1 Wiring
 
@@ -149,7 +146,7 @@ short wires:
 | RST | D3 | Sensor reset |
 
 1.  Cut six short wires, just long enough to reach between the stacked
-    boards, and strip both ends (about 3 mm).
+    boards, and strip both ends (about 2 mm).
 2.  Solder the red wire from the breakout's **3V3** pad to the XIAO's
     **3V3** pin, and the black wire from **GND** to **GND**.
 3.  Solder the four signal wires as in the table above. Wire colours differ
@@ -157,7 +154,7 @@ short wires:
     boards.
 4.  With the multimeter, check each joint for continuity and that no two
     neighbouring pins are bridged.
-5.  Cut the **LED** solder jumper on the BNO086 breakout, and the XIAO's
+5.  *(For deployment)* Cut the **LED** solder jumper on the BNO086 breakout, and the XIAO's
     power-LED jumper. These LEDs are wired to power and cannot be turned off
     in firmware; each draws about 1–3 mA, all the time.
 
@@ -180,25 +177,33 @@ short wires:
 1.  3D print the case from `hardware/HULC_MS_Wearable_Case.stl` (Figure 3).
     The file holds both parts, laid flat: the **tray** and the **lid**. Each
     part is about 48 mm wide, and the tray about 17 mm tall (model units,
-    assumed mm). `TODO(handoff)`: printer, material and settings.
+    assumed mm). For the MSK-IF prototype, PLA filament was used.
 
 ![The two printed parts: the tray (battery compartment, board well, USB-C cut-out) and the lid.](img/case-preview.png)
 
 *Figure 3. The two printed parts: the tray (battery compartment, board well, USB-C cut-out) and the lid.*
 
-2.  Lay the battery flat in the tray's back compartment, its lead running
+2.  Remove the supports from the prints and clean up the rough edges.
+3.  Carefully lay the battery flat in the tray's back compartment, its lead running
     round the side towards the JST socket (Figure 4).
 
-![The battery in the back compartment of the tray, with the board well empty in front.](img/node-case-battery.jpg)
+![The battery in the back compartment of the tray.](img/node-case-battery.jpg)
 
-*Figure 4. The battery in the back compartment of the tray, with the board well empty in front.*
+*Figure 4. The battery in the back compartment of the tray.*
 
-3.  Place the board stack in the front well with the XIAO's USB-C port in the
-    side cut-out, and plug the battery into the JST socket (Figure 5). The
+4.  Place the board stack in the front well with the XIAO's USB-C port in the
+    side cut-out, and plug the battery into the JST socket (Figure 5). When it
+    is properly placed, the cylindrical pegs stop the BNO086 from moving. The
     cut-out fixes the node's orientation in the case, which is what keeps
     "same node, same way round" repeatable when it is strapped on.
-4.  Close the lid. `TODO(handoff)`: how the lid is held shut (friction fit,
-    glue or tape).
+5.  Close the lid, lining it up with the USB-C opening. Use adhesive for a
+    more secure lid.
+
+**Known issue: the USB-C opening is narrow.** Some USB-C cables with a
+thicker plug do not fit. Widening the opening is listed as a next step in
+the project handover (§1.2). The repository holds only the printable mesh
+(`.stl`), so the change is easiest in the original CAD model, or by
+remodelling the case.
 
 ![A complete node: the board stack in the front well, the USB-C port at the side cut-out.](img/node-assembly.jpg)
 
@@ -270,10 +275,10 @@ open a Command Prompt in the hulc-ms folder and type `hulc-ms`; on macOS use
 To run from the repository with Python instead (needed for body-model solves
 with OpenSim), see Appendix B.
 
-**The laptop's Bluetooth.** A Windows desktop forces a slow Bluetooth
-connection (unless it has a dedicated Bluetooth dongle), so offloads can take minutes instead of seconds (§10.2). A Linux
-laptop (or, later, a phone) is fast; a Mac works but its speed has not been
-measured yet.
+**Bluetooth connection.** A Windows desktop forces a slow Bluetooth
+connection (unless it has a dedicated Bluetooth dongle), so offloads can take
+minutes instead of seconds (§10.2). Other platforms (for example Linux, macOS
+or a phone) can be faster, but their speed has not been measured yet.
 
 ## 4. Setting up the nodes (once per rig)
 
@@ -282,20 +287,30 @@ measured yet.
 Enroll tells each node which segment it is on. The node stores it, through
 power cycles and erases, and every recording then carries it.
 
-1.  Run, with the segments you will use:
+1.  Run the command with the segments you will use. For example:
     `hulc-ms nodes enroll --segments upper_arm_r,forearm_r`
 2.  When asked for the first segment, power on **only** that node and press
     Enter. With only one node advertising, its ID is unambiguous.
-3.  Type a physical label (e.g. "orange tape") and mark the node.
+3.  Type a physical label (e.g. "orange tape") and mark the node. This makes
+    the node easy to identify later.
 4.  The node is erased if it holds data (you are asked `[y/N]` first;
     `--no-erase` skips this), its segment is stored, and it is read back.
 5.  Repeat for each segment.
 
 Enroll also writes `montage.json` (a record of the rig) and
-`nodes_registry.json` (each node's ID, segment and label). Next time, with the
-same labelled nodes, `enroll … --reuse` only scans. To see what each node
+`nodes_registry.json` (each node's ID, segment and label). Next time, the same
+labelled nodes can be reused with `enroll … --reuse`, which only scans. To see what each node
 stores: `hulc-ms nodes read-segments`. Moving a node to a different segment
-means enrolling it again.
+requires enrolling it again.
+
+The options:
+
+| **Option** | **What it does** |
+|---|---|
+| `--segments` (required) | The segments to enroll, separated by commas, in the order you will power the nodes on: `torso`, `upper_arm_r`, `forearm_r`, `hand_r` (and `_l` for the left side) |
+| `--reuse` | Use the nodes already listed in `nodes_registry.json`, without powering them on one at a time |
+| `--no-erase` | Do not erase a node that still holds data (its segment is still stored) |
+| `--subject`, `--session` | The participant and session IDs written into `montage.json` (an ID, never a name) |
 
 A `montage.json` edited by hand must stay UTF-8. The tools accept a UTF-8 BOM
 (Notepad, PowerShell `>`), but a UTF-16 file must be re-saved.
@@ -303,7 +318,7 @@ A `montage.json` edited by hand must stay UTF-8. The tools accept a UTF-8 BOM
 **Connections are the slow part.** Every Bluetooth command connects to each
 node first (slow, especially from Windows), so a routine block touches
 Bluetooth only twice: erase before strapping on (skipped if the node is
-already empty) and offload while charging. Nothing is connected while the
+already empty) and offload. Nothing is connected while the
 participant records.
 
 ### 4.2 Link check (new rig, or a flaky link)
@@ -324,30 +339,23 @@ each; empty nodes are skipped). Do not power a node off mid-wipe.
   **erased** (§4.3).
 - [ ] The montage fits the question: **shoulder** → torso + upper arm;
   **elbow / forearm** → upper arm + forearm; both → all three.
-- [ ] The recording spot is **at least ~1 m from large metal and
-  electronics** (steel desk, radiator, laptop on the lap). Use the same spot
-  for the whole session.
-- [ ] The laptop has hulc-ms installed (§3.3), and the participant's ID is
-  decided: an ID, **never a name** (§9).
+- [ ] If possible, choose a recording spot **away from large metal**, which
+  can disturb the sensors' magnetometers. Use the same spot for the whole
+  session.
+- [ ] The laptop has hulc-ms installed (§3.3).
 - [ ] Straps are ready: firm, on the flat of each segment. Strap wobble is
-  the largest error left at 10 samples per second (about 3° RMS of wobble
-  doubles every angle error in simulation).
-- [ ] Each block fits in the flash: about **2.3 hours of continuous
-  movement**, longer with rests (the rate drops when still). On paper the
-  battery lasts about a day of recording, so the flash fills first (neither
-  has been measured yet).
+  the largest error left at 10 samples per second.
 
 ## 6. Recording a block
 
 ### 6.1 Where each node goes
 
-The calibration removes however a node sits on its segment, so the exact
-spot does not shift the angles. What it cannot fix is muscle moving the node
+The calibration removes the effect of how a node sits on its segment. What it cannot fix is muscle moving the node
 without the bone moving, and a different placement between sessions. Place
 each node **over the least muscular tissue, next to a bony landmark you can
 feel, flat, the same way round every time** (Figure 7).
 
-| **Segment** | **Put it** | **Referenced to** | **Avoid** |
+| **Segment** | **Recommended location** | **Referenced to** | **Avoid** |
 |---|---|---|---|
 | Torso | Front, flat on the **sternum** | Sternal midline | Chest muscle and upper abdomen (muscle and breathing) |
 | Upper arm | **Outer side**, lower third, just above the elbow | Lower end of the humerus | The biceps belly (bulges when the elbow bends) |
@@ -363,19 +371,18 @@ which way the subject faces from it. A good mounting lies flat (it does not
 rock when one edge is pressed), does not slide when the skin is pushed, and
 has its case mark facing the same way every time.
 
-### 6.2 Each block
+### 6.2 Data collection workflow
 
-| **#** | **Do** | **Say** |
+| **#** | **Steps** | **Instructions to participant** |
 |---|---|---|
-| 1 | **Strap on** every node. Take as long as you need. (There is no power switch: a node runs whenever its battery is plugged in.) | — |
+| 1 | **Strap on** every node. Each node should be connected to its battery before it is strapped on (there is no power switch). | — |
 | 2 | **Sync movement, about 10 s.** Every node must move. | *With a torso node:* "Hand on your hip. Twist your upper body left and right, five times." *Arm only:* "Arm straight. Swing it forward and back, five times." |
 | 3 | **Freeze, about 5 s,** straight after. | "Arms down, palms to your legs. Freeze ... two, three, four, five." |
 | 4 | **The task.** Smooth, at most about 1 repetition per second. Rest 5–8 s between sets. Never stay still for a minute or more. Arm-only sessions: include a few elbow bends. | e.g. "Raise your arm forward, as high as is comfortable, and down, five times." |
-| 5 | **Done:** nodes taken off, flat on the charger. | — |
+| 5 | **Done:** take the nodes off and lay them flat (on the charger, if they need charging). | — |
 
-More tasks before charging? Carry on with step 4, or, after a long break,
-repeat steps 2–3 first. Figure 8 shows the whole cycle, including the
-routine while charging (§7).
+After a long break, repeat steps 2–3 first. Figure 8 shows the whole cycle, including the
+routine after the block (§7).
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "20px"}}}%%
@@ -385,21 +392,19 @@ flowchart TB
         S["1 · Strap on"] --> Y["2 · Sync movement<br/>~10 s"] --> F["3 · Freeze<br/>~5 s"] --> T["4 · Task<br/>(repeat as needed)"]
         T -. "after a long break" .-> Y
     end
-    subgraph CH["While charging"]
+    subgraph CH["After the block"]
         direction LR
-        O["5 · Nodes taken off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C["Block check<br/>(if UNUSABLE, note what<br/>to change next block)"] --> E["Erase, then<br/>re-mount for<br/>the next block"]
+        O["5 · Nodes taken off,<br/>lying flat"] --> OF["Offload"] --> A["Analyze"] --> C["Block check<br/>(if UNUSABLE, note what<br/>to change next block)"] --> E["Erase, then<br/>re-mount for<br/>the next block"]
     end
     B -- "end of block" --> CH
 ```
 
-*Figure 8. One block, from strapping on to charging.*
+*Figure 8. One block, from strapping on to the next block.*
 
 ### 6.3 The sync movement and the freeze
 
-Both are needed at the start of every block. The nodes' clocks never agree
-exactly: each started when its battery was plugged in, and they drift apart
-slowly. The sync movement lets the analysis line them up for this block.
-Each node also sits at a slightly different angle every time it is strapped
+Both are needed at the start of every block to align all nodes for
+analysis. Each node also sits at a slightly different angle every time it is strapped
 on, and the freeze calibrates that mounting for this block.
 
 | **Montage** | **Sync movement** | **Key points** |
@@ -408,11 +413,10 @@ on, and the freeze calibrates that mounting for this block.
 | Torso + upper arm | **Trunk twists** left and right, ±30–45°, with the hand **on the hip** | An arm swing leaves the torso still, so it cannot align the torso node |
 | Torso + upper arm + forearm | **Trunk twists** as above, whole arm against the side | One movement moves all three nodes |
 
-**The freeze pose (N-pose):** standing upright, weight even, looking ahead
+**The freeze pose (N-pose):** a neutral pose: standing upright, weight even, looking ahead
 (seated is fine if the trunk is upright and the arms hang free of the chair);
 arms straight down at the sides, **elbows fully straight**, shoulders
-relaxed; **palms facing the thighs** (thumbs forward). No talking, weight
-shifting or looking around; breathing is fine.
+relaxed; **palms facing the thighs** (thumbs forward).
 
 ### 6.4 Task rules and timings
 
@@ -423,21 +427,25 @@ shifting or looking around; breathing is fine.
 - **No torso node:** the front direction then comes from the elbow's hinge,
   which needs at least 30° of elbow bending somewhere in the block. Curls
   cover it; otherwise add three slow elbow bends.
-- **Straps:** if a strap slips or is adjusted, end the block there (nodes
-  taken off, charger, offload) and start a new one.
+- **Straps:** if a strap slips or is adjusted, end the block there (take the
+  nodes off, offload) and start a new one.
 
-| **Step** | **Minimum / target / maximum** | **Why** |
+How long each step should last. The analysis looks for these patterns
+automatically, so a step that is too short or too long may not be found:
+
+| **Step** | **How long** | **Why** |
 |---|---|---|
-| Sync movement | 4 / 10 / – s, 3–5 cycles of about 1–1.5 s | The clocks are aligned by matching the nodes' movement; faster than about 2 cycles per second is too fast for 10 samples per second |
-| Freeze | 3 / 5 / 8 s, starting within 20 s of the movement | It must be the first still stretch after the movement; pauses in motion are not still enough, so **really freeze** |
+| Sync movement | At least 4 s, ideally about 10 s: 3–5 cycles of about 1–1.5 s each | The clocks are aligned by matching the nodes' movement; faster than about 2 cycles per second is too fast for 10 samples per second |
+| Freeze | At least 3 s, ideally about 5 s, at most 8 s; starting within 20 s of the movement | It must be the first still stretch after the movement; pauses in motion are not still enough, so **really freeze** |
 | Rests in the task | 5–8 s | 5 s separates sets in the repetition count; 8 s or less keeps the nodes at 10 samples per second (after 10 s still they slow to 1) |
-| Still in the task | under 60 s | After 60 s still a node stops logging until moved; after a long break repeat steps 2–3 |
-| Nodes taken off | lying flat for at least 10 s | Offload needs the nodes in IDLE |
+| Still in the task | Less than 60 s | After 60 s still a node stops logging until moved; after a long break repeat steps 2–3 |
+| Nodes taken off | Lying flat for at least 10 s | Offload needs the nodes in IDLE |
 
 The analysis uses only the part of the recording from the freeze to where
 the nodes come off (Figure 9).
 
 ```mermaid
+%%{init: {"gantt": {"useWidth": 960, "fontSize": 20, "sectionFontSize": 20, "barHeight": 34, "barGap": 8, "leftPadding": 190, "gridLineStartPadding": 40}}}%%
 gantt
     dateFormat X
     axisFormat %s s
@@ -455,67 +463,90 @@ gantt
 
 *Figure 9. A typical block on one timeline (seconds; the task part varies).*
 
-## 7. While charging
+## 7. After the block
 
-1.  **Nodes taken off** and flat on the charger. They reach IDLE within about 8 s.
-2.  **Offload** into a new folder for this block:
+The laptop can offload a node whenever the node is idle (§1.1). The intended
+routine is to offload while the nodes charge, so that they are ready for the
+next block.
+
+1.  **Take the nodes off** and lay them flat (on the charger, if they need
+    charging). Lying flat sends them to IDLE within about 8 s; only then can
+    the laptop connect.
+2.  **Offload** into a new folder for this block. For example:
     `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01`
-    Each node reports `COMPLETE — saved N bytes`. If records are missing, run
-    the same command again: it re-requests only the missing parts, and an
-    incomplete log stays on the node. The folder now holds everything about
-    the block: each node's log, which segment it was on, and a `montage.json`
-    built from that. Keep the folder whole. (A `montage.json` already in the
-    folder for the same nodes is kept; one for other nodes is never
-    overwritten.)
-3.  **Analyze** it, in either of two ways:
+
+    The command looks for idle nodes, connects to each, and copies its log
+    into the folder. Any part lost on the way is requested again, and each
+    node reports `COMPLETE — saved N bytes` when its log is whole. If a node
+    is not complete, run the same command again: it asks only for the
+    missing parts, and the log stays on the node until it is erased. The
+    folder then holds everything about the block: each node's log, which
+    segment it was on, and a `montage.json` built from that. Keep the folder
+    whole. (A `montage.json` already in the folder for the same nodes is
+    kept; one for other nodes is never overwritten.)
+
+    | **Option** | **What it does** |
+    |---|---|
+    | `--count` | How many nodes to offload (default 2). The command waits until it finds this many idle nodes |
+    | `--out-dir` | The block's folder; use a new folder for every block |
+    | `--subject`, `--session` | The participant and session IDs written into `montage.json` (an ID, never a name) |
+    | `--name` | Only the node whose name contains this text (e.g. `--name 485C`) |
+    | `--erase-after` | Erase each node straight after its offload is verified (step 5) |
+
+3.  **Analyze** the block, in either of two ways:
     - **The HULC-MS app:** type the subject ID and drop `./capture/block1` on
       the page.
     - **The command:**
       `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1`
+      (`--capture-dir` is the block's folder, `--outdir` where the results
+      go).
 
-    The command prints which montage it used and a binding table
-    (`n0 upper_arm_r <- HULC-IMU-485C.bin`, …): check it against where the
-    nodes really were. The montage comes from the folder's `montage.json`,
-    else from the nodes' `.seg.json` headers. `--montage FILE` overrides both,
-    for a node that stored the wrong segment; the run warns if the montage
-    disagrees with a node. With OpenSim installed (Appendix B), every block is
-    also solved on the body models, and the review page gets a **Sensors /
-    Body model** switch.
+    The command first prints which montage it used and which log belongs to
+    which segment (`n0 upper_arm_r <- HULC-IMU-485C.bin`, …): check this
+    against where the nodes really were. If a node stored the wrong segment,
+    `--montage FILE` gives the right montage instead, and the run warns where
+    it disagrees with a node. With OpenSim installed (Appendix B), every
+    block is also solved on the body models, and the review page gets a
+    **Sensors / Body model** switch.
 4.  **Read the block check** at the top of the app page (Figure 10), or at
     the end of the command's output:
-    - **OK:** keep going (read any NOTE lines).
+    - **OK:** the block is usable (read any NOTE lines).
     - **UNUSABLE:** first try the fix in the analysis (set the freeze or the
       end on the Timeline, §8). If that does not help, note the block as
-      unusable in the session notes, and apply what the line under it says
-      to the next block. A collection period cannot be repeated, so the
-      check is there to keep spoiled data out of the results and to improve
-      the blocks still to come. Each line is explained in §10.1.
+      unusable in the session notes, and apply what the line says to the
+      next block. A collection period cannot be repeated, so the check is
+      there to keep spoiled data out of the results and to improve the
+      blocks still to come. Each line is explained in §10.1.
 
 ![The app after analyzing a block: the block check at the top (OK, with one NOTE), the review page below.](img/app-block-check.png)
 
 *Figure 10. The app after analyzing a block: the block check at the top (OK, with one NOTE), the review page below.*
 
-5.  **Erase** the nodes: `hulc-ms nodes erase --count 2`. An empty node is
-    skipped; one holding data asks `[y/N]` (`--yes` for scripts). Erasing only
-    after the check keeps the block on the node until then, in case a
-    transfer looked complete but was not. (`offload … --erase-after` offloads
-    and erases in one connection, each node only after its offload verifies:
-    faster, but the block is then gone from the node.)
-6.  **Re-mount**: same node, same segment, same spot and orientation. Start
-    the next block at §6.2, step 1.
+5.  **Erase** the nodes: `hulc-ms nodes erase --count 2`. Erasing only after
+    the check keeps the block on the node until then, in case a transfer
+    looked complete but was not. A node that is already empty is skipped;
+    for one that holds data, the command asks `[y/N]` first (`--yes` skips
+    the question). Offloading with `--erase-after` does steps 2 and 5 in one
+    connection, which is faster, but the block is then gone from the node
+    before it has been checked.
+6.  **Re-mount** for the next block: same node, same segment, same spot and
+    orientation. Start again at §6.2, step 1.
 7.  *Optional, but it is how the analysis gets better:* if the block was new
-    in some way (new person, montage, room) or the analysis got it wrong,
-    keep it as a test case: **Keep as test case…** in the app (Appendix B).
+    in some way (a new person, montage or room) or the analysis got it
+    wrong, keep it as a test case with **Keep as test case…** in the app
+    (Appendix B).
 
 **Why one block per folder.**
 
 - One block is one mounting. A re-mounted node sits at a slightly different
-  angle, so it needs its own freeze; each folder is calibrated on its own.
-- If a node must come off mid-block without an offload (avoid this), analyze
-  the part after it separately, with that part's own freeze:
+  angle, so it needs its own freeze, and each folder is calibrated on its
+  own.
+- If a node must come off mid-block without an offload (avoid this),
+  analyze the part after it separately, with that part's own freeze:
   `hulc-ms analyze … --window t0,t1`.
-- If a battery dies mid-block, the node restarts its clock when recharged. The
-  analysis keeps the larger part and warns; the rest is not analyzed.
+- If a battery runs flat mid-block, the node's clock starts again from zero
+  when it is recharged. The analysis keeps the larger part and warns; the
+  rest is not analyzed.
 - Never swap nodes between segments without enrolling them again: each node
   stores its segment, and the block's montage is built from what the nodes
   store. (A one-off swap can be fixed afterwards with `--montage`.)
@@ -581,9 +612,8 @@ What the analysis writes (in `./out/block1`, or in the app's session folder):
   and test-case names.
 - **Never commit recordings to the repository.** Capture folders, logs and
   generated files are excluded from it by design. The regression library's
-  recordings are kept on the lab drive (`TODO(handoff)`: path).
-- **Storage and access rules** follow the study's data-governance plan
-  (`TODO(handoff)`).
+  recordings are kept for reference.
+- **Storage and access rules** follow the study's data-governance plan.
 
 ## 10. Troubleshooting
 
@@ -621,7 +651,7 @@ What each line means, and what to do:
 
 | **Symptom** | **Likely cause** | **Action** |
 |---|---|---|
-| Offload takes minutes or hours | A Windows desktop forces a slow Bluetooth connection | Offload from a Linux laptop (or, later, a phone); `offload --count 1` prints the speed |
+| Offload takes minutes or hours | A Windows desktop forces a slow Bluetooth connection | Use a dedicated Bluetooth dongle or another platform (§3.3); `offload --count 1` prints the speed |
 | Many `pass 2: re-requesting …` lines | Weak link, distance, the body blocking the signal | Node close to the laptop, in line of sight; run offload again to fill the gaps |
 | Offload rejected or empty | Node not in IDLE, or nothing recorded | Lay the nodes flat and wait about 10 s; check the block was recorded |
 | Enroll: "N nodes advertising" | More than one node powered on | Power on only the node being enrolled |
@@ -630,7 +660,7 @@ What each line means, and what to do:
 | `no montage: … cannot describe itself` | A log without a `.seg.json` (node never enrolled, or older firmware) | Enroll the node, or pass `--montage montage.json` |
 | `json … Expecting value` | A hand-edited `montage.json` is empty or saved as UTF-16 | Re-save it as UTF-8 |
 | Part of the task missing from the data | Still for 60 s or more: the nodes stopped logging until moved | Keep rests to 5–8 s; after a long break repeat the sync movement and freeze |
-| Nodes disagree on direction, no warning | Working next to metal | Move at least 1 m from large metal (§5) |
+| Nodes disagree on direction, no warning | Working next to metal | Record away from large metal (§5) |
 | Rest of a block calibrated wrongly | Re-mounted without offloading | Always offload and erase before re-mounting |
 
 ## 11. After the session
@@ -656,9 +686,9 @@ What to type for `hulc-ms`:
 | **Command** | **What it does** |
 |---|---|
 | `hulc-ms` | Starts the HULC-MS app |
-| `hulc-ms nodes enroll --segments torso,upper_arm_r` | Once per rig: power one node at a time; each node stores its segment |
+| `hulc-ms nodes enroll --segments torso,upper_arm_r` | Once per rig: power one node at a time; each node stores its segment (§4.1) |
 | `hulc-ms nodes read-segments` | Shows the segment each node stores |
-| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | While charging: each node's log and the block's montage into the folder |
+| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | After a block (nodes idle): each node's log and the block's montage into the folder (§7) |
 | `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | The analysis: block check at the end, review page `out/block1/session.html` |
 | `hulc-ms validate --capture-dir ./capture/block1` | Checks a capture folder (`--recursive`: a whole export of many blocks) |
 | `hulc-ms nodes erase --count 2` | Wipes the nodes for the next block |
@@ -673,8 +703,8 @@ hand; the Timeline writes these for you), `--protocol hold-first`
 (recordings made before October 2026, Appendix E), `--montage FILE`
 (override the folder's montage), `--facing-deg` (no torso node and too
 little elbow bending), `--no-opensense` (skip the body-model solves) and
-`--opensense-model PATH` (solve on another model). `offload` also takes
-`--session` (a session ID written into the block's montage).
+`--opensense-model PATH` (solve on another model). The options for `enroll`
+and `offload` are explained in §4.1 and §7.
 
 ## Appendix B. Running from Python, and the regression library (for developers)
 

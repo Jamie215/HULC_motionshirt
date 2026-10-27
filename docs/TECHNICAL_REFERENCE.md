@@ -95,7 +95,7 @@ fabricates a number a placement can't support.
 `hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
 runs it for each dropped block. Each stage is a separate module that reads
 files and writes files, so it can be run, tested or replaced on its own
-(running them by hand: [SOP §7](SOP.md#7-while-charging)):
+(running them by hand: [SOP §7](SOP.md#7-after-the-block)):
 
 ```mermaid
 flowchart TD

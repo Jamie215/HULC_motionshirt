@@ -17,7 +17,7 @@ whoever is handing over fills them in.
 ## The project in one paragraph
 
 IMU nodes record orientation on the body with nothing connected, and are
-offloaded over BLE while charging, one **capture folder** per block. The
+offloaded over BLE once they are idle, one **capture folder** per block. The
 analysis turns each folder into joint angles, range of motion, a block check
 (OK / UNUSABLE) and a review page. Today a laptop does the offload; the plan is a
 **mobile app**. The full picture is in the [README](README.md) and
@@ -126,8 +126,8 @@ What it must do is in
    `pip install -r requirements.txt` (Python 3.11–3.13). Run
    `hulc-ms selftest`: every tool should pass.
 2. **Read** [SOP §6](docs/SOP.md#6-recording-a-block) and
-   [§7](docs/SOP.md#7-while-charging) (recording a block and the routine
-   while charging). Together they are the whole workflow.
+   [§7](docs/SOP.md#7-after-the-block) (recording a block and the routine
+   after it). Together they are the whole workflow.
 3. **Flash a node** ([SOP §3.2](docs/SOP.md#32-flashing-a-node))
    and watch it on the serial monitor: `Advertising as HULC-IMU-XXXX`, then
    state changes as you move it.
@@ -162,7 +162,7 @@ What it must do is in
 1. This page.
 2. [`README.md`](README.md): install and the `hulc-ms` commands.
 3. [`docs/SOP.md`](docs/SOP.md): chapters 1–7 now (building, setup, recording,
-   the routine while charging); the rest when you review data or something goes wrong.
+   the routine after a block); the rest when you review data or something goes wrong.
 4. [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) chapters 1–4 (the
    system, the data format, the montage, the nodes' firmware) and chapter 9
    (changing the software). That is enough to work on either half.
