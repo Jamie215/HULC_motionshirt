@@ -1903,18 +1903,51 @@ All are defined at the top of `metrics.py`:
 
 ## 8. Choosing the pose solver
 
-There are two ways to get joint angles from the sensors, and this chapter explains
-which one to report, and why.
+Once each node is calibrated, the joint angles still have to be worked out
+from the segment orientations. The part of the analysis that does this is the
+**pose solver**, and this chapter explains which one to report, and why. Both
+solvers take the same input, each segment's calibrated orientation (a
+quaternion) at every timestamp, and produce joint angles; they differ in how
+they get from one to the other:
 
-- **The default chain** (`calibrate_segments.py` → `metrics.py`): correct each
-  sensor for its mounting, then compute each joint's angles directly from the
-  two sensors on either side of it (chapter 7).
-- **OpenSim OpenSense** (`opensense_ik.py`): fit a published musculoskeletal
-  body model to all the sensors at once (inverse kinematics), then read the
-  angles off the model. Two published models were tried:
+- **The default chain** (`calibrate_segments.py` → `metrics.py`) treats each
+  joint separately. For the elbow, it takes the forearm's orientation
+  relative to the upper arm's and breaks that rotation into angles such as
+  flexion and pronation (chapter 7). It is simple, fast and needs no other
+  software.
+- **OpenSim OpenSense** (`opensense_ik.py`) works on a published
+  musculoskeletal body model as a whole. It attaches a virtual sensor to each
+  matching segment of the model (IMUPlacer, from the neutral pose), then, at
+  every timestamp, searches for the pose whose virtual sensors best match the
+  measured orientations (inverse kinematics). The joint angles are read off
+  that pose. Two published models were tried:
   - the **Thoracoscapular Shoulder Model** (TSM; Seth et al. 2019), a model of
     the right arm built for the upper limb;
   - **Rajagopal 2016**, a full-body model built for walking.
+
+Neither solver changes the orientations themselves. If a sensor's reading is
+wrong (a slipped strap, magnetic disturbance, a poor freeze), both start from
+the same wrong input.
+
+OpenSense was evaluated for three reasons:
+
+- **Physiologically possible poses.** The default chain computes each joint
+  on its own, so sensor noise or a calibration error can produce a pose no
+  real body segments can make. A musculoskeletal model links the segments
+  through anatomical joints with limited ranges of motion, so the fitted pose
+  is expected to stay physiologically possible.
+- **A possible gain in accuracy.** The model fits all the nodes at once, so
+  an error in one sensor can be spread across the body instead of passing
+  straight into one joint angle. Whether this improves accuracy can only be
+  settled against a lab motion-capture system; the comparison below could
+  show only whether the two solvers agree, and how each recovers simulated
+  ground truth.
+- **An established, citable method.** A paper's methods section has to
+  describe how joint angles were computed and justify it. OpenSense (Al Borno
+  et al. 2022) and the TSM (Seth et al. 2019) are peer-reviewed and used by
+  other groups, so the computation can be cited and reproduced, instead of
+  described and defended as a calculation developed for this project. It
+  does not replace validating the sensors themselves.
 
 The comparison was run on 2026-09-25 with OpenSim 4.6, after the pipeline fixes
 made in the same series of changes: automatic freeze detection, facing from
