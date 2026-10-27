@@ -43,6 +43,7 @@ implementation can be found. Equations are written in LaTeX (`$…$` inline,
 ### 1.1 The system: today and the target
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     N["Nodes<br/>record to flash"]
     subgraph ACQ["Acquisition"]
@@ -95,6 +96,7 @@ reads files and writes files, so it can be run, tested or replaced on its own
 (to run them by hand, see §9.7):
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart TD
     CF[("capture folder<br/>.bin + .seg.json + montage.json")]
     RC["3 · reconcile_nodes<br/>align the clocks from the motion"]
@@ -297,6 +299,7 @@ adjacent segments**:
 | wrist | `forearm` | `hand` |
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     T(["torso"]) ---|shoulder| UA(["upper_arm"]) ---|elbow| FA(["forearm"]) ---|wrist| H(["hand"])
 ```
@@ -484,6 +487,7 @@ no central connected:
   not the battery, is the expected limit.
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 stateDiagram-v2
     direction LR
     [*] --> IDLE: power on
@@ -576,6 +580,7 @@ The command byte comes first, e.g.
 #### 4.3.3 Getting the log off (offload)
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 sequenceDiagram
     participant C as Central (laptop / app)
     participant N as Node (in IDLE)
@@ -961,6 +966,7 @@ Two quantities are measured again at the start of each block. They are
   reconcile's clock-restart check.
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     P["Clocks drift apart,<br/>or a node restarts"] --> TO["Time offset changes"]
     RM["Straps re-mounted"] --> MO["Mounting calibration is lost"]
@@ -1062,6 +1068,7 @@ which pipeline or firmware setting each number comes from.
 An example composition of a block (seconds; the task part varies):
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 gantt
     dateFormat X
     axisFormat %s s
@@ -1173,6 +1180,7 @@ motion, rather than over Bluetooth) is in
 [§4.5](#45-multi-node-time-alignment).
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart TD
     L["Per-node logs<br/>(t_ms on each node's own clock + quaternion)"] --> V["World-frame angular velocity<br/>per node (6.2.1)"]
     V --> X["Cross-correlate against the reference node<br/>(n0) over all lags (6.3)"]
@@ -2444,6 +2452,7 @@ One-time setup: Python 3.11–3.13, then from the repository folder
 `pip install -r requirements.txt` (+ `requirements-opensense.txt` for OpenSim).
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     B["Branch +<br/>edit tools/"] --> T["Try it:<br/>python hulc-ms.py"]
     T --> C{"selftest +<br/>regress run<br/>all pass?"}

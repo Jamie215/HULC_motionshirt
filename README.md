@@ -11,6 +11,7 @@ The project has two halves that meet at one documented hand-over format, the
 **capture folder**:
 
 ```mermaid
+%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     subgraph W["The wearable (firmware/)"]
         N1["Node: torso"]
