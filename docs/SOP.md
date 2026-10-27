@@ -41,9 +41,9 @@ participant moves, every node records its orientation about 10 times a second
 it. While the nodes charge, the laptop
 copies each node's recording into a folder (one folder per block). The
 analysis lines up the nodes' clocks from a short shared movement, calibrates
-each node to its bone from a 5-second freeze, and reports joint angles and
-range of motion, with an OK / UNUSABLE check of the recording and a 3-D review
-page.
+each node to its bone from a freeze held for about 5 seconds (s), and reports
+joint angles and range of motion, with an OK / UNUSABLE check of the
+recording and a 3D review page.
 
 Key terms used in this SOP:
 
@@ -62,11 +62,15 @@ Key terms used in this SOP:
   in your web browser that runs entirely on your computer; no internet
   connection is needed) or as `hulc-ms` commands in a terminal (§3.3).
 - **Enroll.** Telling each node, once, which segment it is on (§4.1).
-- **Sync movement / freeze.** The short shared movement and the 5-second
-  still pose at the start of every block (§6.2).
+- **Sync movement / freeze.** The short shared movement and the 5 s still
+  pose at the start of every block (§6.2, §6.3).
 - **Block check.** The analysis's verdict on a block: **OK**, **NOTE** (usable,
   read the note) or **UNUSABLE** (its numbers can't be trusted unless fixed in
   the analysis) (§7, §10.1).
+- **Body model (optional).** A second way to turn the nodes' orientations
+  into joint angles: OpenSim fits a published body model to all the nodes
+  at once. It needs the Python install with OpenSim (Appendix B); the review
+  page then gets a **Sensors / Body model** switch.
 
 ### 1.1 The node's states
 
@@ -126,7 +130,7 @@ in a well-ventilated area.
 |  | Soldering iron, solder, flux | Flux is optional |
 |  | Wire cutter and stripper, tweezers |  |
 |  | Multimeter | To check the joints and the battery polarity |
-| 1 | 3-D printed case (tray + lid) | Printed from `hardware/HULC_MS_Wearable_Case.stl` in the repository |
+| 1 | 3D printed case (tray + lid) | Printed from `hardware/HULC_MS_Wearable_Case.stl` in the repository |
 |  | Label tape | To mark each node with its ID (§4.1) |
 |  | Straps | To hold each node firmly on its segment. `TODO(handoff)`: strap type used |
 
@@ -173,7 +177,7 @@ short wires:
 
 ### 2.3 Case
 
-1.  3-D print the case from `hardware/HULC_MS_Wearable_Case.stl` (Figure 3).
+1.  3D print the case from `hardware/HULC_MS_Wearable_Case.stl` (Figure 3).
     The file holds both parts, laid flat: the **tray** and the **lid**. Each
     part is about 48 mm wide, and the tray about 17 mm tall (model units,
     assumed mm). `TODO(handoff)`: printer, material and settings.
@@ -267,7 +271,7 @@ To run from the repository with Python instead (needed for body-model solves
 with OpenSim), see Appendix B.
 
 **The laptop's Bluetooth.** A Windows desktop forces a slow Bluetooth
-connection, so offloads can take minutes instead of seconds (§10.2). A Linux
+connection (unless it has a dedicated Bluetooth dongle), so offloads can take minutes instead of seconds (§10.2). A Linux
 laptop (or, later, a phone) is fast; a Mac works but its speed has not been
 measured yet.
 
@@ -329,8 +333,9 @@ each; empty nodes are skipped). Do not power a node off mid-wipe.
   the largest error left at 10 samples per second (about 3° RMS of wobble
   doubles every angle error in simulation).
 - [ ] Each block fits in the flash: about **2.3 hours of continuous
-  movement**, longer with rests (the rate drops when still). The battery
-  should last longer than that (not yet measured).
+  movement**, longer with rests (the rate drops when still). On paper the
+  battery lasts about a day of recording, so the flash fills first (neither
+  has been measured yet).
 
 ## 6. Recording a block
 
@@ -373,6 +378,7 @@ repeat steps 2–3 first. Figure 8 shows the whole cycle, including the
 routine while charging (§7).
 
 ```mermaid
+%%{init: {"themeVariables": {"fontSize": "20px"}}}%%
 flowchart TB
     subgraph B["During the block"]
         direction LR
@@ -381,17 +387,20 @@ flowchart TB
     end
     subgraph CH["While charging"]
         direction LR
-        O["5 · Nodes taken off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C{"Block check"}
-        C -- OK --> E["Erase"]
-        C -- "UNUSABLE: note what<br/>to change next block" --> E
+        O["5 · Nodes taken off,<br/>flat on the charger"] --> OF["Offload"] --> A["Analyze"] --> C["Block check<br/>(if UNUSABLE, note what<br/>to change next block)"] --> E["Erase, then<br/>re-mount for<br/>the next block"]
     end
-    T --> O
-    E -- "re-mount: next block" --> S
+    B -- "end of block" --> CH
 ```
 
 *Figure 8. One block, from strapping on to charging.*
 
 ### 6.3 The sync movement and the freeze
+
+Both are needed at the start of every block. The nodes' clocks never agree
+exactly: each started when its battery was plugged in, and they drift apart
+slowly. The sync movement lets the analysis line them up for this block.
+Each node also sits at a slightly different angle every time it is strapped
+on, and the freeze calibrates that mounting for this block.
 
 | **Montage** | **Sync movement** | **Key points** |
 |---|---|---|
@@ -415,7 +424,7 @@ shifting or looking around; breathing is fine.
   which needs at least 30° of elbow bending somewhere in the block. Curls
   cover it; otherwise add three slow elbow bends.
 - **Straps:** if a strap slips or is adjusted, end the block there (nodes
-  off, charger, offload) and start a new one.
+  taken off, charger, offload) and start a new one.
 
 | **Step** | **Minimum / target / maximum** | **Why** |
 |---|---|---|
@@ -513,15 +522,15 @@ gantt
 
 ## 8. Reviewing the analysis
 
-The review page (Figure 11) shows the movement as a 3-D figure beside the
+The review page (Figure 11) shows the movement as a 3D figure beside the
 session metrics: range of motion per joint and movement, speed, repetitions,
 and per-segment activity. **Play** and the slider move through the
 recording; **Front / Side / Top** change the view; hovering a metric
 highlights the body part it measures.
 
-![The review page: session metrics on the left, the 3-D figure with live angles on the right.](img/review-page.png)
+![The review page: session metrics on the left, the 3D figure with live angles on the right.](img/review-page.png)
 
-*Figure 11. The review page: session metrics on the left, the 3-D figure with live angles on the right.*
+*Figure 11. The review page: session metrics on the left, the 3D figure with live angles on the right.*
 
 **Check the calibration.** Click **Neutral pose**, then switch **Raw ↔
 Calibrated** (Figure 12). In Calibrated, the arm should hang straight down,
