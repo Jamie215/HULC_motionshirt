@@ -101,7 +101,7 @@ Keep in mind:
 - The laptop can only reach a node in **IDLE**: lay the nodes flat (e.g. on
   the charger) and wait about 10 s before offloading.
 - A node still for **60 s or more** stops logging until it is moved again.
-  Keep rests short (§6.4).
+  Keep rests short (§6.2, step 4).
 - A recording stays on the node until it is erased. **Erase only after the
   offload is complete and checked** (§7).
 
