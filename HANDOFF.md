@@ -126,7 +126,7 @@ What it must do is in
    `pip install -r requirements.txt` (Python 3.11–3.13). Run
    `hulc-ms selftest`: every tool should pass.
 2. **Read** [SOP §6](docs/SOP.md#6-recording-a-block) and
-   [§7](docs/SOP.md#7-after-the-block) (recording a block and the routine
+   [§7](docs/SOP.md#7-after-the-block-recording-offload) (recording a block and the routine
    after it). Together they are the whole workflow.
 3. **Flash a node** ([SOP §3.2](docs/SOP.md#32-flashing-a-node))
    and watch it on the serial monitor: `Advertising as HULC-IMU-XXXX`, then
