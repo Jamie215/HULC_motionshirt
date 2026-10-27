@@ -17,6 +17,5 @@ hulc-ms.app/Contents/MacOS/hulc-ms; Linux: ./hulc-ms):
   hulc-ms nodes erase --count 2
   hulc-ms selftest
 
-How to record and review a session is in the SOP, "HULC Motion Shirt: How to
-Build & Use" (kept with the project files). How it works inside is in the
-repository: docs/TECHNICAL_REFERENCE.md.
+How the system works inside is in the repository:
+docs/TECHNICAL_REFERENCE.md.

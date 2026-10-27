@@ -44,11 +44,6 @@ mobile app can replace today's laptop offload without changing it.
 | use the software: install it, analyze a block, the `hulc-ms` commands | this page, below |
 | understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, running and fixing an analysis by hand, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
 
-Two Word documents are kept with the project files, not in this repository:
-the *Project Handover* (where the project stands, next steps, design
-rationale) and the SOP, *HULC Motion Shirt: How to Build & Use* (building a
-node, recording a session, reviewing it, troubleshooting).
-
 ---
 
 ## Analyzing sessions
