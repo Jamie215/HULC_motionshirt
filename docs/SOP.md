@@ -262,9 +262,15 @@ it; **Quit** on the page stops it.
 
 *Figure 6. The HULC-MS app's home page: the drop area and the subject, session and order fields.*
 
-The same program runs every command in a terminal (Appendix A). On Windows,
-open a Command Prompt in the hulc-ms folder and type `hulc-ms`; on macOS use
-`hulc-ms.app/Contents/MacOS/hulc-ms`, on Linux `hulc-ms/hulc-ms`.
+The same program runs every command in a terminal (Appendix A). What to
+type for `hulc-ms` depends on what you installed:
+
+| **You have** | **Type `hulc-ms` as** |
+|---|---|
+| Standalone app, Windows | `hulc-ms` in a Command Prompt opened in the hulc-ms folder (in PowerShell, `.\hulc-ms`) |
+| Standalone app, macOS / Linux | `hulc-ms.app/Contents/MacOS/hulc-ms` / `hulc-ms/hulc-ms` |
+| Repository, Windows | `hulc-ms` in a Command Prompt in the repository folder |
+| Repository, macOS / Linux | `python3 hulc-ms.py` (or `./hulc-ms.command`) |
 
 To run from the repository with Python instead (needed for body-model solves
 with OpenSim), see Appendix B.
@@ -293,8 +299,7 @@ power cycles and erases, and every recording then carries it.
     `--no-erase` skips this), its segment is stored, and it is read back.
 5.  Repeat for each segment.
 
-Enroll also writes `montage.json` (a record of which node is on which segment) and
-`nodes_registry.json` (each node's ID, segment and label). Next time, the same
+Enroll also saves a record of the nodes, so that next time the same
 labelled nodes can be reused with `enroll … --reuse`, which only scans. To see what each node
 stores: `hulc-ms nodes read-segments`. Moving a node to a different segment
 requires enrolling it again.
@@ -304,7 +309,7 @@ The options:
 | **Option** | **What it does** |
 |---|---|
 | `--segments` (required) | The segments to enroll, separated by commas, in the order you will power the nodes on: `torso`, `upper_arm_r`, `forearm_r`, `hand_r` (and `_l` for the left side) |
-| `--reuse` | Use the nodes already listed in `nodes_registry.json`, without powering them on one at a time |
+| `--reuse` | Use the record saved by the last enroll (`nodes_registry.json`), without powering the nodes on one at a time |
 | `--no-erase` | Do not erase a node that still holds data (its segment is still stored) |
 | `--subject`, `--session` | The participant and session IDs written into `montage.json` (an ID, never a name) |
 
@@ -323,7 +328,10 @@ With the nodes still and powered, run for example
 | `--count` | How many nodes to connect to (here 2): all the nodes you will use |
 | `--duration` | How long to measure, in seconds (here 30; default 60). Longer shows the clocks drifting apart more clearly |
 
-Every node should read `synced=True` with a small, stable cross-node offset.
+Every node should show `synced=True`, and the `offset` line between the nodes
+should stay steady rather than jump around. Its size depends mostly on how
+fast the laptop's Bluetooth is (Appendix D), so a steady value matters more
+than a small one.
 A bad result points at the Bluetooth link before a recording is wasted on it.
 
 ### 4.3 Erase before the first block
@@ -653,14 +661,7 @@ What each line means, and what to do:
 
 ## Appendix A. hulc-ms command reference
 
-What to type for `hulc-ms`:
-
-| **You have** | **Type `hulc-ms` as** |
-|---|---|
-| Standalone app, Windows | `hulc-ms` in a Command Prompt opened in the hulc-ms folder (in PowerShell, `.\hulc-ms`) |
-| Standalone app, macOS / Linux | `hulc-ms.app/Contents/MacOS/hulc-ms` / `hulc-ms/hulc-ms` |
-| Repository, Windows | `hulc-ms` in a Command Prompt in the repository folder |
-| Repository, macOS / Linux | `python3 hulc-ms.py` (or `./hulc-ms.command`) |
+Type `hulc-ms` as shown in §3.3 for your installation.
 
 | **Command** | **What it does** |
 |---|---|
