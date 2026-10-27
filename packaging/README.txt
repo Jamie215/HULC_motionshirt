@@ -17,5 +17,6 @@ hulc-ms.app/Contents/MacOS/hulc-ms; Linux: ./hulc-ms):
   hulc-ms nodes erase --count 2
   hulc-ms selftest
 
-The recording card and the full documentation are in the repository:
-docs/SOP.md (the operating manual; §6 is the recording routine).
+How to record and review a session is in the SOP, "HULC Motion Shirt: How to
+Build & Use" (kept with the project files). How it works inside is in the
+repository: docs/TECHNICAL_REFERENCE.md.

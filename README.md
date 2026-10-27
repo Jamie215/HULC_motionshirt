@@ -41,9 +41,13 @@ mobile app can replace today's laptop offload without changing it.
 
 | You want to… | Read |
 |---|---|
-| take over the project: current state, open work, first steps | [`HANDOFF.md`](HANDOFF.md) |
-| build a node, install the software, run a session, review it, troubleshoot | [`docs/SOP.md`](docs/SOP.md), the operating manual ([§6](docs/SOP.md#6-recording-a-block) is the recording routine) |
-| understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
+| use the software: install it, analyze a block, the `hulc-ms` commands | this page, below |
+| understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, running and fixing an analysis by hand, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
+
+Two Word documents are kept with the project files, not in this repository:
+the *Project Handover* (where the project stands, next steps, design
+rationale) and the SOP, *HULC Motion Shirt: How to Build & Use* (building a
+node, recording a session, reviewing it, troubleshooting).
 
 ---
 
@@ -152,8 +156,8 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 ## Repository layout
 
 ```
-README.md, HANDOFF.md        start here
-docs/                        SOP.md (operating manual), TECHNICAL_REFERENCE.md (how it works, and why)
+README.md                    start here
+docs/                        TECHNICAL_REFERENCE.md (how it works, and why)
   img/                       photos, screenshots and figures (make_screenshots.cjs remakes the screenshots)
 hardware/                    the 3-D printed case (HULC_MS_Wearable_Case.stl)
 hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)

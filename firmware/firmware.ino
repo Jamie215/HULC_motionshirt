@@ -22,7 +22,7 @@
 //   to within a few ms, so this build adds a millisecond-resolution sync
 //   (command 0x05) and a read-only Time Info characteristic (A005) the central
 //   reads from each node to measure cross-node clock offset. See
-//   docs/TECHNICAL_REFERENCE.md §4.3 (BLE protocol), docs/SOP.md Appendix D (bench checks) and tools/multinode_test.py.
+//   docs/TECHNICAL_REFERENCE.md §4.3 (BLE protocol), docs/TECHNICAL_REFERENCE.md §9.8 (bench checks) and tools/multinode_test.py.
 //
 // BLE GATT layout:
 //   Service  : IMU Motion Service         (UUID A0010000-...)

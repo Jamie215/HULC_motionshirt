@@ -11,8 +11,10 @@ LaTeX (`$…$` inline, ` ```math ` blocks), which GitHub displays as formatted
 math.
 
 The hands-on side (building a node, installing the software, recording a
-session, troubleshooting) is in the [SOP](SOP.md); where the project stands is
-in [`HANDOFF.md`](../HANDOFF.md).
+session, troubleshooting) is in the SOP, *HULC Motion Shirt: How to Build &
+Use*; where the project stands and what is left to do is in the *Project
+Handover*. Both are Word documents kept with the project files, not in this
+repository.
 
 1. [The system and the pipeline](#1-the-system-and-the-pipeline)
 2. [The capture folder (data format)](#2-the-capture-folder-data-format)
@@ -95,7 +97,7 @@ fabricates a number a placement can't support.
 `hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order; the app
 runs it for each dropped block. Each stage is a separate module that reads
 files and writes files, so it can be run, tested or replaced on its own
-(running them by hand: [SOP §7](SOP.md#7-after-the-block-recording-offload)):
+(running them by hand: §9.7):
 
 ```mermaid
 flowchart TD
@@ -160,7 +162,7 @@ hulc-ms validate --capture-dir ./phone_export --recursive
 ### 2.1 One folder per block
 
 A **block** is one segment of the data collection: mount the nodes, collect,
-then offload and erase ([SOP §6](SOP.md#6-recording-a-block)). It is one
+then offload and erase (SOP §6). It is one
 mounting and one log per node. Its folder holds, for every node:
 
 | File | Required | Content |
@@ -420,7 +422,7 @@ per-person segment lengths, a modelled estimate).
 
 ## 4. The nodes and their firmware
 
-What a node is made of, and how to build, flash and bench-test it, is in the [SOP](SOP.md) (chapters 2 and 3, Appendix D). This chapter is the inside view: the firmware switches, how a node behaves, the Bluetooth protocol a central uses, the flash log, and the decisions behind time alignment, the wake source and power. The firmware itself (`firmware/firmware.ino`: its header comment, numbered SECTIONs and `handleControl()`) is the source of truth; the reference central is `tools/multinode_test.py`, behind `hulc-ms nodes`.
+What a node is made of, and how to build, flash and bench-test it, is in the SOP (chapters 2 and 3); bench checks are in §9.8. This chapter is the inside view: the firmware switches, how a node behaves, the Bluetooth protocol a central uses, the flash log, and the decisions behind time alignment, the wake source and power. The firmware itself (`firmware/firmware.ino`: its header comment, numbered SECTIONs and `handleControl()`) is the source of truth; the reference central is `tools/multinode_test.py`, behind `hulc-ms nodes`.
 
 In short, each node is a Seeed XIAO nRF52840 (Bluetooth microcontroller)
 with a SparkFun BNO086 over I²C at 100 kHz (this board's I²C is unstable at
@@ -618,7 +620,7 @@ Power on one node at a time, connect, write `[0x07, code]` for its segment, and
 read the status back to confirm (bytes 4–5). The assignment stays on the node,
 so every later offload can write the `.seg.json` from the node itself.
 Reference: `enroll()`, `set_segment()`, `read_segments()`. The operator steps
-are in [SOP §4](SOP.md#4-setting-up-the-nodes-once-per-set-of-nodes).
+are in SOP §4.
 
 #### 4.3.5 Things a central must not do
 
@@ -697,7 +699,7 @@ cost design flexibility, battery and flash. (The STATIC timeout and the
 recording protocol's "never still for a minute" rule cover the torso case.)
 
 Open questions here (iOS sync-read latency, offload pacing, whether 10 Hz is
-enough) are in [`HANDOFF.md`](../HANDOFF.md#open-work).
+enough) are in the Project Handover (§1.2, item 6).
 
 ### 4.6 IDLE wake source and the ~6.5 s IDLE reset
 
@@ -842,7 +844,7 @@ Roughly by payoff; each needs bench time or a design decision.
 - **fsync tuning.** `FSYNC_EVERY = 10` costs a sector erase + write + readback
   every ~1 s at 10 Hz; raising it trades a little data-at-risk on power loss
   for fewer power-hungry erases and less wear.
-- **LEDs:** cut the jumpers (SOP §2); in firmware, the blue "connected" LED is held
+- **LEDs:** cut the jumpers (SOP §2.1); in firmware, the blue "connected" LED is held
   on for the whole connection and could blink instead.
 - **Below ~8.8 mA while keeping slow-motion wake needs hardware:** a separate
   low-power motion sensor whose interrupt wakes the nRF, which then powers the
@@ -967,7 +969,7 @@ What `calibrate_segments.py` implements:
 way each time** (a fixed tilt *is* the mounting offset and is removed). The
 fragile axis is roll *around* the limb, which corrupts pro/supination and
 axial rotation — pin it to a consistent flat spot by a bony landmark
-([SOP §6.1](SOP.md#61-where-each-node-goes)).
+(SOP §6.1).
 
 **Cheaper calibration, in order of effort** (1–2 built): (1) fold the pose into
 the block-start routine; (2) cache + verify; (3) functional calibration from
@@ -979,7 +981,7 @@ garment, so (2) can reuse more often.
 
 ### 5.5 The recording protocol: what each step gives, and the settings behind it
 
-The [SOP](SOP.md) says what to do in a session; this section says why each step is there and which pipeline or firmware setting each number comes from. If you change one of the named settings, update the SOP too.
+The SOP says what to do in a session; this section says why each step is there and which pipeline or firmware setting each number comes from. If you change one of the named settings, update the SOP too.
 
 #### 5.5.1 What each step gives the pipeline
 
@@ -1074,14 +1076,14 @@ began: at the last whole-body pause within 10 s before that
 log ends in motion, or with the nodes still worn, the analysis runs to the end
 and the block check says so. The review page's Timeline lets a person correct
 either detection, which re-runs the analysis with `--window t0,t1` /
-`--end t` ([SOP §8](SOP.md#8-reviewing-the-analysis)).
+`--end t` (SOP §8).
 
 #### 5.5.5 The block check: what each line reads
 
 `hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `UNUSABLE` and
 one line per check, also saved as `block_check.json`. What each check is computed
 from (the operator's version, with what to do, is
-[SOP §10.1](SOP.md#101-the-block-check-line-by-line)):
+SOP §10.1):
 
 | Check | Looks at | UNUSABLE / NOTE when | For the next block |
 |---|---|---|---|
@@ -2480,4 +2482,67 @@ What it has to do to replace `hulc-ms nodes` (protocol:
    `hulc-ms validate --recursive`, then analyze (HULC-MS app or
    `hulc-ms analyze`).
 
-The open items (M1–M9) are in [`HANDOFF.md`](../HANDOFF.md#open-work).
+The open work on the app is in the Project Handover (§1.2, item 4).
+
+### 9.7 Running the stages by hand, and fixing an analysis
+
+**Running the stages by hand.** `hulc-ms analyze` runs these in order (logs
+in montage column order):
+
+```bash
+python tools/reconcile_nodes.py <n0>.bin <n1>.bin --out aligned.csv
+python tools/motion_capabilities.py montage.json
+python tools/calibrate_segments.py calibrate aligned.csv montage.json --out calibration.json
+python tools/metrics.py compute aligned.csv montage.json --calibration calibration.json --out metrics.json
+python tools/skeleton_viewer.py render aligned.csv montage.json --calibration calibration.json --metrics metrics.json --out session.html
+```
+
+**Checking and fixing the montage.** `hulc-ms analyze` first prints which
+montage it used and which log belongs to which segment
+(`n0 upper_arm_r <- HULC-IMU-485C.bin`, …). The montage comes from the
+folder's `montage.json`, else from the nodes' `.seg.json` files. If a node
+stored the wrong segment, `--montage FILE` gives the right montage instead,
+and the run warns where it disagrees with a node. A `montage.json` edited by
+hand must stay UTF-8: the tools accept a UTF-8 BOM (Notepad, PowerShell `>`),
+but an empty or UTF-16 file stops the analysis with `json … Expecting value`.
+
+**Special cases within a block.**
+
+- A node came off mid-block without an offload: analyze the part after it
+  separately, with that part's own freeze (`hulc-ms analyze … --window t0,t1`).
+- A battery ran flat mid-block: the node's clock starts again from zero when
+  it is recharged. The analysis keeps the larger part and warns; the rest is
+  not analyzed.
+- Nodes swapped between segments without enrolling them again: the block's
+  montage is built from what the nodes store, so it is wrong; fix it
+  afterwards with `--montage`.
+
+The files the analysis writes are listed in §2.5.
+
+### 9.8 Bench checks
+
+**Link check** (`hulc-ms nodes check`). The offset is only known to within
+the time one Bluetooth read takes, so treat it as an upper bound. A large or
+negative drift below that is a measurement artifact (`NOT RESOLVABLE`), not
+the clocks; real crystal drift is far smaller. `--count 1` (one node only)
+measures a single link's delay on its own, separating it from the scheduling
+of several connections.
+
+**Offload speed on any central.** The node prints `[OFFLOAD] Done` on its USB
+serial with the speed (KB/s) and the time per chunk, which is about the
+Bluetooth connection interval the central chose. The offload output on the
+laptop also shows each node's speed.
+
+**Re-mount check (optional).** Every block has its own freeze, so this only
+confirms that a previous calibration still holds after a node was taken off
+and put back. Record a short still hold, offload it into `./redon`, then:
+
+```bash
+python tools/reconcile_nodes.py ./redon/<n0>.bin ./redon/<n1>.bin --out redon.csv
+python tools/calibrate_segments.py verify redon.csv montage.json --calibration calibration.json
+```
+
+**Without hardware.** `hulc-ms selftest` checks every tool on synthetic data.
+For the Bluetooth side alone: `python tools/reconcile_nodes.py --selftest`
+(the clock-alignment math) and `python tools/multinode_test.py selftest` (the
+enroll logic).
