@@ -618,7 +618,7 @@ Power on one node at a time, connect, write `[0x07, code]` for its segment, and
 read the status back to confirm (bytes 4–5). The assignment stays on the node,
 so every later offload can write the `.seg.json` from the node itself.
 Reference: `enroll()`, `set_segment()`, `read_segments()`. The operator steps
-are in [SOP §4](SOP.md#4-setting-up-the-nodes-once-per-rig).
+are in [SOP §4](SOP.md#4-setting-up-the-nodes-once-per-set-of-nodes).
 
 #### 4.3.5 Things a central must not do
 

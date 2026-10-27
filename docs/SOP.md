@@ -12,7 +12,7 @@ nodes and the analysis work inside, and why, is in
 - [1. Purpose and scope](#1-purpose-and-scope)
 - [2. Building a node](#2-building-a-node)
 - [3. Software setup](#3-software-setup)
-- [4. Setting up the nodes (once per rig)](#4-setting-up-the-nodes-once-per-rig)
+- [4. Setting up the nodes (once per set of nodes)](#4-setting-up-the-nodes-once-per-set-of-nodes)
 - [5. Pre-session checklist](#5-pre-session-checklist)
 - [6. Recording a block](#6-recording-a-block)
 - [7. After the block recording (offload)](#7-after-the-block-recording-offload)
@@ -21,10 +21,9 @@ nodes and the analysis work inside, and why, is in
 - [10. Troubleshooting](#10-troubleshooting)
 - [11. After the session](#11-after-the-session)
 - [Appendix A. hulc-ms command reference](#appendix-a-hulc-ms-command-reference)
-- [Appendix B. Running from Python, and the regression library (for developers)](#appendix-b-running-from-python-and-the-regression-library-for-developers)
+- [Appendix B. Running from Python, fixing an analysis, and the regression library (for developers)](#appendix-b-running-from-python-fixing-an-analysis-and-the-regression-library-for-developers)
 - [Appendix C. Releasing a new version (for developers)](#appendix-c-releasing-a-new-version-for-developers)
-- [Appendix D. Bench checks](#appendix-d-bench-checks)
-
+- [Appendix D. Bench checks (for developers)](#appendix-d-bench-checks-for-developers)
 
 ## 1. Purpose and scope
 
@@ -121,7 +120,7 @@ in a well-ventilated area.
 | **Qty** | **Item** | **Notes** |
 |---|---|---|
 | 1 | Seeed Studio XIAO nRF52840 | Microcontroller with Bluetooth, onboard 2 MB flash for the log, and a battery charger on its USB-C port |
-| 1 | SparkFun BNO086 IMU breakout (Qwiic) | Orientation sensor; connected over I²C |
+| 1 | SparkFun BNO086 breakout (Qwiic) | Orientation sensor (an IMU, inertial measurement unit); connected over I²C |
 | 1 | 3.7 V 600 mAh LiPo battery | With a 2-pin JST plug |
 | 1 | 2-pin JST socket | Soldered to the XIAO's battery pads, so the battery can be unplugged |
 |  | Hook-up wire | Four short signal wires (SDA, SCL, INT, RST) plus a red / black pair for power |
@@ -207,9 +206,10 @@ handover (§1.2).
 
 *Figure 5. A complete node: the board stack in the front well, the USB-C port at the side cut-out.*
 
-Once done, flash the firmware (§3.2), then label each node with its
-`HULC-IMU-XXXX` suffix (the blue tape in Figure 4) so it can be identified
-without connecting to it.
+Once done, flash the firmware (§3.2), then label each node with the last four
+characters of its Bluetooth name, `HULC-IMU-XXXX` (the blue tape in Figure
+4). The label identifies a node without connecting to it; enroll (§4.1)
+records it.
 
 ## 3. Software setup
 
@@ -278,7 +278,7 @@ connection (unless it has a dedicated Bluetooth dongle), so offloads can take
 minutes instead of seconds (§10.2). Other platforms (for example Linux, macOS
 or a phone) can be faster, but their speed has not been measured yet.
 
-## 4. Setting up the nodes (once per rig)
+## 4. Setting up the nodes (once per set of nodes)
 
 ### 4.1 Enroll
 
@@ -289,13 +289,15 @@ power cycles and erases, and every recording then carries it.
     `hulc-ms nodes enroll --segments upper_arm_r,forearm_r`
 2.  When asked for the first segment, power on **only** that node and press
     Enter. With only one node advertising, its ID is unambiguous.
-3.  Type a physical label (e.g. "orange tape") and mark the node. This makes
-    the node easy to identify later.
+3.  Type how this node is marked, for example the label from §2 ("blue
+    tape, 485C"), or add a mark now. Enroll saves it next to the node's
+    name, so that later the node you can see can be matched to the name the
+    software shows.
 4.  The node is erased if it holds data (you are asked `[y/N]` first;
     `--no-erase` skips this), its segment is stored, and it is read back.
 5.  Repeat for each segment.
 
-Enroll also writes `montage.json` (a record of the rig) and
+Enroll also writes `montage.json` (a record of which node is on which segment) and
 `nodes_registry.json` (each node's ID, segment and label). Next time, the same
 labelled nodes can be reused with `enroll … --reuse`, which only scans. To see what each node
 stores: `hulc-ms nodes read-segments`. Moving a node to a different segment
@@ -310,16 +312,13 @@ The options:
 | `--no-erase` | Do not erase a node that still holds data (its segment is still stored) |
 | `--subject`, `--session` | The participant and session IDs written into `montage.json` (an ID, never a name) |
 
-A `montage.json` edited by hand must stay UTF-8. The tools accept a UTF-8 BOM
-(Notepad, PowerShell `>`), but a UTF-16 file must be re-saved.
-
 **Connections are the slow part.** Every Bluetooth command connects to each
 node first (slow, especially from Windows), so a routine block touches
 Bluetooth only twice: erase before strapping on (skipped if the node is
 already empty) and offload. Nothing is connected while the
 participant records.
 
-### 4.2 Link check (new rig, or a flaky link)
+### 4.2 Link check (a new set of nodes, or a flaky link)
 
 With the nodes still and powered:
 `hulc-ms nodes check --count 2 --duration 30`.
@@ -505,12 +504,9 @@ next block.
       (`--capture-dir` is the block's folder, `--outdir` where the results
       go).
 
-    The command first prints which montage it used and which log belongs to
-    which segment (`n0 upper_arm_r <- HULC-IMU-485C.bin`, …): check this
-    against where the nodes really were. If a node stored the wrong segment,
-    `--montage FILE` gives the right montage instead, and the run warns where
-    it disagrees with a node. With OpenSim installed (Appendix B), every
-    block is also solved on the body models, and the review page gets a
+        The command first prints which log belongs to which segment: check it
+    against where the nodes really were (if it is wrong, see Appendix B).
+    With OpenSim installed (Appendix B), the review page also gets a
     **Sensors / Body model** switch.
 4.  **Read the block check** at the top of the app page (Figure 10), or at
     the end of the command's output:
@@ -540,20 +536,9 @@ next block.
     wrong, keep it as a test case with **Keep as test case…** in the app
     (Appendix B).
 
-**Why one block per folder.**
-
-- One block is one mounting. A re-mounted node sits at a slightly different
-  angle, so it needs its own freeze, and each folder is calibrated on its
-  own.
-- If a node must come off mid-block without an offload (avoid this),
-  analyze the part after it separately, with that part's own freeze:
-  `hulc-ms analyze … --window t0,t1`.
-- If a battery runs flat mid-block, the node's clock starts again from zero
-  when it is recharged. The analysis keeps the larger part and warns; the
-  rest is not analyzed.
-- Never swap nodes between segments without enrolling them again: each node
-  stores its segment, and the block's montage is built from what the nodes
-  store. (A one-off swap can be fixed afterwards with `--montage`.)
+**Keep one block per folder.** Each mounting is calibrated on its own, so
+each block needs its own folder. For a node that came off mid-block, a
+battery that ran flat, or nodes swapped between segments, see Appendix B.
 
 ## 8. Reviewing the analysis
 
@@ -592,17 +577,6 @@ and minimum marked.
 ![Elbow flexion / extension over a block of six bends.](img/review-graph.png)
 
 *Figure 14. Elbow flexion / extension over a block of six bends.*
-
-What the analysis writes (in `./out/block1`, or in the app's session folder):
-
-| **File** | **Content** |
-|---|---|
-| `block_check.json` | The verdict (OK / UNUSABLE) and one line per check |
-| `session.html` | The review page; opens in any browser, no installation needed |
-| `metrics.json` | Range of motion, speed, repetitions and plausibility per joint and movement; segment and derived metrics |
-| `calibration.json` | The freeze window, mounting offsets, facing, and where the recording ends |
-| `aligned.csv` | All nodes' orientations on one timeline |
-| `aligned.quality.json` | Per node: clock offset, alignment confidence, data gaps, clock restarts |
 
 ## 9. Data handling
 
@@ -662,7 +636,6 @@ What each line means, and what to do:
 | Enroll: "no HULC node advertising" | Node off, not advertising yet, or connected to something else | Power it on, wait a few seconds, retry |
 | `analyze: node log not found` | Wrong folder, or a node did not offload COMPLETE | Point at the block folder; run offload again for the missing node |
 | `no montage: … cannot describe itself` | A log without a `.seg.json` (node never enrolled, or older firmware) | Enroll the node, or pass `--montage montage.json` |
-| `json … Expecting value` | A hand-edited `montage.json` is empty or saved as UTF-16 | Re-save it as UTF-8 |
 | Part of the task missing from the data | Still for 60 s or more: the nodes stopped logging until moved | Keep rests to 5–8 s; after a long break repeat the sync movement and freeze |
 | Nodes disagree on direction, no warning | Working next to metal | Record away from large metal (§5) |
 | Rest of a block calibrated wrongly | Re-mounted without offloading | Always offload and erase before re-mounting |
@@ -690,7 +663,7 @@ What to type for `hulc-ms`:
 | **Command** | **What it does** |
 |---|---|
 | `hulc-ms` | Starts the HULC-MS app |
-| `hulc-ms nodes enroll --segments torso,upper_arm_r` | Once per rig: power one node at a time; each node stores its segment (§4.1) |
+| `hulc-ms nodes enroll --segments torso,upper_arm_r` | Once per set of nodes: power one node at a time; each node stores its segment (§4.1) |
 | `hulc-ms nodes read-segments` | Shows the segment each node stores |
 | `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | After a block (nodes idle): each node's log and the block's montage into the folder (§7) |
 | `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | The analysis: block check at the end, review page `out/block1/session.html` |
@@ -723,10 +696,11 @@ little elbow bending), `--no-opensense` (skip the body-model solves) and
 `--opensense-model PATH` (solve on another model). The options for `enroll`
 and `offload` are explained in §4.1 and §7.
 
-## Appendix B. Running from Python, and the regression library (for developers)
+## Appendix B. Running from Python, fixing an analysis, and the regression library (for developers)
 
-You only need this to change the analysis, to run the body-model solves, or
-to use a system without a ready-made build.
+You only need this to change the analysis, to run the body-model solves, to
+use a system without a ready-made build, or to fix an analysis that went
+wrong (a wrong montage, or a node that came off mid-block).
 
 1.  Install Python 3.11–3.13.
 2.  Open a terminal in the repository folder and run:
@@ -746,13 +720,47 @@ every case must still pass:
     hulc-ms regress run --data <regression data folder>
 
 The expectations are in the repository (`tools/regress_cases/`); the
-recordings are on the lab drive (§9). To add a case, use **Keep as test
+recordings are kept outside the repository (§9). To add a case, use **Keep as test
 case…** in the app, or:
 
     hulc-ms regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"
 
 The expectations are pre-filled from today's analysis: **check them against
 what really happened**, edit, and commit the new file.
+
+**Checking and fixing the montage.** `hulc-ms analyze` first prints which
+montage it used and which log belongs to which segment
+(`n0 upper_arm_r <- HULC-IMU-485C.bin`, …). The montage comes from the
+folder's `montage.json`, else from the nodes' `.seg.json` files. If a node
+stored the wrong segment, `--montage FILE` gives the right montage instead,
+and the run warns where it disagrees with a node.
+
+A `montage.json` edited by hand must stay UTF-8. The tools accept a UTF-8 BOM
+(Notepad, PowerShell `>`), but a UTF-16 file must be re-saved. (An empty or UTF-16 `montage.json` stops the
+analysis with `json … Expecting value`.)
+
+**Special cases within a block.**
+
+- If a node must come off mid-block without an offload (avoid this),
+  analyze the part after it separately, with that part's own freeze:
+  `hulc-ms analyze … --window t0,t1`.
+- If a battery runs flat mid-block, the node's clock starts again from zero
+  when it is recharged. The analysis keeps the larger part and warns; the
+  rest is not analyzed.
+- Never swap nodes between segments without enrolling them again: each node
+  stores its segment, and the block's montage is built from what the nodes
+  store. (A one-off swap can be fixed afterwards with `--montage`.)
+
+**What the analysis writes** (in `./out/block1`, or in the app's session folder):
+
+| **File** | **Content** |
+|---|---|
+| `block_check.json` | The verdict (OK / UNUSABLE) and one line per check |
+| `session.html` | The review page; opens in any browser, no installation needed |
+| `metrics.json` | Range of motion, speed, repetitions and plausibility per joint and movement; segment and derived metrics |
+| `calibration.json` | The freeze window, mounting offsets, facing, and where the recording ends |
+| `aligned.csv` | All nodes' orientations on one timeline |
+| `aligned.quality.json` | Per node: clock offset, alignment confidence, data gaps, clock restarts |
 
 **Running the stages by hand.** `hulc-ms analyze` runs these in order (logs
 in montage column order):
@@ -779,9 +787,7 @@ the ZIP), and write access to it.
     attached to a GitHub release, and the lab computers download the new
     version from **Releases**.
 
-
-
-## Appendix D. Bench checks
+## Appendix D. Bench checks (for developers)
 
 **Link check** (§4.2). The offset is only known to within the time one
 Bluetooth read takes, so treat it as an upper bound. A large or negative
