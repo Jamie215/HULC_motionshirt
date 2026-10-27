@@ -70,7 +70,7 @@ Key terms used in this SOP:
 
 ### 1.1 The node's states
 
-What a node does depends on how it is moving (Figure 1).
+What a node does depends on how the participant wearing the node is moving (Figure 1).
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "24px"}, "flowchart": {"curve": "linear", "nodeSpacing": 30, "rankSpacing": 110}}}%%
@@ -155,7 +155,7 @@ short wires:
     neighbouring pins are bridged.
 5.  *(For deployment)* Cut the **LED** solder jumper on the BNO086 breakout, and the XIAO's
     power-LED jumper. These LEDs are wired to power and cannot be turned off
-    in firmware; each draws about 1–3 mA, all the time.
+    in firmware; each can draw about 1 mA, all the time.
 
 ![The board stack: the XIAO nRF52840 on top of the SparkFun BNO086 breakout, joined by short hook-up wires.](img/node-board.jpg)
 
@@ -168,7 +168,7 @@ short wires:
 2.  Before plugging in a battery, check with the multimeter that the
     battery's red lead will meet **BAT+**. A reversed LiPo can destroy the
     board.
-3.  Plug in the battery and connect USB-C: the XIAO charges the battery from
+3.  Plug in the battery and connect USB-C: the XIAO should charge the battery from
     its USB-C port.
 
 ### 2.3 Case
@@ -183,18 +183,15 @@ short wires:
 *Figure 3. The two printed parts: the body and the lid.*
 
 2.  Remove the supports from the prints and clean up the rough edges.
-3.  Carefully lay the battery flat in the body's back compartment, its lead running
-    round the side towards the JST socket (Figure 4).
+3.  Carefully insert the battery flat in the body's back compartment (Figure 4).
 
-![The battery in the back compartment of the body.](img/node-case-battery.jpg)
+![The battery placed in the back compartment of the body.](img/node-case-battery.jpg)
 
-*Figure 4. The battery in the back compartment of the body.*
+*Figure 4. The battery placed in the back compartment of the body.*
 
 4.  Place the board stack in the front well with the XIAO's USB-C port in the
     side cut-out (Figure 5). When it
-    is properly placed, the cylindrical pegs stop the BNO086 from moving. The
-    cut-out fixes the node's orientation in the case, which is what keeps
-    "same node, same way round" repeatable when it is strapped on.
+    is properly placed, the cylindrical pegs stop the BNO086 from moving.
 5.  Close the lid, lining it up with the USB-C opening. Use adhesive for a
     more secure lid.
 
@@ -246,8 +243,7 @@ Bluetooth address.
 
 **Standalone app (no Python needed).** Download the latest release from the
 repository's **Releases** page
-(https://github.com/Jamie215/HULC_motionshirt/releases/latest; no GitHub
-sign-in needed):
+(https://github.com/Jamie215/HULC_motionshirt/releases/latest):
 
 - **Windows:** `hulc-ms-windows.zip`. Unzip it into a normal folder (not from
   inside the zip) and double-click `hulc-ms\hulc-ms.exe`. On first launch,
@@ -315,21 +311,27 @@ The options:
 **Connections are the slow part.** Every Bluetooth command connects to each
 node first (slow, especially from Windows), so a routine block touches
 Bluetooth only twice: erase before strapping on (skipped if the node is
-already empty) and offload. Nothing is connected while the
-participant records.
+already empty) and offload.
 
 ### 4.2 Link check (a new set of nodes, or a flaky link)
 
-With the nodes still and powered:
-`hulc-ms nodes check --count 2 --duration 30`.
+With the nodes still and powered, run for example
+`hulc-ms nodes check --count 2 --duration 30`:
+
+| **Option** | **What it does** |
+|---|---|
+| `--count` | How many nodes to connect to (here 2): all the nodes you will use |
+| `--duration` | How long to measure, in seconds (here 30; default 60). Longer shows the clocks drifting apart more clearly |
+
 Every node should read `synced=True` with a small, stable cross-node offset.
 A bad result points at the Bluetooth link before a recording is wasted on it.
 
 ### 4.3 Erase before the first block
 
-`hulc-ms nodes erase --count N`, where N is the number of nodes, wipes
-every node that holds data (about 30 s
-each; empty nodes are skipped). Do not power a node off mid-wipe.
+`hulc-ms nodes erase --count N` wipes every node that holds data (about
+30 s each; empty nodes are skipped). N is the number of nodes to erase, for
+example `--count 2`; add `--yes` to skip the `[y/N]` question for each
+node. Do not power a node off mid-wipe.
 
 ## 5. Pre-session checklist
 
@@ -459,8 +461,8 @@ gantt
 
 ## 7. After the block recording (offload)
 
-> **For the current prototype.** This chapter is the routine used while the
-> prototype is being tested and validated: after every block, the operator
+> **For the current prototype.** This chapter is the routine for the current
+> prototype: after every block, the operator
 > offloads, analyzes and erases the nodes from a laptop, so that each block
 > is checked straight away. In the planned deployment, the nodes are not
 > expected to be sent commands after every block; how offloading fits into
@@ -629,7 +631,7 @@ What each line means, and what to do:
 
 | **Symptom** | **Likely cause** | **Action** |
 |---|---|---|
-| Offload takes minutes or hours | A Windows desktop forces a slow Bluetooth connection | Use a dedicated Bluetooth dongle or another platform (§3.3); `offload --count 1` prints the speed |
+| Offload takes minutes or hours | A Windows desktop forces a slow Bluetooth connection | Use a dedicated Bluetooth dongle or another platform (§3.3); the offload output shows each node's speed (KB/s) |
 | Many `pass 2: re-requesting …` lines | Weak link, distance, the body blocking the signal | Node close to the laptop, in line of sight; run offload again to fill the gaps |
 | Offload rejected or empty | Node not in IDLE, or nothing recorded | Lay the nodes flat and wait about 10 s; check the block was recorded |
 | Enroll: "N nodes advertising" | More than one node powered on | Power on only the node being enrolled |
@@ -679,20 +681,23 @@ The values in these examples are placeholders; replace them with your own:
 | **Option** | **What to put** |
 |---|---|
 | `--count 2` | The number of nodes to connect to (here 2) |
+| `--duration 30` | For `nodes check`: how long to measure, in seconds (default 60) |
 | `--segments torso,upper_arm_r` | The segments to enroll, separated by commas (§4.1) |
 | `--out-dir ./capture/block1` | The folder for this block's offload; a new one for every block |
 | `--subject S01` | The participant ID (an ID, never a name) |
 | `--capture-dir ./capture/block1` | The block's folder to analyze or check |
 | `--outdir ./out/block1` | Where the analysis writes its results |
 | `--data <folder>` | The folder that holds the regression library's recordings |
+| `--recursive` | For `validate`: check every block folder inside the given folder |
 
 `hulc-ms <command> --help` lists every option. The ones you may need for
 `analyze`: `--window t0,t1` and `--end t_ms` (set the freeze and the end by
-hand; the Timeline writes these for you), `--protocol hold-first`
+hand; t0, t1 and t_ms are times in milliseconds from the start of the
+recording, and the Timeline writes these for you), `--protocol hold-first`
 (recordings made before October 2026, when the freeze came before the sync
 movement), `--montage FILE`
 (override the folder's montage), `--facing-deg` (no torso node and too
-little elbow bending), `--no-opensense` (skip the body-model solves) and
+little elbow bending: the direction the subject faced, in degrees), `--no-opensense` (skip the body-model solves) and
 `--opensense-model PATH` (solve on another model). The options for `enroll`
 and `offload` are explained in §4.1 and §7.
 
@@ -723,7 +728,12 @@ The expectations are in the repository (`tools/regress_cases/`); the
 recordings are kept outside the repository (§9). To add a case, use **Keep as test
 case…** in the app, or:
 
-    hulc-ms regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"
+        hulc-ms regress add <date>_<montage> --capture-dir ./capture/block1 --description "what was done, when"
+
+Here `<date>_<montage>` is the case's name (for example
+`2026-10-21_upper-arm_forearm`), `--capture-dir` the block's folder, and
+`--description` a sentence on what was recorded.
+
 
 The expectations are pre-filled from today's analysis: **check them against
 what really happened**, edit, and commit the new file.
@@ -796,8 +806,8 @@ clocks; real crystal drift is far smaller.
 
 **Offload speed on any central.** The node prints `[OFFLOAD] Done` on its USB
 serial with the speed (KB/s) and the time per chunk, which is about the
-Bluetooth connection interval the central chose. On a Mac,
-`hulc-ms nodes offload --count 1` also prints the speed.
+Bluetooth connection interval the central chose. The offload output
+on the laptop also shows each node's speed.
 
 **Re-mount check (optional).** Every block has its own freeze, so this only
 confirms that a previous calibration still holds after a node was taken off
@@ -809,5 +819,5 @@ and put back. Record a short still hold, offload it into `./redon`, then:
 **Without hardware:** `hulc-ms selftest` checks every tool on synthetic data.
 For the Bluetooth side alone: `python tools/reconcile_nodes.py --selftest`
 (the clock-alignment math) and `python tools/multinode_test.py selftest` (the
-enroll logic). `hulc-ms nodes check --count 1` measures a single link's
+enroll logic). `hulc-ms nodes check --count 1` (one node only) measures a single link's
 delay on its own, separating it from the scheduling of several connections.
