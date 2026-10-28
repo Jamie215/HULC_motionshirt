@@ -125,18 +125,32 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 
 (In PowerShell, type `.\hulc-ms`.)
 
+The values in angle brackets (`<n>`, `<folder>`, …) are placeholders: replace
+each one with your own value, as explained below the table.
+
 | Command | What it does |
 |---|---|
 | `hulc-ms` (no command) | the HULC-MS app |
-| `hulc-ms nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
-| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | after a block (nodes idle): each node's log + the block's `montage.json` into the folder |
-| `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
-| `hulc-ms validate --capture-dir ./capture/block1` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
-| `hulc-ms nodes erase --count 2` | wipe the nodes for the next block |
-| `hulc-ms nodes check --count 2` | link check: sync and cross-node clock offset |
-| `hulc-ms regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
+| `hulc-ms nodes enroll --segments <segments>` | once per set of nodes: power one node at a time; each node stores its body part |
+| `hulc-ms nodes offload --count <n> --out-dir <folder> --subject <id>` | after a block (nodes idle): each node's log + the block's `montage.json` into the folder |
+| `hulc-ms analyze --capture-dir <folder> --outdir <folder>` | the analysis: block check printed at the end, review page `session.html` in the output folder |
+| `hulc-ms validate --capture-dir <folder>` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
+| `hulc-ms nodes erase --count <n>` | wipe the nodes for the next block |
+| `hulc-ms nodes check --count <n> --duration <s>` | link check: sync and cross-node clock offset |
+| `hulc-ms regress run --data <folder>` | the regression library (before and after any analysis change) |
 | `hulc-ms opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
 | `hulc-ms selftest` | every tool's selftest: checks an install or a build |
+
+| Placeholder | What to put | Example |
+|---|---|---|
+| `<n>` (after `--count`) | the number of nodes to connect to | `--count 2` |
+| `<segments>` (after `--segments`) | the segments to enroll, separated by commas, in the order you will power the nodes on: `torso`, `upper_arm_r`, `forearm_r`, `hand_r` (`_l` for the left side) | `--segments torso,upper_arm_r` |
+| `<s>` (after `--duration`) | how long to measure, in seconds (default 60) | `--duration 30` |
+| `<folder>` (after `--out-dir`) | a new folder for this block's offload | `--out-dir ./capture/block1` |
+| `<id>` (after `--subject`) | the participant ID (an ID, never a name) | `--subject S01` |
+| `<folder>` (after `--capture-dir`) | the block's folder to analyze or check | `--capture-dir ./capture/block1` |
+| `<folder>` (after `--outdir`) | where the analysis writes its results | `--outdir ./out/block1` |
+| `<folder>` (after `--data`) | the folder that holds the regression library's recordings | `--data D:/regress_data` |
 
 `hulc-ms <command> --help` lists the options. The `analyze` options you may need:
 
