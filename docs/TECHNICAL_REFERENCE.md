@@ -30,6 +30,12 @@ change the software safely.
 | RMS | Root-mean-square: a typical size of an error or signal, which weights large values more |
 | Neutral pose / freeze | The still pose held for about 5 s at the start of each block (arms down, palms to the thighs), which defines zero |
 | IK | Inverse kinematics: finding the body-model pose that best matches the sensors |
+| Node | One sensor board: a BNO086 orientation sensor, a Bluetooth microcontroller, flash memory and a battery |
+| Mounting offset | The fixed angle between a node and the bone it is strapped to. It is measured in the freeze and removed by calibration |
+| BLE central / peripheral | In Bluetooth Low Energy, the peripheral (a node) advertises and waits; the central (the laptop, later a phone) connects to it and sends commands |
+| GATT service / characteristic | How a BLE device lays out its data: a service is a group of characteristics, and each characteristic is one value that the central can read, write, or subscribe to (a "notification" each time it changes) |
+| I²C / QSPI | Wired connections between chips on the node's board: I²C links the microcontroller to the BNO086, and QSPI links it to the flash memory chip that holds the log |
+| Fourier transform / FFT | Splits a signal into the frequencies it contains. The FFT (fast Fourier transform) is the standard fast way to compute it |
 
 ---
 
@@ -378,6 +384,30 @@ also used by most biomechanics software. The angle math is in `metrics.py`
 | elbow | flexion/extension, pronation/supination | `ZXY` | Pronation/supination is sensitive to the roll of the forearm node. |
 | wrist | flexion/extension, radial/ulnar deviation | `ZXY` | |
 
+#### 3.4.1 Rotations in brief
+
+Chapters 6 and 7 use a few operations on quaternions. Only their meaning is
+needed to follow the text:
+
+- **What a quaternion holds.** A rotation by an angle $\theta$ about an axis
+  $\hat{\mathbf u}$ (a unit vector) is stored as
+  $q = \bigl(\cos\tfrac{\theta}{2},\ \hat{\mathbf u}\sin\tfrac{\theta}{2}\bigr)$,
+  that is, $w = \cos\tfrac{\theta}{2}$ and $(x, y, z) = \hat{\mathbf u}\sin\tfrac{\theta}{2}$.
+  A node's orientation is the rotation that takes the world frame to the
+  node.
+- **Dot product: the angle between two orientations.**
+  $q_1 \cdot q_2 = w_1w_2 + x_1x_2 + y_1y_2 + z_1z_2$ is the cosine of half the
+  angle between them, so the angle is $2\arccos\lvert q_1 \cdot q_2\rvert$
+  (used in §6.2).
+- **Multiplication ($\otimes$): doing one rotation after another.**
+  $q_1 \otimes q_2$ is a single rotation equal to the two combined. Like
+  turning a book about two different axes, the order matters.
+- **Inverse ($q^{*}$): undoing a rotation.** $q^{*} = (w, -x, -y, -z)$ turns by
+  the same angle the other way.
+- **Relative rotation.** $q_A^{*} \otimes q_B$ is $B$'s orientation as seen
+  from $A$: what is left of $B$'s rotation once $A$'s is undone. This is how
+  the forearm is taken relative to the upper arm (§7.2).
+
 ### 3.5 Capability tiers
 
 | Tier | Needs | Examples |
@@ -420,6 +450,12 @@ are in §9.8. The firmware itself (`firmware/firmware.ino`: its header
 comment, numbered SECTIONs and `handleControl()`) is the source of truth, and
 the reference central is `tools/multinode_test.py`, which runs behind
 `hulc-ms nodes`.
+
+Note: this chapter assumes some familiarity with microcontrollers and
+Bluetooth (the terms are in the Key terms table). §4.1–4.2 describe how a
+node behaves and are enough to follow the rest of the document; §4.3–4.7
+are for someone writing a central (such as the mobile app) or changing the
+firmware.
 
 Each node is a Seeed XIAO nRF52840 (a Bluetooth microcontroller) with a
 SparkFun BNO086 connected over I²C at 100 kHz (the I²C on this board is
@@ -989,8 +1025,8 @@ orientations fail this test. **How fast a segment is turning** passes it: a
 rigid body turns at one rate, wherever on it a sensor sits and however it is
 tilted.
 
-Each node logs unit quaternions $q_i$. The rotation between two consecutive
-orientations $q_i$ and $q_{i+1}$ has the angle
+Each node logs unit quaternions $q_i$ (§3.4.1). The rotation between two
+consecutive orientations $q_i$ and $q_{i+1}$ has the angle
 
 ```math
 \theta_i = 2\,\arccos\!\bigl(\lvert\, q_i \cdot q_{i+1}\,\rvert\bigr) \quad (2)
@@ -1160,6 +1196,10 @@ motion capture and multiple IMUs.
 
 ### 6.10 Upgrades for a rigorous / publishable result
 
+Note: §6.10 and §6.11 are for someone extending the method. They name
+techniques (GCC-PHAT, RANSAC, Kalman filter) that are not used today and are
+not explained here.
+
 1. **Measure the real error.** Wire a shared electrical sync pulse to an
    input pin on every node, timestamp it with `millis()`, and report the
    actual alignment error in milliseconds.
@@ -1270,8 +1310,8 @@ flowchart LR
    which gives each bone's orientation in the world. Without calibration this
    step is skipped and the joint is marked `clinical: false`.
 2. **Take the outer segment relative to the inner one** (the forearm relative
-   to the upper arm for the elbow). This removes the motion they share, which
-   is what makes a joint angle relative.
+   to the upper arm for the elbow, the relative rotation of §3.4.1). This
+   removes the motion they share, which is what makes a joint angle relative.
 3. **Express that rotation in the body's axes**: X forward, Y up along a
    hanging limb, Z to the subject's right. These come from gravity and the
    subject's facing at the freeze (the `anatomical_frame` block of
@@ -1332,13 +1372,40 @@ These are reported for each joint the montage supports, in `joints[]`. Each
 joint has `key`, `name`, `clinical`, `decomposition` (the Euler sequence),
 `dofs[]` (one entry per movement) and `reps`.
 
-| Metric | What it tells you | Field | How it is computed | Units | Needs calibration? |
-|---|---|---|---|---|---|
-| **Per-DOF angle** | The joint angle over time, per movement; everything below is built from it | `dofs[].` (series) | Euler split of the relative rotation in the joint's sequence, unwrapped in radians before converting (§7.2) | ° | For an *anatomical* zero, yes; the shape is valid without |
-| **Range of motion** | The smallest, largest and middle angle reached, and the span between them | `dofs[].rom` = `{min_deg,max_deg,range_deg,median_deg}` | `range = max − min` over the unwrapped angle [`_rom`/`_stats`]. `null` if the movement is undefined for the whole session | ° | Needed for a *clinical* ROM; relative only when `clinical:false` |
-| **Angular velocity** | How fast the joint moved | `dofs[].velocity` = `{peak_deg_s,mean_abs_deg_s,rms_deg_s}` | `v = d(angle)/dt` [`np.gradient`, `velocity_stats`]; peak = max\|v\|, mean = mean\|v\|, RMS = √mean(v²). Computed **only within** continuous defined stretches, so a masked gap never creates a huge fake peak | °/s | No (a shape measure) |
-| **Repetitions** | How many back-and-forth movements, grouped into sets | `reps` = `{count,primary_dof,bouts[]}` | Turning points on the joint's main movement [`find_rep_bouts`]: one repetition is one out-and-back swing of at least `rep_threshold` = the larger of 15° [`REP_MIN_AMPLITUDE_DEG`] and 25% of the session's 2nd–98th-percentile range. Each swing is measured from its own local extremes, so a set of small curls still counts next to a big movement elsewhere. Repetitions are grouped into **bouts** (sets): a pause at an extreme longer than 5 s [`REP_PAUSE_S`], or one swing slower than 8 s [`REP_MAX_LEG_S`], ends a bout, so curls, then rotations, then curls show as separate phases. Each bout = `{t_start_ms,t_end_ms,reps,mean_amplitude_deg}`; `count` is their total | count | No (only the shape matters) |
-| **Plausibility** | Whether the numbers look physically possible | `dofs[].plausibility` = `{ok,issues[],jumps,outside_limits_frac?,limits_deg?}` | [`check_plausibility`] Flags a range over 360°, jumps over 120° between samples [`JUMP_MAX_DEG`], and (with anatomical axes) more than 2% of samples [`PLAUSIBLE_OUTSIDE_FRAC`] outside the movement's physiological limits (`plausible_deg` in `motion_capabilities`). Any failing movement adds a joint-level `plausibility_warning` | — | The limits check needs anatomical axes |
+| Metric | What it tells you | Units | Needs calibration? |
+|---|---|---|---|
+| **Angle** (per DOF) | The joint angle over time, for each movement; the other metrics are built from it | ° | For an anatomical zero; the shape is valid without |
+| **Range of motion** | The smallest, largest and middle angle reached, and the span between them | ° | For a clinical range of motion |
+| **Angular velocity** | How fast the joint moved | °/s | No |
+| **Repetitions** | How many back-and-forth movements, grouped into sets | count | No |
+| **Plausibility** | Whether the numbers look physically possible | — | The limits check needs the facing |
+
+How each is computed, with its field in `metrics.json` and its function in
+`metrics.py`:
+
+- **Angle** (`dofs[]`): the split of §7.2, unwrapped as in §7.1.
+- **Range of motion** (`dofs[].rom`: `min_deg`, `max_deg`, `range_deg`,
+  `median_deg`): range = largest − smallest angle [`_rom`]. `null` if the
+  movement is undefined for the whole session.
+- **Angular velocity** (`dofs[].velocity`: `peak_deg_s`, `mean_abs_deg_s`,
+  `rms_deg_s`): the rate of change of the angle, summarized as its peak,
+  mean and RMS [`velocity_stats`]. It is computed only within defined
+  stretches, so a masked gap never creates a false peak.
+- **Repetitions** (`reps`: `count`, `primary_dof`, `bouts[]`): one
+  repetition is one out-and-back swing of the joint's main movement of at
+  least 15° [`REP_MIN_AMPLITUDE_DEG`] or 25% of the session's range,
+  whichever is larger [`find_rep_bouts`]. Each swing is measured from its own
+  turning points, so a set of small curls still counts next to a big
+  movement elsewhere. A pause longer than 5 s [`REP_PAUSE_S`] or a swing
+  slower than 8 s [`REP_MAX_LEG_S`] ends a set (a *bout*), so curls, then
+  rotations, then curls show as separate sets. Each bout has its start, end,
+  count and mean amplitude.
+- **Plausibility** (`dofs[].plausibility`): flags a range over 360°, a jump
+  of more than 120° between samples [`JUMP_MAX_DEG`], or more than 2% of
+  samples outside the movement's physiological limits
+  [`PLAUSIBLE_OUTSIDE_FRAC`; the limits are `plausible_deg` in
+  `motion_capabilities`] [`check_plausibility`]. A failing movement adds a
+  `plausibility_warning` to its joint.
 
 A `clinical:false` joint also carries a `warning` that spells out that its
 angles are relative only.
@@ -1367,13 +1434,40 @@ These describe each body segment on its own, one entry per node, in
 are valid with or without calibration. Elevation and posture dwell use the
 **calibrated** orientation.
 
-| Metric | What it tells you | Field | How it is computed | Units | Needs calibration? |
-|---|---|---|---|---|---|
-| **Angular speed** | How fast the segment turned | `angular_speed` = `{mean_deg_s,peak_deg_s}` | The angle turned between consecutive samples, `Δ = 2·arccos(\|q_t · q_{t+1}\|)`, divided by `dt` [`segment_angular_speed`]. It measures how much the bone turned, not where it points, so it does not depend on mounting. Also feeds SPARC | °/s | No |
-| **Angular travel** | How much the segment moved in total, and for what share of the time | `travel` = `{travel_deg, active_time_frac}` | `travel = ∫\|angular speed\| dt`: all the turning added up, in any direction. `active_time_frac` = share of time faster than 20°/s [`ACTIVE_SPEED_DEG_S`]. These are session totals, so they are valid even when two limbs are not time-aligned [`segment_travel_deg`] | °, fraction | No |
-| **Elevation** | How far the segment tilts from vertical | `elevation` = `{min,max,range,median,mean}_deg` | The angle of the bone's long axis from vertical, `arccos(R[2,2])` of the (calibrated) segment orientation per sample [`segment_elevation_series`]. Without calibration it is the board's own tilt: a real tilt, just not tied to the bone (flagged by `calibrated`) | ° | For an anatomical meaning, yes |
-| **Smoothness (SPARC)** | How smooth or jerky the movement was | `smoothness_sparc` | Spectral arc length of the speed profile (Balasubramanian et al. 2015) [`sparc`]: take the frequency spectrum of the speed, scale it by its zero-frequency value, and measure the length of that curve up to a cutoff (at most 10 Hz [`SPARC_FC_MAX_HZ`], where the spectrum drops below 0.05 [`SPARC_AMP_THRESH`]). Smoother movement gives a value nearer 0, jerkier more negative (≈ −1.5 smooth … −5 or below jerky). `null` when there is almost no movement | unitless (≤ 0) | No |
-| **Posture dwell** | Where the segment spent its time | `posture_dwell` = `{edges_deg, fraction}` | The share of the session spent in each elevation band [`POSTURE_BIN_EDGES_DEG`: 0/30/60/90/120/150/180°], **weighted by time** between samples so uneven sampling stays correct [`posture_dwell`] | fraction per band | **Yes**: reported only when the segment is calibrated |
+| Metric | What it tells you | Units | Needs calibration? |
+|---|---|---|---|
+| **Angular speed** | How fast the segment turned | °/s | No |
+| **Angular travel** | How much the segment moved in total, and for what share of the time | °, fraction | No |
+| **Elevation** | How far the segment tilts from vertical | ° | For an anatomical meaning |
+| **Smoothness (SPARC)** | How smooth or jerky the movement was | unitless (≤ 0) | No |
+| **Posture dwell** | The share of time spent at each elevation | fraction per band | Yes: reported only when calibrated |
+
+How each is computed:
+
+- **Angular speed** (`angular_speed`: `mean_deg_s`, `peak_deg_s`): the angle
+  turned between consecutive samples divided by the time between them, as in
+  §6.2 [`segment_angular_speed`].
+- **Angular travel** (`travel`: `travel_deg`, `active_time_frac`): all the
+  turning added up over the session, in any direction (the angular speed
+  integrated over time). `active_time_frac` is the share of time faster than
+  20°/s [`ACTIVE_SPEED_DEG_S`]. Both are session totals, so they are valid
+  even when two limbs are not time-aligned [`segment_travel_deg`].
+- **Elevation** (`elevation`: min, max, range, median and mean in degrees):
+  the angle between the bone's long axis and vertical, at each sample
+  [`segment_elevation_series`]. Without calibration it is the board's own
+  tilt, which is real but not tied to the bone.
+- **Smoothness** (`smoothness_sparc`): the spectral arc length of the speed
+  (Balasubramanian et al. 2015) [`sparc`]. The speed over time is split into
+  its frequencies (Fourier transform), and the length of the resulting
+  frequency curve is measured up to a cutoff of at most 10 Hz
+  [`SPARC_FC_MAX_HZ`, `SPARC_AMP_THRESH`]. A jerky movement has more
+  high-frequency content, which makes the curve longer and the value more
+  negative: about −1.5 is smooth, −5 or below is jerky. `null` when there is
+  almost no movement.
+- **Posture dwell** (`posture_dwell`: `edges_deg`, `fraction`): the share of
+  the session spent in each 30° elevation band from 0° to 180°
+  [`POSTURE_BIN_EDGES_DEG`], weighted by the time between samples so that
+  uneven sampling stays correct [`posture_dwell`].
 
 ---
 
@@ -1385,12 +1479,34 @@ the montage supports them** [`compute_derived`]. Each entry has `target`,
 `name`, `requires[]` and a `metrics{}` block, and most carry a `clinical` flag
 and/or a `note`.
 
-| Metric | What it tells you | `target` | `metrics{}` | How it is computed |
-|---|---|---|---|---|
-| **L/R ROM symmetry** | Whether both sides of a joint reach a similar range | `symmetry_<joint>` | `symmetry_index`, `rom_ratio`, `left_rom_deg`, `right_rom_deg`, `dof` | On each side's main movement: `symmetry_index = 100·\|L−R\| / (½(\|L\|+\|R\|))` (0 = identical, up to 200 = completely different); `rom_ratio = min/max`. `clinical` = both sides calibrated |
-| **Bilateral activity asymmetry** | Which arm (or segment) was used more | `activity_asymmetry_<segment>` | `asymmetry_index`, `use_ratio`, `active_time_ratio`, `left_travel_deg`, `right_travel_deg` | From each side's segment **travel**: `asymmetry_index = 100·(R−L)/(R+L)`, from −100 to +100 (positive = right used more). A session total, so it is **valid even when the clock alignment is weak** (its `note` says so), which makes it the most useful measure for sparse montages |
-| **Inter-joint coordination** | Whether two joints move together, and which leads | `coordination_<a>_<b>` | `pair`, `peak_r`, `lag_s` | The highest normalized cross-correlation between the two joints' main-movement series, and its delay [`cross_correlation`]: both series have their mean removed and are scaled to unit size, so `peak_r` is between −1 and 1; a positive `lag_s` means the second joint follows the first |
-| **Trunk compensation** | How much the trunk moved during the task (e.g. leaning instead of lifting the arm) | `compensation_<...>` | `trunk_travel_deg`, `trunk_elevation_range_deg` | The torso segment's travel and elevation range. `clinical` = torso calibrated; when not, the `note` marks the movement as relative |
+| Metric | What it tells you | `target` |
+|---|---|---|
+| **Left/right range-of-motion symmetry** | Whether both sides of a joint reach a similar range | `symmetry_<joint>` |
+| **Bilateral activity asymmetry** | Which arm (or segment) was used more | `activity_asymmetry_<segment>` |
+| **Inter-joint coordination** | Whether two joints move together, and which one leads | `coordination_<a>_<b>` |
+| **Trunk compensation** | How much the trunk moved during the task (e.g. leaning instead of lifting the arm) | `compensation_<...>` |
+
+How each is computed:
+
+- **Symmetry** (`symmetry_index`, `rom_ratio`, `left_rom_deg`,
+  `right_rom_deg`, `dof`): from each side's range on the main movement,
+  $\text{symmetry index} = 100\,\lvert L-R\rvert / \bigl(\tfrac12(\lvert L\rvert+\lvert R\rvert)\bigr)$,
+  which is 0 for identical sides and up to 200 for completely different
+  ones; `rom_ratio` is the smaller range divided by the larger. `clinical`
+  when both sides are calibrated.
+- **Activity asymmetry** (`asymmetry_index`, `use_ratio`,
+  `active_time_ratio`, `left_travel_deg`, `right_travel_deg`): from each
+  side's angular travel, $\text{asymmetry index} = 100\,(R-L)/(R+L)$, from −100
+  to +100, positive when the right side is used more. It is a session total,
+  so it is valid even when the clock alignment is weak (its `note` says so),
+  which makes it the most useful measure for sparse montages.
+- **Coordination** (`pair`, `peak_r`, `lag_s`): the cross-correlation
+  (§6.3) of the two joints' main movements, with each scaled so the score
+  runs from −1 to 1 [`cross_correlation`]. `peak_r` is the best score and
+  `lag_s` its delay; a positive lag means the second joint follows the first.
+- **Trunk compensation** (`trunk_travel_deg`, `trunk_elevation_range_deg`):
+  the torso segment's travel and elevation range. `clinical` when the torso
+  is calibrated; otherwise the `note` marks the movement as relative.
 
 ---
 
@@ -1517,6 +1633,11 @@ OpenSense was evaluated for three reasons:
   validating the sensors themselves.
 
 The comparison was run on 2026-09-25 with OpenSim 4.6.
+
+Note: this chapter is for someone changing or validating the pose solver.
+It assumes some biomechanics background (body models, inverse kinematics,
+RMS error against a known truth). The rest of the document does not depend
+on it, and §8.1 gives the conclusion in a few lines.
 
 ### 8.1 Verdict
 
