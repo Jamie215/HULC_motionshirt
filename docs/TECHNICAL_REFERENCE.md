@@ -1049,8 +1049,20 @@ even though their raw quaternions differ [`angular_speed()`].
 
 Speed throws away the axis of rotation. Because every node reports in the
 **same** world frame (gravity and magnetic north), the axis can be kept as
-well. The rotation between two samples then gives a vector: its direction is
-the axis the segment turned about, and its length is the speed from Eq. (3)
+well. The rotation that happened between two samples is
+
+```math
+\Delta q_i = q_{i+1} \otimes q_i^{*}, \qquad
+\boldsymbol\omega_i = \hat{\mathbf u}(\Delta q_i)\,\frac{\theta_i}{\Delta t_i} \quad (3')
+```
+
+Read from left to right (§3.4.1): $q_i^{*}$ undoes the orientation at sample
+$i$, and $q_{i+1}$ then applies the orientation at the next sample, so
+$\Delta q_i$ is only the turn made in between. Its axis
+$\hat{\mathbf u}(\Delta q_i)$ is a unit vector along the direction the
+segment turned about, and $\theta_i / \Delta t_i$ is the speed from Eqs. (2)
+and (3). Multiplying them gives the angular velocity $\boldsymbol\omega_i$: a
+vector that points along the axis and whose length is the speed
 [`world_angular_velocity()`]. Two nodes that move together show the same
 vector, direction included, which makes the match much sharper than with
 speed alone. A short trunk twist, for example, can no longer be matched to an
@@ -1072,8 +1084,11 @@ sample by sample and added up:
 C[k] = \sum_n a[n]\; b[n-k] \quad (4)
 ```
 
-where $a[n]$ and $b[n]$ are the two nodes' signals (each with its mean
-removed). This sum, the **cross-correlation**, is largest at the shift where
+where $a[n]$ is node $A$'s signal at grid step $n$, $b[n-k]$ is node $B$'s
+signal shifted by $k$ steps, and each signal has its mean removed first.
+When both signals rise and fall at the same moments, their products are
+mostly positive and the sum is large; when they do not line up, positive and
+negative products cancel. This sum, the **cross-correlation**, is largest at the shift where
 the two signals line up. That shift, converted to milliseconds, is the lag
 $L$ between the two signals. For the vector signal, the products of the three
 components are added together [`best_lag_seconds()`,
@@ -1090,9 +1105,25 @@ where $A_0$ and $B_0$ are the first timestamps of nodes $A$ and $B$. The
 first term puts back the difference in start times; the second is what the
 shared motion measured [`estimate_offset_drift()`].
 
-The shifts are 10 ms apart, but the true best shift usually falls between two
-of them. A parabola is fitted through the best score and its two neighbours,
-and its top gives the lag to about 1 ms.
+**The sub-sample lag.** The scores exist only at whole grid steps, 10 ms
+apart, so the best shift $\hat k$ is known only to the nearest 10 ms. The
+true lag usually falls between two steps (say 23.4 ms); a lag measured more
+finely than one grid step is a *sub-sample* lag. Near its top, any smooth
+peak is shaped like a parabola, so a parabola is fitted through the best
+score $y_0 = C[\hat k]$ and its two neighbours $y_{-1} = C[\hat k - 1]$ and
+$y_{+1} = C[\hat k + 1]$. Its top lies $\delta$ steps from $\hat k$:
+
+```math
+\delta = \frac{1}{2}\,\frac{y_{-1}-y_{+1}}{y_{-1}-2y_0+y_{+1}}, \qquad
+L = \frac{\hat k + \delta}{f_s} \quad (6)
+```
+
+where $f_s$ is the grid rate (100 Hz). If the two neighbours are equal,
+$\delta = 0$ and the peak is exactly at $\hat k$; if the right neighbour is
+higher, $\delta$ is positive and the peak moves towards it, up to half a
+step. This refines the lag from about 10 ms to about 1 ms. It is used
+wherever a lag is found: the vector match, the speed match, and each window
+of the drift fit [`lag_and_confidence()`, `vector_lag_and_confidence()`].
 
 ### 6.4 Confidence: did the nodes share motion?
 
@@ -1101,17 +1132,41 @@ independently, so each offset also gets a confidence. It is computed after
 node $B$'s signal is shifted by the lag found in §6.3.
 
 - **Vector signal (default).** The value is $c$, the match between node $A$'s
-  and node $B$'s angular-velocity vectors at that lag, scaled so that it runs
-  from −1 to 1. Nodes on different segments (say torso and arm) mostly move on
+  and node $B$'s angular-velocity vectors at that lag:
+
+  ```math
+  c = \frac{\sum_n \boldsymbol\omega_A[n]\cdot\boldsymbol\omega_B[n]}
+           {\sqrt{\sum_n \lvert\boldsymbol\omega_A[n]\rvert^2\;\sum_n \lvert\boldsymbol\omega_B[n]\rvert^2}} \quad (7)
+  ```
+
+  The top is the cross-correlation score at the lag: the dot product is
+  large when both nodes turn about the same axis at the same moment. The
+  bottom divides out how much each node moved, so $c$ runs from −1 to 1.
+  Nodes on different segments (say torso and arm) mostly move on
   their own, so $c$ stays low even when one shared sync movement pins the lag
-  down exactly. What matters is whether the best score **stands out**. The
-  match is accepted when the best score is at least 1.25 times the highest
-  score more than 0.5 s away (the peak ratio) and $c$ is at least 0.10
+  down exactly. What matters is whether the best score **stands out**:
+
+  ```math
+  \rho = \frac{C[\hat k]}{\max_{\lvert k - \hat k\rvert > 0.5\,\text{s}} C[k]} \quad (8)
+  ```
+
+  The peak ratio $\rho$ is the best score divided by the highest score at
+  any shift more than 0.5 s away from it. A value of 1 means another shift
+  matches just as well, so the lag is ambiguous. The match is accepted when
+  $\rho \ge 1.25$ and $c \ge 0.10$
   [`VECTOR_PEAK_RATIO_MIN`, `VECTOR_PEAK_EXCLUDE_S`,
   `VECTOR_CONFIDENCE_MIN`].
 - **Speed signal (fallback).** The value is $r$, the Pearson correlation
-  between node $A$'s and node $B$'s angular speed over the time both cover.
-  It is 1 when the two speeds rise and fall together and near 0 when the nodes
+  between node $A$'s and node $B$'s angular speed over the time both cover:
+
+  ```math
+  r = \frac{\sum_n \bigl(a[n]-\bar a\bigr)\bigl(b[n]-\bar b\bigr)}
+           {\sqrt{\sum_n \bigl(a[n]-\bar a\bigr)^2\;\sum_n \bigl(b[n]-\bar b\bigr)^2}} \quad (9)
+  ```
+
+  Here $a[n]$ is node $A$'s angular speed, $b[n]$ is node $B$'s angular speed
+  already shifted by the lag, and $\bar a$, $\bar b$ are their means. It has
+  the same shape as Eq. (7), with speeds in place of vectors. It is 1 when the two speeds rise and fall together and near 0 when the nodes
   share no motion. It ignores each signal's size, so a node that moves more
   than the other still scores high if they moved together. The match is
   accepted when $r$ is at least 0.40 [`CONFIDENCE_MIN`,
@@ -1186,9 +1241,9 @@ Each step uses a standard technique:
 |---|---|---|
 | Rotation angle between two orientations (Eq. 2) | Standard quaternion identity | Any quaternion text |
 | Finding the lag (Eq. 4) | Cross-correlation time-delay estimation | Knapp & Carter, *"The Generalized Correlation Method for Estimation of Time Delay,"* IEEE Trans. ASSP, 1976 |
-| Sub-sample lag | Parabolic peak interpolation | Common signal-processing practice (e.g. spectral peaks) |
+| Sub-sample lag (Eq. 6) | Parabolic peak interpolation | Common signal-processing practice (e.g. spectral peaks) |
 | Clock model (Eq. 1) | Offset plus linear drift | As used by network time protocols (NTP, PTP) |
-| Confidence | Pearson correlation | Standard statistics |
+| Confidence (Eqs. 7 and 9) | Normalized correlation; Pearson correlation | Standard statistics |
 
 Eq. (5) only puts back the different start times. The approach of aligning
 unsynchronized sensors through a shared movement is common for cameras,
@@ -1306,22 +1361,53 @@ flowchart LR
 
 </details>
 
-1. **Remove each sensor's mounting offset** (from `calibration.json`, §5.3),
-   which gives each bone's orientation in the world. Without calibration this
-   step is skipped and the joint is marked `clinical: false`.
-2. **Take the outer segment relative to the inner one** (the forearm relative
-   to the upper arm for the elbow, the relative rotation of §3.4.1). This
-   removes the motion they share, which is what makes a joint angle relative.
-3. **Express that rotation in the body's axes**: X forward, Y up along a
-   hanging limb, Z to the subject's right. These come from gravity and the
-   subject's facing at the freeze (the `anatomical_frame` block of
-   `calibration.json`). Without this step, a pure elbow bend would land in
-   whichever angle the compass direction happened to put it. If the facing is
-   not known, the joint is `clinical: false`.
+1. **Remove each sensor's mounting offset**, which gives each bone's
+   orientation in the world:
+
+   ```math
+   q_{\text{seg}}(t) = q_{WS}(t) \otimes q_{SB}
+   ```
+
+   $q_{WS}(t)$ is the sensor's orientation in the world at time $t$, as the
+   node logged it, and $q_{SB}$ is the fixed turn from the sensor to the bone
+   (the mounting offset in `calibration.json`, §5.3). Without calibration
+   $q_{SB}$ is "no turn" and the joint is marked `clinical: false`.
+2. **Take the outer segment relative to the inner one** (§3.4.1):
+
+   ```math
+   q_{\text{rel}}(t) = q_{\text{prox}}^{*}(t) \otimes q_{\text{dist}}(t)
+   ```
+
+   For the elbow, $q_{\text{prox}}$ is the upper arm and $q_{\text{dist}}$ the
+   forearm, both from step 1. Undoing the upper arm's orientation leaves only
+   how the forearm is turned relative to it, which removes the motion they
+   share. This is what makes a joint angle relative.
+3. **Express that rotation in the body's axes** (X forward, Y up along a
+   hanging limb, Z to the subject's right):
+
+   ```math
+   q_{\text{anat}}(t) = q_{WA}^{*} \otimes q_{\text{rel}}(t) \otimes q_{WA}
+   ```
+
+   $q_{WA}$ is the turn from the world's axes (north, up) to the body's axes
+   at the freeze, built from gravity and the subject's facing (the
+   `anatomical_frame` block of `calibration.json`). Placing $q_{\text{rel}}$
+   between $q_{WA}^{*}$ and $q_{WA}$ keeps the same rotation but describes it
+   about the body's axes instead of the world's. Without this step, a pure
+   elbow bend would land in whichever angle the compass direction happened to
+   put it. If the facing is not known, the joint is `clinical: false`.
 4. **Split the rotation into three angles** in the joint's Euler sequence
-   (§3.4), and keep the one that corresponds to each clinical movement. The
-   sequences and the position of each movement in them come from
-   `motion_capabilities.JOINTS`, the single body model.
+   (§3.4):
+
+   ```math
+   (\alpha, \beta, \gamma) = \operatorname{euler}\bigl(q_{\text{anat}}(t),\ \text{sequence}\bigr)
+   ```
+
+   $\alpha$, $\beta$ and $\gamma$ are the first, second and third turns of the
+   sequence. Each movement takes one of them: for the elbow (`ZXY`), $\alpha$
+   is flexion/extension and $\gamma$ is pronation/supination. The sequences
+   and which angle each movement takes come from `motion_capabilities.JOINTS`,
+   the single body model.
 
 Because calibration makes the relative rotation zero in the freeze, a
 calibrated angle is measured from the freeze pose.
@@ -1849,10 +1935,15 @@ python tools/evaluation/compare_paths.py --model $RAJ                    # Rajag
 python tools/evaluation/compare_paths.py --model $TSM --truth-model $RAJ # Thoracoscapular
 ```
 
-### 8.7 Appendix: OpenSense feasibility and partial montages (2026-09-25)
+### 8.7 Earlier study: what a partial montage can recover (2026-09-25)
 
-An earlier study, on synthetic data with known true angles, asked what
-OpenSense can recover when only some of the nodes are worn
+This study came before the solver comparison above and asked a different
+question. Its main result, finding 4, supports the rule in
+[§3.1](#31-why-a-montage-is-required) that a joint needs a node on both of its
+segments.
+
+It used synthetic data with known true angles to see what OpenSense
+can recover when only some of the nodes are worn
 [`tools/evaluation/opensense_feasibility.py`]. Setup: the Rajagopal OpenSense
 model (legs, lumbar spine and pelvis position locked); a 20 s session at
 60 Hz with every arm movement at once (shoulder flexion to 140°, abduction
