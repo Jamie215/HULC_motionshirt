@@ -10,8 +10,12 @@ self-contained HTML review page of the movement.
 The project has two halves that meet at one documented hand-over format, the
 **capture folder**:
 
-<!-- diagram: system
-```mermaid
+![The two halves of the project: the nodes record on the body, the laptop (later a mobile app) offloads them over Bluetooth into one capture folder per block, and the analysis turns each folder into a block check and a review page](docs/img/diagrams/system.png)
+
+<!-- diagram: system -->
+<details><summary>Mermaid source</summary>
+
+```text
 flowchart LR
     subgraph W["The wearable (firmware/)"]
         N1["Node: torso"]
@@ -32,9 +36,8 @@ flowchart LR
     M -.-> C
     C --> A --> B & V
 ```
--->
 
-![The two halves of the project: the nodes record on the body, the laptop (later a mobile app) offloads them over Bluetooth into one capture folder per block, and the analysis turns each folder into a block check and a review page](docs/img/diagrams/system.png)
+</details>
 
 **Where it is heading:** the nodes will hand their logs to a **mobile app**
 that stores every block during a collection period; afterwards the whole

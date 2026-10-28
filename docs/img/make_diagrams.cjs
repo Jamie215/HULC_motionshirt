@@ -3,19 +3,24 @@
 //
 //   node docs/img/make_diagrams.cjs
 //
-// Each diagram's Mermaid source is kept in the Markdown, in an HTML comment
-// just above its image:
-//
-//   <!-- diagram: name
-//   ```mermaid
-//   flowchart LR
-//       ...
-//   ```
-//   -->
+// Each diagram's Mermaid source is kept in the Markdown, in a collapsed
+// section just below its image:
 //
 //   ![...](img/diagrams/name.png)
 //
-// Edit the source in the comment, then run this script and commit the new
+//   <!-- diagram: name -->
+//   <details><summary>Mermaid source</summary>
+//
+//   ```text
+//   flowchart LR
+//       ...
+//   ```
+//
+//   </details>
+//
+// (The source is marked `text`, not `mermaid`, so that GitHub shows it as
+// code instead of drawing it.)
+// Edit the source there, then run this script and commit the new
 // image. The diagrams are drawn as images because GitHub's own Mermaid
 // rendering cuts off longer labels.
 //
@@ -41,7 +46,7 @@ const MERMAID_CDN = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.mi
 const jobs = [];
 for (const doc of DOCS) {
   const text = fs.readFileSync(path.join(REPO, doc), 'utf8');
-  const re = /<!-- diagram: ([\w-]+)\n```mermaid\n([\s\S]*?)```\n-->/g;
+  const re = /<!-- diagram: ([\w-]+) -->\n<details><summary>Mermaid source<\/summary>\n\n```text\n([\s\S]*?)```/g;
   let m;
   while ((m = re.exec(text))) jobs.push({ name: m[1], src: m[2], doc });
 }
