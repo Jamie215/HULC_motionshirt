@@ -167,6 +167,48 @@ each one with your own value, as explained below the table.
 - `--facing-deg`: no torso node and too little elbow bending
 - `--no-opensense`
 
+### Example: two nodes on the right arm, from enrolling to the first block
+
+Type `hulc-ms` as shown above for your installation. The example uses an
+upper-arm node and a forearm node for participant `S01`; change the
+segments, the number of nodes and the IDs to suit your session.
+
+**1. Enroll the nodes (once per set of nodes).** Power on only the node that
+the prompt asks for, press Enter, and type how the node is marked (for
+example "blue tape, 485C"). Repeat for the second node.
+
+```bash
+hulc-ms nodes enroll --segments upper_arm_r,forearm_r
+hulc-ms nodes read-segments          # check which segment each node stores
+```
+
+**2. Erase the nodes before the first block.**
+
+```bash
+hulc-ms nodes erase --count 2
+```
+
+**3. Record the block.** Strap the nodes on, then the sync movement, the
+freeze and the task. No commands are needed while recording.
+
+**4. Offload, analyze and erase.** Take the nodes off and lay them flat for
+about 10 s so that they are idle, then:
+
+```bash
+hulc-ms nodes offload --count 2 --out-dir ./capture/S01_block1 --subject S01
+hulc-ms analyze --capture-dir ./capture/S01_block1 --outdir ./out/S01_block1
+hulc-ms nodes erase --count 2
+```
+
+Each node should report `COMPLETE` after the offload; if one does not, run
+the same offload command again. The analysis prints the block check at the
+end, and the review page is `./out/S01_block1/session.html` (or drop the
+`./capture/S01_block1` folder on the HULC-MS app instead of running
+`analyze`).
+
+**5. Next block.** Re-mount the nodes and repeat steps 3 and 4 with a new
+folder name, for example `./capture/S01_block2`.
+
 ---
 
 ## Repository layout
