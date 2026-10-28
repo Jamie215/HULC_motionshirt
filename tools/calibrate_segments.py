@@ -6,7 +6,7 @@ Turns the aligned multi-node stream (reconcile_nodes.py output) into an
 anatomically-referenced one, by solving the ONE thing the shared world frame does
 not give us: how each sensor housing sits rotated/tilted on its bone. That
 per-segment **mounting offset** is what flips every joint angle / ROM number from
-"relative only" to clinical (see docs/TECHNICAL_REFERENCE.md §5.4).
+"relative only" to clinical (see docs/TECHNICAL_REFERENCE.md §5.3).
 
 Why this is a mounting solve, not a "resting quaternion" capture
 ---------------------------------------------------------------

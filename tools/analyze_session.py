@@ -26,7 +26,7 @@ Offload names each file by node id (e.g. HULC-IMU-485C.bin), so this tool
 resolves every node's log from --capture-dir and feeds reconcile the files in
 the RIGHT order.
 Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
-its own folder — see docs/TECHNICAL_REFERENCE.md §5.5, the recording protocol).
+its own folder — see docs/TECHNICAL_REFERENCE.md §5.4, the recording protocol).
 
 Usage (`hulc-ms analyze …` runs this; `python tools/analyze_session.py run …` too)
 -----
