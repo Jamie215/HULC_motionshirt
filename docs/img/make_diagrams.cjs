@@ -20,6 +20,7 @@
 //
 // (The source is marked `text`, not `mermaid`, so that GitHub shows it as
 // code instead of drawing it.)
+//
 // Edit the source there, then run this script and commit the new
 // image. The diagrams are drawn as images because GitHub's own Mermaid
 // rendering cuts off longer labels.
