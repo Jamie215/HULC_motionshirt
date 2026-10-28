@@ -1308,12 +1308,25 @@ presented as a solid one.
   review page these rows are dimmed in the raw view. Calibration is what
   turns a sensor's orientation into an *anatomical* angle
   ([§5.3](#53-calibration-and-the-time-offset)).
-- **Angles are unwrapped before measuring a range.** Angles wrap around at
-  ±180°, so a real sweep through 180° would otherwise look like a jump of
-  nearly 360°. The angle series is unwrapped first (`np.unwrap`), so the range
-  reflects the real movement, then shifted by whole turns so its median sits
-  within ±180°. A movement with undefined stretches (§7.2) is unwrapped only
-  within each defined stretch [`unwrap_runs_deg`].
+- **Angles are unwrapped before measuring a range.** An angle is reported
+  between −180° and +180°, so a real sweep through 180° would otherwise look
+  like a jump of nearly 360°: 170°, 179°, −178° is really 170°, 179°, 182°.
+  Unwrapping goes through the series and, wherever one sample differs from
+  the previous one by more than 180°, adds or subtracts 360° from it and every
+  later sample (`np.unwrap`). The range then reflects the real movement. The
+  whole series is then shifted by whole turns so that its median lies within
+  ±180°:
+
+  ```math
+  \theta'[n] = \theta[n] - 360^\circ \cdot \operatorname{round}\!\Bigl(\frac{\operatorname{median}(\theta)}{360^\circ}\Bigr)
+  ```
+
+  where $\theta[n]$ is the unwrapped angle at sample $n$. This only removes
+  whole turns, so it never moves the zero. A movement with undefined
+  stretches (§7.2) is unwrapped only within each defined stretch, each one
+  shifted on its own, because the angle inside an undefined stretch is
+  arbitrary and unwrapping through it would add false turns
+  [`unwrap_runs_deg`].
 - **Implausible values are flagged.** Every movement gets a plausibility check
   (§7.3): a range of more than a full turn, sample-to-sample jumps larger than
   `JUMP_MAX_DEG`, or (when the anatomical axes are known) more than 2% of
@@ -1417,11 +1430,25 @@ Some details:
 - **The wrist uses the hand's own neutral frame.** In the freeze the palms
   face the thighs, which is the hand turned 90° about the forearm
   [`NEUTRAL_FOREARM_DEG`] from the palms-forward position that the wrist's
-  `ZXY` sequence assumes. Wrist rotations are turned back by that angle
-  before the split, so wrist flexion reads as flexion and not as deviation.
-- **Left and right read the same way.** A left joint's rotation is mirrored
-  before the split (`mirror_left`: `[w,x,y,z] → [w,−x,−y,z]`), so every
-  movement has the same sign on both sides:
+  `ZXY` sequence assumes. Splitting the wrist in the body's axes would then
+  read flexion as deviation. For the wrist, step 3 therefore uses
+  $q_{WA} \otimes q_N$ in place of $q_{WA}$, where $q_N$ is a 90° turn about
+  Y (−90° on the left) [`joint_frame_quat`]. The rotation is then described
+  in the hand's own axes, so wrist flexion reads as flexion. The elbow and
+  shoulder are unaffected.
+- **Left and right read the same way.** Both sides share one set of body
+  axes, with Z pointing to the subject's right. A left elbow bend is then the
+  mirror image of a right one: flexion (about Z) has the same sign, but
+  turns about X and Y have the opposite sign. Before the split, a left
+  joint's rotation is reflected through the body's midline:
+
+  ```math
+  (w,\ x,\ y,\ z) \;\rightarrow\; (w,\ -x,\ -y,\ z)
+  ```
+
+  Flipping the X and Y parts reverses the turns about those axes and keeps
+  the turn about Z, so a left joint then splits exactly like a right one
+  [`mirror_left`]. Every movement has the same sign on both sides:
 
   | Joint | DOF | Positive = |
   |---|---|---|
@@ -1433,16 +1460,27 @@ Some details:
   | shoulder | `elevation` | raised (always ≥ 0) |
   | shoulder | `axial_rot` | internal rotation |
 
-- **Poses where an angle is undefined.** Every three-angle split has a pose
-  where two of its axes line up and two angles can no longer be told apart
-  ("gimbal lock"). For `YXY` this is the middle angle near 0° or 180° (for the
-  shoulder, the arm at the side or overhead); for `ZXY`, the middle angle near
-  ±90°. Within 10° of that pose [`SINGULARITY_GUARD_DEG`], the affected angles
-  are marked undefined (`NaN`) for those samples, so a joint resting there
-  never reports a false 180° swing. The shoulder's axial rotation is reported
-  as the sum of the two outer angles, which stays defined with the arm at the
-  side, so only the plane of elevation is masked there. Affected movements
-  carry `defined_frac` (the share of samples that were defined) and a
+- **How the three angles are read, and where they fail.** The split works
+  on $R$, the 3 × 3 rotation matrix of $q_{\text{anat}}$, whose columns are
+  the distal segment's X, Y and Z axes described in the proximal segment's
+  axes. For `ZXY` [`_euler_ZXY`] (rows and columns numbered from 1):
+
+  ```math
+  \beta = \arcsin R_{32}, \qquad
+  \alpha = \operatorname{atan2}\bigl(-R_{12},\ R_{22}\bigr), \qquad
+  \gamma = \operatorname{atan2}\bigl(-R_{31},\ R_{33}\bigr)
+  ```
+
+  $\beta$ is the middle turn (about X), and $\alpha$ and $\gamma$ the first
+  and third. The two `atan2` pairs both shrink with $\cos\beta$, so when the
+  middle angle nears ±90° the first and third axes line up, both pairs
+  approach 0/0, and $\alpha$ and $\gamma$ can no longer be told apart
+  ("gimbal lock"). For `YXY` the same happens when the middle angle nears 0°
+  or 180°, which for the shoulder is the arm at the side or overhead
+  [`_euler_YXY`]. Within 10° of such a pose [`SINGULARITY_GUARD_DEG`], the
+  affected angles are marked undefined (`NaN`) for those samples, so a joint
+  resting there never reports a false 180° swing. Affected movements carry
+  `defined_frac` (the share of samples that were defined) and a
   `singularity_note`.
 
 What the chain produces for one joint, as the review page graphs it (right
@@ -1467,31 +1505,69 @@ joint has `key`, `name`, `clinical`, `decomposition` (the Euler sequence),
 | **Plausibility** | Whether the numbers look physically possible | — | The limits check needs the facing |
 
 How each is computed, with its field in `metrics.json` and its function in
-`metrics.py`:
+`metrics.py`. Here $\theta[n]$ is the angle of one movement at sample $n$
+and $t[n]$ its time:
 
 - **Angle** (`dofs[]`): the split of §7.2, unwrapped as in §7.1.
 - **Range of motion** (`dofs[].rom`: `min_deg`, `max_deg`, `range_deg`,
-  `median_deg`): range = largest − smallest angle [`_rom`]. `null` if the
-  movement is undefined for the whole session.
+  `median_deg`) [`_rom`]:
+
+  ```math
+  \text{range} = \max_n \theta[n] - \min_n \theta[n]
+  ```
+
+  over the defined samples. The median is the middle value, which shows
+  where the joint spent most of its time. `null` if the movement is
+  undefined for the whole session.
 - **Angular velocity** (`dofs[].velocity`: `peak_deg_s`, `mean_abs_deg_s`,
-  `rms_deg_s`): the rate of change of the angle, summarized as its peak,
-  mean and RMS [`velocity_stats`]. It is computed only within defined
-  stretches, so a masked gap never creates a false peak.
-- **Repetitions** (`reps`: `count`, `primary_dof`, `bouts[]`): one
-  repetition is one out-and-back swing of the joint's main movement of at
-  least 15° [`REP_MIN_AMPLITUDE_DEG`] or 25% of the session's range,
-  whichever is larger [`find_rep_bouts`]. Each swing is measured from its own
-  turning points, so a set of small curls still counts next to a big
-  movement elsewhere. A pause longer than 5 s [`REP_PAUSE_S`] or a swing
-  slower than 8 s [`REP_MAX_LEG_S`] ends a set (a *bout*), so curls, then
-  rotations, then curls show as separate sets. Each bout has its start, end,
-  count and mean amplitude.
-- **Plausibility** (`dofs[].plausibility`): flags a range over 360°, a jump
-  of more than 120° between samples [`JUMP_MAX_DEG`], or more than 2% of
-  samples outside the movement's physiological limits
-  [`PLAUSIBLE_OUTSIDE_FRAC`; the limits are `plausible_deg` in
-  `motion_capabilities`] [`check_plausibility`]. A failing movement adds a
-  `plausibility_warning` to its joint.
+  `rms_deg_s`) [`velocity_stats`]. The velocity at each sample is the change
+  in angle across its two neighbours divided by the time between them:
+
+  ```math
+  v[n] = \frac{\theta[n+1] - \theta[n-1]}{t[n+1] - t[n-1]}
+  ```
+
+  It is summarized three ways: the peak, $\max \lvert v\rvert$; the mean
+  speed, the average of $\lvert v\rvert$; and the RMS,
+  $\sqrt{\operatorname{mean}(v^2)}$, which weights fast movements more than
+  the mean does. The velocity is computed only within defined stretches, so
+  a gap across an undefined stretch never creates a false peak.
+- **Repetitions** (`reps`: `count`, `primary_dof`, `bouts[]`)
+  [`find_rep_bouts`]. First, the smallest swing that counts is set from the
+  session itself:
+
+  ```math
+  \text{threshold} = \max\bigl(15^\circ,\ 0.25\,(P_{98} - P_{2})\bigr)
+  ```
+
+  where $P_{98}$ and $P_{2}$ are the angles that 98% and 2% of the samples lie
+  below, so the range ignores the most extreme 2% at each end
+  [`REP_MIN_AMPLITUDE_DEG`, `rep_threshold`]. The angle is then traced for its
+  turning points: a peak or trough counts only once the angle has come back
+  from it by at least the threshold, so wiggles smaller than the threshold
+  never count. One repetition is two legs between turning points, out and
+  back. For example, curls from 10° to 120° and back set a threshold of about
+  28° (a quarter of 110°) and give one repetition each, while a 5° tremor at the top gives none. Each
+  swing is measured from its own turning points, so a set of small curls
+  still counts next to a big movement elsewhere in the session.
+
+  Repetitions are grouped into sets (*bouts*). A pause at a turning point
+  longer than 5 s [`REP_PAUSE_S`], or one leg slower than 8 s
+  [`REP_MAX_LEG_S`], ends a bout, so curls, then rotations, then curls show as
+  three sets. Each bout has its start and end time, its count, and its mean
+  amplitude (the average size of its legs); `count` is the total.
+- **Plausibility** (`dofs[].plausibility`) [`check_plausibility`]. A
+  movement fails if any of these holds:
+  - its range is more than 360°, which no joint can turn;
+  - $\lvert\theta[n] - \theta[n-1]\rvert > 120^\circ$ between two samples
+    (`jumps`) [`JUMP_MAX_DEG`];
+  - with the facing known, more than 2% of samples lie outside the
+    movement's physiological limits $[\theta_{lo}, \theta_{hi}]$
+    (`outside_limits_frac`, the number of samples outside divided by the
+    total) [`PLAUSIBLE_OUTSIDE_FRAC`; the limits are `plausible_deg` in
+    `motion_capabilities`].
+
+  A failing movement adds a `plausibility_warning` to its joint.
 
 A `clinical:false` joint also carries a `warning` that spells out that its
 angles are relative only.
@@ -1506,9 +1582,34 @@ abduction:
 
 | Key | Name | Meaning |
 |---|---|---|
-| `plane_elev` | Plane of elevation | *Which direction* the arm is raised in: 0° = to the side (abduction, frontal plane), +90° = forward (flexion), −90° = backward (extension). Computed as the raw first YXY angle + 180°, the equivalent alternative form of the same rotation, so that elevation can be reported as positive. Undefined with the arm at the side or overhead |
+| `plane_elev` | Plane of elevation | *Which direction* the arm is raised in: 0° = to the side (abduction), +90° = forward (flexion), −90° = backward (extension). Undefined with the arm at the side or overhead |
 | `elevation` | Elevation | *How far* the arm is raised, in whichever direction: raising it 60° forward or 60° to the side both read 60°. The main movement |
-| `axial_rot` | Axial rotation (internal / external) | Twist about the upper arm's long axis, internal rotation positive: the raw first + third YXY angles. The third angle on its own changes with the plane (20° of internal rotation reads +20° with the arm out to the side but −70° with it forward); the sum reads +20° in both, and stays defined with the arm at the side. Undefined only overhead |
+| `axial_rot` | Axial rotation (internal / external) | Twist about the upper arm's long axis, internal rotation positive. Undefined only overhead |
+
+They are read from the three `YXY` angles $(\alpha, \beta, \gamma)$ of §7.2
+as [`_shoulder_clinical`]:
+
+```math
+\text{plane of elevation} = \alpha + 180^\circ, \qquad
+\text{elevation} = \beta, \qquad
+\text{axial rotation} = \alpha + \gamma
+```
+
+- **Plane of elevation.** The same rotation can be written two ways:
+  $(\alpha, \beta, \gamma)$ or $(\alpha + 180^\circ, -\beta, \gamma + 180^\circ)$.
+  In the first form, $\beta$ is always between 0° and 180°, but its first
+  angle is 180° away from the usual clinical reading. The second form's
+  first angle gives that reading (0° at abduction, +90° at forward flexion),
+  but its elevation is negative. The analysis therefore takes the
+  plane from the second form ($\alpha + 180^\circ$) and the elevation from the
+  first ($\beta$, always positive).
+- **Elevation** is the middle angle $\beta$ directly.
+- **Axial rotation** is the sum of the two outer angles. The third angle on
+  its own changes with the plane: 20° of internal rotation reads +20° with the
+  arm out to the side but −70° with it forward. The sum reads +20° in both.
+  It also stays defined with the arm at the side, where the two outer axes
+  line up and only their sum can be measured, so only the plane of elevation
+  is masked there.
 
 ---
 
@@ -1528,32 +1629,75 @@ are valid with or without calibration. Elevation and posture dwell use the
 | **Smoothness (SPARC)** | How smooth or jerky the movement was | unitless (≤ 0) | No |
 | **Posture dwell** | The share of time spent at each elevation | fraction per band | Yes: reported only when calibrated |
 
-How each is computed:
+How each is computed. Here $q_n$ is the segment's orientation at sample $n$
+and $\Delta t_n$ the time to the next sample:
 
-- **Angular speed** (`angular_speed`: `mean_deg_s`, `peak_deg_s`): the angle
-  turned between consecutive samples divided by the time between them, as in
-  §6.2 [`segment_angular_speed`].
-- **Angular travel** (`travel`: `travel_deg`, `active_time_frac`): all the
-  turning added up over the session, in any direction (the angular speed
-  integrated over time). `active_time_frac` is the share of time faster than
-  20°/s [`ACTIVE_SPEED_DEG_S`]. Both are session totals, so they are valid
-  even when two limbs are not time-aligned [`segment_travel_deg`].
-- **Elevation** (`elevation`: min, max, range, median and mean in degrees):
-  the angle between the bone's long axis and vertical, at each sample
-  [`segment_elevation_series`]. Without calibration it is the board's own
-  tilt, which is real but not tied to the bone.
-- **Smoothness** (`smoothness_sparc`): the spectral arc length of the speed
-  (Balasubramanian et al. 2015) [`sparc`]. The speed over time is split into
-  its frequencies (Fourier transform), and the length of the resulting
-  frequency curve is measured up to a cutoff of at most 10 Hz
-  [`SPARC_FC_MAX_HZ`, `SPARC_AMP_THRESH`]. A jerky movement has more
-  high-frequency content, which makes the curve longer and the value more
-  negative: about −1.5 is smooth, −5 or below is jerky. `null` when there is
-  almost no movement.
-- **Posture dwell** (`posture_dwell`: `edges_deg`, `fraction`): the share of
-  the session spent in each 30° elevation band from 0° to 180°
-  [`POSTURE_BIN_EDGES_DEG`], weighted by the time between samples so that
-  uneven sampling stays correct [`posture_dwell`].
+- **Angular speed** (`angular_speed`: `mean_deg_s`, `peak_deg_s`)
+  [`segment_angular_speed`]: the angle turned between consecutive samples,
+  divided by the time between them, as in Eqs. (2) and (3) of §6.2:
+
+  ```math
+  \theta_n = 2\arccos\lvert q_n \cdot q_{n+1}\rvert, \qquad \omega_n = \frac{\theta_n}{\Delta t_n}
+  ```
+
+  It measures how much the bone turned, not where it points, so it does not
+  depend on how the node is mounted. The mean and peak of $\omega_n$ are
+  reported, and the series also feeds SPARC.
+- **Angular travel** (`travel`: `travel_deg`, `active_time_frac`)
+  [`segment_travel_deg`]:
+
+  ```math
+  \text{travel} = \sum_n \theta_n, \qquad
+  \text{active time fraction} = \frac{\sum_{n:\ \omega_n > 20^\circ/\text{s}} \Delta t_n}{\sum_n \Delta t_n}
+  ```
+
+  Travel adds up every turn, in any direction: an arm that swings 30° forward
+  and 30° back has travelled 60°. The active time fraction is the time spent
+  turning faster than 20°/s [`ACTIVE_SPEED_DEG_S`] divided by the total time.
+  Both are session totals, so they are valid even when two limbs are not
+  time-aligned.
+- **Elevation** (`elevation`: min, max, range, median and mean in degrees)
+  [`segment_elevation_series`]:
+
+  ```math
+  e_n = \arccos R_{33}(q_n)
+  ```
+
+  $R(q_n)$ is the rotation matrix of the calibrated segment orientation. The
+  calibrated segment's Z axis is the one that pointed straight up at the
+  freeze (along the hanging limb), and $R_{33}$ is the vertical component of
+  that axis now, which is the cosine of its angle from vertical. A hanging
+  arm reads 0°, an arm raised to horizontal 90°, and an arm overhead 180°.
+  Without calibration it is the board's own tilt, which is real but not tied
+  to the bone.
+- **Smoothness** (`smoothness_sparc`) [`sparc`], the spectral arc length
+  (Balasubramanian et al. 2015). The speed $\omega_n$ over the session is
+  split into the frequencies it contains (Fourier transform), giving a
+  magnitude $\lvert V(f)\rvert$ at each frequency $f$. Then:
+
+  ```math
+  \hat V(f) = \frac{\lvert V(f)\rvert}{\lvert V(0)\rvert}, \qquad
+  \text{SPARC} = -\sum_k \sqrt{\Bigl(\frac{f_{k+1}-f_k}{f_c}\Bigr)^2 + \bigl(\hat V(f_{k+1}) - \hat V(f_k)\bigr)^2}
+  ```
+
+  $\hat V$ is the spectrum scaled so that it starts at 1, and the sum is the
+  length of its curve, with the frequency axis scaled to run from 0 to 1. The
+  cutoff $f_c$ is the last frequency, up to 10 Hz, where $\hat V$ is still at
+  least 0.05 [`SPARC_FC_MAX_HZ`, `SPARC_AMP_THRESH`]. A smooth movement has
+  its spectrum concentrated at low frequencies, so the curve drops quickly
+  and is short; a jerky movement has many bumps at higher frequencies, so the
+  curve is longer and the value more negative. About −1.5 is smooth, and −5
+  or below is jerky. `null` when there is almost no movement.
+- **Posture dwell** (`posture_dwell`: `edges_deg`, `fraction`)
+  [`posture_dwell`]: for each 30° elevation band $b$ from 0° to 180°
+  [`POSTURE_BIN_EDGES_DEG`],
+
+  ```math
+  \text{fraction}_b = \frac{\sum_{n:\ e_n \in b} \Delta t_n}{\sum_n \Delta t_n}
+  ```
+
+  Each sample counts for the time it covers rather than as one sample, so
+  uneven sampling is weighted correctly.
 
 ---
 
@@ -1575,24 +1719,53 @@ and/or a `note`.
 How each is computed:
 
 - **Symmetry** (`symmetry_index`, `rom_ratio`, `left_rom_deg`,
-  `right_rom_deg`, `dof`): from each side's range on the main movement,
-  $\text{symmetry index} = 100\,\lvert L-R\rvert / \bigl(\tfrac12(\lvert L\rvert+\lvert R\rvert)\bigr)$,
-  which is 0 for identical sides and up to 200 for completely different
-  ones; `rom_ratio` is the smaller range divided by the larger. `clinical`
-  when both sides are calibrated.
+  `right_rom_deg`, `dof`), from each side's range of motion $L$ and $R$ on
+  the joint's main movement [`_symmetry_index`]:
+
+  ```math
+  \text{symmetry index} = 100\,\frac{\lvert L-R\rvert}{\tfrac12\bigl(\lvert L\rvert+\lvert R\rvert\bigr)}, \qquad
+  \text{ROM ratio} = \frac{\min(L, R)}{\max(L, R)}
+  ```
+
+  The index is the difference between the sides as a percentage of their
+  average: 0 for identical sides, up to 200 for completely different ones.
+  For example, a left elbow range of 100° and a right of 80° give
+  $100 \times 20 / 90 = 22$ and a ratio of 0.8. `clinical` when both sides
+  are calibrated.
 - **Activity asymmetry** (`asymmetry_index`, `use_ratio`,
-  `active_time_ratio`, `left_travel_deg`, `right_travel_deg`): from each
-  side's angular travel, $\text{asymmetry index} = 100\,(R-L)/(R+L)$, from −100
-  to +100, positive when the right side is used more. It is a session total,
-  so it is valid even when the clock alignment is weak (its `note` says so),
-  which makes it the most useful measure for sparse montages.
-- **Coordination** (`pair`, `peak_r`, `lag_s`): the cross-correlation
-  (§6.3) of the two joints' main movements, with each scaled so the score
-  runs from −1 to 1 [`cross_correlation`]. `peak_r` is the best score and
-  `lag_s` its delay; a positive lag means the second joint follows the first.
+  `active_time_ratio`, `left_travel_deg`, `right_travel_deg`), from each
+  side's angular travel $L$ and $R$ (§7.4):
+
+  ```math
+  \text{asymmetry index} = 100\,\frac{R-L}{R+L}, \qquad
+  \text{use ratio} = \frac{R}{L}
+  ```
+
+  The index runs from −100 (only the left side moved) to +100 (only the
+  right), with 0 for equal use. For example, 3000° of travel on the right and
+  1000° on the left give +50 and a use ratio of 3. `active_time_ratio` is the
+  right side's active time fraction divided by the left's. These are session
+  totals, so they are valid even when the clock alignment is weak (the
+  `note` says so), which makes this the most useful measure for sparse
+  montages.
+- **Coordination** (`pair`, `peak_r`, `lag_s`), from the two joints' main
+  movements $a[n]$ and $b[n]$ [`cross_correlation`]. Each is first centred on
+  its mean and scaled to a size of 1, giving $\hat a$ and $\hat b$; then, as
+  in §6.3:
+
+  ```math
+  r(k) = \sum_n \hat a[n]\;\hat b[n+k]
+  ```
+
+  `peak_r` is the value of $r(k)$ furthest from zero, between −1 and 1: near
+  1 when the joints move together, near −1 when one bends while the other
+  straightens, near 0 when they are unrelated. `lag_s` is its shift $k$ in
+  seconds; a positive lag means the second joint follows the first.
 - **Trunk compensation** (`trunk_travel_deg`, `trunk_elevation_range_deg`):
-  the torso segment's travel and elevation range. `clinical` when the torso
-  is calibrated; otherwise the `note` marks the movement as relative.
+  the torso segment's angular travel (§7.4) and its elevation range,
+  $\max e_n - \min e_n$. A trunk that leans to help lift the arm shows up as
+  a larger travel and range. `clinical` when the torso is calibrated;
+  otherwise the `note` marks the movement as relative.
 
 ---
 
