@@ -12,6 +12,7 @@
 //       ...
 //   ```
 //   -->
+//
 //   ![...](img/diagrams/name.png)
 //
 // Edit the source in the comment, then run this script and commit the new

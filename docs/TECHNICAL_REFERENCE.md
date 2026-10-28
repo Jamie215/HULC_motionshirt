@@ -62,6 +62,7 @@ flowchart LR
     class M todo
 ```
 -->
+
 ![The system today and the target: the nodes record to flash, the laptop (today) or the planned mobile app offloads them into capture folders, and the analysis on a computer produces the block check, metrics and review page](img/diagrams/system-target.png)
 
 Solid lines exist today; dashed lines are the target.
@@ -116,6 +117,7 @@ flowchart TD
     ME --> BC["analyze_session<br/>the block check<br/>(reads every stage's output)"] --> J[/"block_check.json"/]
 ```
 -->
+
 ![The analysis pipeline: the capture folder goes through reconcile, the capability check, calibration and metrics to the review page and the block check, with the optional OpenSim solve on the side](img/diagrams/pipeline.png)
 
 | Stage | Module | What it does |
@@ -308,6 +310,7 @@ flowchart LR
     T(["torso"]) ---|shoulder| UA(["upper_arm"]) ---|elbow| FA(["forearm"]) ---|wrist| H(["hand"])
 ```
 -->
+
 ![The joints between segments: torso and upper arm meet at the shoulder, upper arm and forearm at the elbow, forearm and hand at the wrist](img/diagrams/joints.png)
 
 Each rounded box is a node on a segment, and each labelled link is a joint.
@@ -510,6 +513,7 @@ stateDiagram-v2
     end note
 ```
 -->
+
 ![The node state machine: IDLE wakes to ACTIVE on motion, ACTIVE drops to STATIC after 10 s still or 3 s lying flat, STATIC goes to IDLE after 60 s still or 5 more seconds lying flat, and a full flash goes straight to IDLE](img/diagrams/node-states.png)
 
 How these timings shape the recording protocol is described in
@@ -607,6 +611,7 @@ sequenceDiagram
     C->>N: write 0x03 (erase), only after the transfer is verified
 ```
 -->
+
 ![The offload sequence between the central and a node: start, header with the total length, framed chunks, re-requests for missing ranges, then erase only after the transfer is verified](img/diagrams/offload.png)
 
 1. Connect to a node in IDLE (status byte 0 = 0) and subscribe to A0010004.
@@ -987,6 +992,7 @@ flowchart LR
     S & F --> B["Every block starts with:<br/>sync movement, then freeze"]
 ```
 -->
+
 ![What changes the time offset and the mounting calibration between blocks, and how the sync movement and the freeze restore them](img/diagrams/time-vs-mount.png)
 
 ### 5.4 Calibration: the sensor-to-segment solve
@@ -1097,6 +1103,7 @@ gantt
     Calibrated and measured       :active, b1, 30, 81
 ```
 -->
+
 ![An example composition of a block over about 95 seconds: strap on, sync movement, freeze, two task sets with a rest, nodes taken off; the analysis window runs from the freeze to the nodes coming off](img/diagrams/block-timeline.png)
 
 ##### The freeze pose (N-pose)
@@ -1206,6 +1213,7 @@ flowchart TD
     D --> M["Map every t_ms onto one timeline (6.6)<br/>→ aligned.csv + aligned.quality.json"]
 ```
 -->
+
 ![How the clocks are aligned: world-frame angular velocity per node, cross-correlation against the reference node, a peak test with a fall-back to angular speed, then the offset, an optional drift fit and one shared timeline](img/diagrams/clock-alignment.png)
 
 ### 6.1 The problem
@@ -2478,6 +2486,7 @@ flowchart LR
     PR --> M["Merge"] --> TAG["Tag vX.Y.Z"] --> REL["GitHub Release<br/>(builds attached)"] --> LAB["Lab machines<br/>download hulc-ms"]
 ```
 -->
+
 ![Changing the software: branch and edit, try it, run the selftests and the regression library, open a pull request, merge, tag a version, and the lab machines download the release](img/diagrams/release.png)
 
 1. **Branch**, then edit `tools/`:

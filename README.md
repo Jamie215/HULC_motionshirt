@@ -33,6 +33,7 @@ flowchart LR
     C --> A --> B & V
 ```
 -->
+
 ![The two halves of the project: the nodes record on the body, the laptop (later a mobile app) offloads them over Bluetooth into one capture folder per block, and the analysis turns each folder into a block check and a review page](docs/img/diagrams/system.png)
 
 **Where it is heading:** the nodes will hand their logs to a **mobile app**
