@@ -10,8 +10,8 @@ self-contained HTML review page of the movement.
 The project has two halves that meet at one documented hand-over format, the
 **capture folder**:
 
+<!-- diagram: system
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     subgraph W["The wearable (firmware/)"]
         N1["Node: torso"]
@@ -32,6 +32,8 @@ flowchart LR
     M -.-> C
     C --> A --> B & V
 ```
+-->
+![The two halves of the project: the nodes record on the body, the laptop (later a mobile app) offloads them over Bluetooth into one capture folder per block, and the analysis turns each folder into a block check and a review page](docs/img/diagrams/system.png)
 
 **Where it is heading:** the nodes will hand their logs to a **mobile app**
 that stores every block during a collection period; afterwards the whole
@@ -168,7 +170,7 @@ each one with your own value, as explained below the table.
 ```
 README.md                    start here
 docs/                        TECHNICAL_REFERENCE.md (how it works, and why)
-  img/                       photos, screenshots and figures (make_screenshots.cjs remakes the screenshots)
+  img/                       photos, screenshots and diagrams (make_screenshots.cjs and make_diagrams.cjs redraw them)
 hardware/                    the 3-D printed case (HULC_MS_Wearable_Case.stl)
 hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)
 hulc-ms.bat / .command       start the HULC-MS app from the repository; `hulc-ms …` commands

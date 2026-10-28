@@ -42,8 +42,8 @@ implementation can be found. Equations are written in LaTeX (`$…$` inline,
 
 ### 1.1 The system: today and the target
 
+<!-- diagram: system-target
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     N["Nodes<br/>record to flash"]
     subgraph ACQ["Acquisition"]
@@ -61,6 +61,8 @@ flowchart LR
     classDef todo stroke-dasharray: 5 5
     class M todo
 ```
+-->
+![The system today and the target: the nodes record to flash, the laptop (today) or the planned mobile app offloads them into capture folders, and the analysis on a computer produces the block check, metrics and review page](img/diagrams/system-target.png)
 
 Solid lines exist today; dashed lines are the target.
 
@@ -95,8 +97,8 @@ the app runs it for each dropped block. Each stage is a separate module that
 reads files and writes files, so it can be run, tested or replaced on its own
 (to run them by hand, see §9.7):
 
+<!-- diagram: pipeline
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart TD
     CF[("capture folder<br/>.bin + .seg.json + montage.json")]
     RC["3 · reconcile_nodes<br/>align the clocks from the motion"]
@@ -113,6 +115,8 @@ flowchart TD
     SV --> H[/"session.html"/]
     ME --> BC["analyze_session<br/>the block check<br/>(reads every stage's output)"] --> J[/"block_check.json"/]
 ```
+-->
+![The analysis pipeline: the capture folder goes through reconcile, the capability check, calibration and metrics to the review page and the block check, with the optional OpenSim solve on the side](img/diagrams/pipeline.png)
 
 | Stage | Module | What it does |
 |-------|------|--------------|
@@ -298,11 +302,13 @@ adjacent segments**:
 | elbow | `upper_arm` | `forearm` |
 | wrist | `forearm` | `hand` |
 
+<!-- diagram: joints
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     T(["torso"]) ---|shoulder| UA(["upper_arm"]) ---|elbow| FA(["forearm"]) ---|wrist| H(["hand"])
 ```
+-->
+![The joints between segments: torso and upper arm meet at the shoulder, upper arm and forearm at the elbow, forearm and hand at the wrist](img/diagrams/joints.png)
 
 Each rounded box is a node on a segment, and each labelled link is a joint.
 A joint can be computed only when the nodes at both of its ends are worn. The
@@ -486,8 +492,8 @@ no central connected:
   28 h of recording (600 mAh at about 21 mA, not yet measured), so the flash,
   not the battery, is the expected limit.
 
+<!-- diagram: node-states
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 stateDiagram-v2
     direction LR
     [*] --> IDLE: power on
@@ -503,6 +509,8 @@ stateDiagram-v2
         offload / erase allowed
     end note
 ```
+-->
+![The node state machine: IDLE wakes to ACTIVE on motion, ACTIVE drops to STATIC after 10 s still or 3 s lying flat, STATIC goes to IDLE after 60 s still or 5 more seconds lying flat, and a full flash goes straight to IDLE](img/diagrams/node-states.png)
 
 How these timings shape the recording protocol is described in
 [§5.5.2](#552-timings-and-the-settings-behind-them).
@@ -579,8 +587,8 @@ The command byte comes first, e.g.
 
 #### 4.3.3 Getting the log off (offload)
 
+<!-- diagram: offload
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 sequenceDiagram
     participant C as Central (laptop / app)
     participant N as Node (in IDLE)
@@ -598,6 +606,8 @@ sequenceDiagram
     Note over C: write <node>.bin (holes zero-filled)<br/>+ <node>.seg.json from status bytes 4–5
     C->>N: write 0x03 (erase), only after the transfer is verified
 ```
+-->
+![The offload sequence between the central and a node: start, header with the total length, framed chunks, re-requests for missing ranges, then erase only after the transfer is verified](img/diagrams/offload.png)
 
 1. Connect to a node in IDLE (status byte 0 = 0) and subscribe to A0010004.
    The node requests a 15–30 ms connection interval (§4.5).
@@ -965,8 +975,8 @@ Two quantities are measured again at the start of each block. They are
   block. A node that restarts in the middle of a log is caught by
   reconcile's clock-restart check.
 
+<!-- diagram: time-vs-mount
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     P["Clocks drift apart,<br/>or a node restarts"] --> TO["Time offset changes"]
     RM["Straps re-mounted"] --> MO["Mounting calibration is lost"]
@@ -976,6 +986,8 @@ flowchart LR
     MO --> F["Fixed by the freeze<br/>(calibrate_segments)"]
     S & F --> B["Every block starts with:<br/>sync movement, then freeze"]
 ```
+-->
+![What changes the time offset and the mounting calibration between blocks, and how the sync movement and the freeze restore them](img/diagrams/time-vs-mount.png)
 
 ### 5.4 Calibration: the sensor-to-segment solve
 
@@ -1067,8 +1079,9 @@ which pipeline or firmware setting each number comes from.
 
 An example composition of a block (seconds; the task part varies):
 
+<!-- diagram: block-timeline
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
+%%{init: {"gantt": {"useWidth": 960, "fontSize": 18, "sectionFontSize": 18, "barHeight": 30, "barGap": 8, "leftPadding": 170}}}%%
 gantt
     dateFormat X
     axisFormat %s s
@@ -1083,6 +1096,8 @@ gantt
     section Analysis window
     Calibrated and measured       :active, b1, 30, 81
 ```
+-->
+![An example composition of a block over about 95 seconds: strap on, sync movement, freeze, two task sets with a rest, nodes taken off; the analysis window runs from the freeze to the nodes coming off](img/diagrams/block-timeline.png)
 
 ##### The freeze pose (N-pose)
 
@@ -1179,8 +1194,8 @@ The hardware side of the decision (why this is done afterwards, from the
 motion, rather than over Bluetooth) is in
 [§4.5](#45-multi-node-time-alignment).
 
+<!-- diagram: clock-alignment
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart TD
     L["Per-node logs<br/>(t_ms on each node's own clock + quaternion)"] --> V["World-frame angular velocity<br/>per node (6.2.1)"]
     V --> X["Cross-correlate against the reference node<br/>(n0) over all lags (6.3)"]
@@ -1190,6 +1205,8 @@ flowchart TD
     O --> D["Optional drift fit (6.5),<br/>off by default"]
     D --> M["Map every t_ms onto one timeline (6.6)<br/>→ aligned.csv + aligned.quality.json"]
 ```
+-->
+![How the clocks are aligned: world-frame angular velocity per node, cross-correlation against the reference node, a peak test with a fall-back to angular speed, then the offset, an optional drift fit and one shared timeline](img/diagrams/clock-alignment.png)
 
 ### 6.1 The problem
 
@@ -2451,8 +2468,8 @@ editing files inside it does nothing useful.
 One-time setup: Python 3.11–3.13, then from the repository folder
 `pip install -r requirements.txt` (+ `requirements-opensense.txt` for OpenSim).
 
+<!-- diagram: release
 ```mermaid
-%%{init: {"fontFamily": "arial, helvetica, sans-serif", "flowchart": {"htmlLabels": false, "padding": 12}}}%%
 flowchart LR
     B["Branch +<br/>edit tools/"] --> T["Try it:<br/>python hulc-ms.py"]
     T --> C{"selftest +<br/>regress run<br/>all pass?"}
@@ -2460,6 +2477,8 @@ flowchart LR
     C -- yes --> PR["Pull request<br/>CI: selftests +<br/>standalone builds"]
     PR --> M["Merge"] --> TAG["Tag vX.Y.Z"] --> REL["GitHub Release<br/>(builds attached)"] --> LAB["Lab machines<br/>download hulc-ms"]
 ```
+-->
+![Changing the software: branch and edit, try it, run the selftests and the regression library, open a pull request, merge, tag a version, and the lab machines download the release](img/diagrams/release.png)
 
 1. **Branch**, then edit `tools/`:
 
@@ -2486,6 +2505,11 @@ flowchart LR
 5. **Merge, then tag a version** (`v0.2.0`, …): the builds are attached to a
    GitHub release, and the lab machines download the new `hulc-ms` there.
    (Building locally: `packaging/build_app.py`, with `requirements-build.txt`.)
+
+**When a diagram changes,** edit its Mermaid source in the HTML comment just
+above its image in this file or the README, then redraw the images with
+`node docs/img/make_diagrams.cjs` and commit them. The diagrams are images
+because GitHub's own Mermaid rendering cuts off longer labels.
 
 **When the app or the review page changes,** refresh the screenshots in
 `docs/img/`: `node docs/img/make_screenshots.cjs <capture folder>` (needs
