@@ -48,15 +48,6 @@ async function reviewShots(browser) {
   await p.waitForTimeout(1500);
   const btn = name => p.getByRole('button', { name, exact: true });
 
-  // the whole page, mid-movement: scrub to the frame of largest elbow flexion
-  await p.evaluate(() => {
-    const s = document.getElementById('scrub');
-    s.value = Math.round(Number(s.max) * 0.55);
-    s.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await p.waitForTimeout(400);
-  await p.screenshot({ path: path.join(IMG, 'review-page.png') });
-
   // neutral pose, raw vs calibrated: the 3-D view only, side by side later
   await btn('Neutral pose').click();
   await btn('Side').click();
@@ -83,21 +74,7 @@ async function reviewShots(browser) {
   await hideCard('visible');
   await btn('Front').click();
 
-  // the Timeline strip
-  await btn('Timeline').click();
-  await p.waitForTimeout(500);
-  // the command box holds this machine's paths: show neutral example paths instead
-  await p.evaluate(() => {
-    const c = document.getElementById('tlcmd');
-    c.value = c.value.replace(/^\S*python\S*\s+/, '')
-      .replace(/--capture-dir\s+\S+/, '--capture-dir ./capture/block1')
-      .replace(/--outdir\s+\S+/, '--outdir ./out/block1')
-      .replace(/^hulc-ms\.py/, 'hulc-ms');
-  });
-  await p.screenshot({ path: path.join(IMG, 'review-timeline.png') });
-  await p.locator('#tlclose').click().catch(() => {});
-
-  // a movement graphed over time (the Timeline shares its spot, so close it): the first DOF row of the first joint
+  // a movement graphed over time: the first DOF row of the first joint
   await p.getByText('Flexion / extension', { exact: true }).first().click();
   await p.waitForTimeout(600);
   await p.screenshot({ path: path.join(IMG, 'review-graph.png') });
@@ -121,7 +98,6 @@ async function appShots(browser) {
     const p = await browser.newPage({ viewport: VIEW, colorScheme: 'light' });
     await p.goto(base + '/');
     await p.waitForTimeout(500);
-    await p.screenshot({ path: path.join(IMG, 'app-drop.png') });
 
     // the same calls the app's own selftest makes (tools/app.py selftest)
     const [, body] = await api('POST', '/api/sessions',
