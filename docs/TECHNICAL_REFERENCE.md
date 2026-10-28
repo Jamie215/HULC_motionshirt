@@ -3,12 +3,7 @@
 This document describes how the HULC Motion Shirt works inside: the system
 and its data formats, the nodes' firmware, the design decisions, the math
 behind each number, the evidence for the choice of pose solver, and how to
-change the software safely. Each section first explains the idea in plain
-words and then gives the precise version, so that it can be read for
-understanding or used to review, reproduce and improve a method. Function and
-constant names from the code are given in brackets so that the exact
-implementation can be found. Equations are written in LaTeX (`$…$` inline,
-` ```math ` blocks), which GitHub displays as formatted math.
+change the software safely.
 
 1. [The system and the pipeline](#1-the-system-and-the-pipeline)
 2. [The capture folder (data format)](#2-the-capture-folder-data-format)
@@ -96,59 +91,21 @@ segments, so what can be computed depends on where the nodes are placed: the
 **montage** (chapter 3). The pipeline makes this dependency explicit and does
 not report a number that the placement cannot support.
 
-`hulc-ms analyze` (`tools/analyze_session.py`) runs stages 3–7 in order, and
-the app runs it for each dropped block. Each stage is a separate module that
+`hulc-ms analyze` (`tools/analyze_session.py`) runs steps 3–8 in order, and
+the app runs it for each dropped block. Each step is a separate module that
 reads files and writes files, so it can be run, tested or replaced on its own
-(to run them by hand, see §9.7):
+(to run them by hand, see §9.7).
 
-![The analysis pipeline: the capture folder goes through reconcile, the capability check, calibration and metrics to the review page and the block check, with the optional OpenSim solve on the side](img/diagrams/pipeline.png)
-
-<!-- diagram: pipeline -->
-<details><summary>Mermaid source</summary>
-
-```text
-flowchart TD
-    CF[("capture folder<br/>.bin + .seg.json + montage.json")]
-    RC["3 · reconcile_nodes<br/>align the clocks from the motion"]
-    MC["4 · motion_capabilities<br/>which joints the montage allows"]
-    CS["5 · calibrate_segments<br/>freeze, mounting offsets, facing, end"]
-    ME["6 · metrics<br/>angles, ROM, speed, reps, plausibility"]
-    SV["7 · skeleton_viewer<br/>the review page"]
-    OS["opensense_ik<br/>(optional OpenSim solve)"]
-    CF --> RC -- "aligned.csv<br/>aligned.quality.json" --> CS
-    CF --> MC -- "joints / blocked" --> ME
-    CS -- calibration.json --> ME
-    ME -- metrics.json --> SV
-    RC -.-> OS -.-> SV
-    SV --> H[/"session.html"/]
-    ME --> BC["analyze_session<br/>the block check<br/>(reads every stage's output)"] --> J[/"block_check.json"/]
-```
-
-</details>
-
-| Stage | Module | What it does |
-|-------|------|--------------|
-| 1–2 Capture and offload | `firmware.ino`, `multinode_test.py` (`hulc-ms nodes`) | The nodes log on their own; the laptop offloads each node's `.bin` |
-| 3 Reconcile | `reconcile_nodes.py` | Decodes the `.bin` logs and aligns them onto one timeline from the motion itself (cross-correlating world-frame angular-velocity vectors, with angular speed as a fallback) → `aligned.csv`, plus `aligned.quality.json` (sync confidence, data gaps, clock restarts). Math: [chapter 6](#6-clock-alignment) |
-| 4 Capability | `motion_capabilities.py` | Segments, joints and the montage schema; reads a capture folder (`capture_logs`, `montage_from_capture`); given the montage, works out which joints and metrics are valid and which are blocked, and why |
-| 5 Calibrate | `calibrate_segments.py` | Finds the sync movement, the freeze after it and the session end; solves each node's **sensor-to-segment mounting offset**; estimates the subject's facing (torso node, elbow hinge, or `--facing-deg`) → `calibration.json` |
-| 6 Metrics | `metrics.py` | Per-DOF joint angles over the analysis window → range of motion, angular velocity, repetition bouts and plausibility flags, plus the segment and derived tiers → `metrics.json`. Every metric: [chapter 7](#7-metrics) |
-| 7 Visualize | `skeleton_viewer.py` | The review page (one self-contained HTML file): the segments as a stick figure, Front / Side / Top views, the metrics panel, the Timeline, and a switch to each OpenSense solve |
-| (optional) OpenSense | `opensense_ik.py` | The same session solved on a published OpenSim model (Thoracoscapular Shoulder Model for the right arm, or Rajagopal 2016), through the same metrics and page; frames where the fit lost the sensors are excluded. Why: [chapter 8](#8-choosing-the-pose-solver) |
-| Block check | `analyze_session.py` | Runs the stages; gives OK / UNUSABLE per check (sync, freeze, facing, end, trunk, joint limits, …) → `block_check.json` |
-
-![The review page (stage 7): the metrics panel on the left, the 3D stick figure mid-movement with live angles on the right, and the play / view controls along the bottom](img/review-page.png)
-
-Around the stages:
-
-| Module | Role |
-|---|---|
-| `app.py` | The HULC-MS app: a local web page around `analyze_session.py` |
-| `validate_capture.py` | `hulc-ms validate`: checks a capture folder against chapter 2 |
-| `regress.py` | `hulc-ms regress`: the regression library of real recordings (chapter 9) |
-| `hulc_paths.py` | Where the tools write, and how one tool starts another (`tool_cmd`) |
-| `hulc-ms.py` (repository root) | The `hulc-ms` command, and the standalone build's entry point |
-| `tools/evaluation/` | Synthetic-truth studies behind the design (`timing_bench`, `compare_paths`, `opensense_feasibility`) |
+| Step | Stage | Module | What it does |
+|---|---|---|---|
+| 1–2 | Capture and offload | `firmware.ino`, `multinode_test.py` (`hulc-ms nodes`) | The nodes log on their own; the laptop offloads each node's `.bin` into the capture folder |
+| 3 | Reconcile | `reconcile_nodes.py` | Decodes the `.bin` logs and aligns them onto one timeline from the motion itself → `aligned.csv`, plus `aligned.quality.json` (sync confidence, data gaps, clock restarts). Math: [chapter 6](#6-clock-alignment) |
+| 4 | Capability | `motion_capabilities.py` | Reads the capture folder and the montage, and works out which joints and metrics are valid and which are blocked, and why (chapter 3) |
+| 5 | Calibrate | `calibrate_segments.py` | Finds the sync movement, the freeze after it and the session end; solves each node's **sensor-to-segment mounting offset**; estimates the subject's facing → `calibration.json` (§5.4) |
+| 6 | Metrics | `metrics.py` | Joint angles over the analysis window → range of motion, angular velocity, repetitions and plausibility flags, plus the segment and derived metrics → `metrics.json` ([chapter 7](#7-metrics)) |
+| 7 | Visualize | `skeleton_viewer.py` | The review page, one self-contained HTML file → `session.html` |
+| 8 | Block check | `analyze_session.py` | Reads every step's output and gives OK, NOTE or UNUSABLE for each check (§5.5.5) → `block_check.json` |
+| optional | OpenSense | `opensense_ik.py` | The same session solved on a published OpenSim body model, through the same metrics and review page ([chapter 8](#8-choosing-the-pose-solver)) |
 
 ---
 
@@ -380,36 +337,25 @@ shared.
 **Errors that stop the analysis:** an unknown `segment`; two nodes on the
 same `segment` or the same `column`; a missing `segment` or `column`.
 
-### 3.3 Landmark versus segment, and node header versus montage
+### 3.3 Which montage is used
 
-**Landmarks are advisory.** A landmark that names a segment (`humerus`,
-`forearm`) is checked, and one that disagrees with its `segment` is flagged
-as a likely mislabel. A landmark that names a joint (`shoulder`, `elbow`,
-`wrist`) is ambiguous, because a joint spans two segments while a node sits
-on one bone. The resolver therefore follows `segment` and adds a note. This
-is why **two nodes labelled "wrist" and "elbow" on one arm give one joint,
-not two**: `elbow_l` and `wrist_l` together need three left segments.
+`analyze_session` uses, in order: `--montage` if it is given; otherwise the
+capture folder's `montage.json`; otherwise one built from the nodes'
+`.seg.json` headers (§5.2). If the montage disagrees with a node's header,
+the analysis warns, so that a swapped node is noticed. A node's `landmark` is
+descriptive only; a landmark that names a different segment from `segment`
+is flagged as a likely mislabel.
 
-**Which source is used.** Each node stores its own segment in its log header
-(§5.2). The node header is the default: offload writes a
-`<node_id>.seg.json` next to each `.bin`, and builds the block's
-`montage.json` from them. `analyze_session` uses, in order: `--montage` if
-it is given; otherwise the capture folder's `montage.json`; otherwise one
-built from the `.seg.json` files (saved to the output folder). The montage
-that is used decides; if it disagrees with a node's header, the analysis
-warns, so that a swapped node is noticed rather than silently assigned to the
-wrong segment. Labels never change an angle: where the strap sat on the
-segment is measured by the freeze calibration.
+### 3.4 Joints, DOFs and Euler sequences
 
-### 3.4 Joints, DOFs and conventions
+The angle math is in `metrics.py`
+([§7.2](#72-the-shared-chain-quaternion--joint-angle)). A joint's relative
+rotation is split into three angles about the joint's axes in a fixed order,
+its **Euler sequence**. For example, `YXY` means a rotation about Y, then
+about the new X, then about the new Y; the clinical movements (DOFs) are read
+from those three angles.
 
-The resolver declares what can be computed and the decomposition convention;
-the angle math is in `metrics.py`
-([§7.2](#72-the-shared-chain-quaternion--joint-angle)). The conventions are
-intended to follow the ISB recommendations (Wu et al., 2005); this has not
-been checked independently.
-
-| Joint | DOFs | Decomposition | Note |
+| Joint | DOFs | Euler sequence | Note |
 |---|---|---|---|
 | shoulder | plane of elevation, elevation, axial rotation | `YXY` | Ball joint with a large ROM; gimbal lock near the poles. Trunk movement contaminates it without a calibrated torso node. |
 | elbow | flexion/extension, pronation/supination | `ZXY` | Pronation/supination is sensitive to the roll of the forearm node, so its axial zero is calibrated explicitly. |
@@ -450,24 +396,23 @@ estimate.
 
 ## 4. The nodes and their firmware
 
-This chapter describes the inside of a node: the firmware switches, how a
-node behaves, the Bluetooth protocol that a central uses, the flash log, and
-the decisions behind time alignment, the wake source and power. Bench checks
-for a node are in §9.8. The firmware itself (`firmware/firmware.ino`: its
-header comment, numbered SECTIONs and `handleControl()`) is the source of
-truth, and the reference central is `tools/multinode_test.py`, which runs
-behind `hulc-ms nodes`.
+This section describes: the firmware's build switches, how a node behaves,
+the Bluetooth protocol that a central uses, the flash log, and the decisions
+behind time alignment, the wake source and power. Bench checks for a node
+are in §9.8. The firmware itself (`firmware/firmware.ino`: its header
+comment, numbered SECTIONs and `handleControl()`) is the source of truth, and
+the reference central is `tools/multinode_test.py`, which runs behind
+`hulc-ms nodes`.
 
 Each node is a Seeed XIAO nRF52840 (a Bluetooth microcontroller) with a
 SparkFun BNO086 connected over I²C at 100 kHz (the I²C on this board is
 unstable at 400 kHz). The BNO086's fused, magnetometer-referenced Rotation
 Vector gives every node a quaternion in the same world frame (gravity and
 magnetic north). The log goes to the XIAO's onboard 2 MB QSPI flash
-(P25Q16H, a separate chip on the board, not the microcontroller's internal
-flash). The firmware drives it directly through `nrfx_qspi`, so the
-bootloader on the internal flash is never at risk. Each node advertises a
-unique name, `HULC-IMU-XXXX` (the last four hex digits of its Bluetooth
-address), so boards never collide and no per-board firmware is needed.
+(P25Q16H), which the firmware drives directly through `nrfx_qspi`, so the
+bootloader on the microcontroller's internal flash is never at risk. Each
+node advertises a unique name, `HULC-IMU-XXXX` (the last four hex digits of
+its Bluetooth address), so no per-board firmware is needed.
 
 ### 4.1 Firmware build switches
 
@@ -479,6 +424,7 @@ The compile-time switches worth knowing are near the top of `firmware.ino`:
 | `ACTIVE_FUSION_SOURCE` | 3b | `ACTIVE_FUSION_RV` | The Rotation Vector, or the 6-axis Game Rotation Vector (§4.7) |
 | `DEFAULT_ACTIVE_HZ` | 4 | 10 | The ACTIVE log rate |
 | `NOT_MOTION_TO_STATIC_MS` / `NOT_MOTION_TO_IDLE_MS` | 5 | 10 s / 60 s | The state timeouts (§4.2) |
+| `ON_TABLE_DEBOUNCE_ACTIVE_MS` / `ON_TABLE_FAST_PATH_MS` | 5 | 3 s / 5 s | The shorter timeouts when the node lies flat (§4.2) |
 | `DEBUG_SERIAL` | 9 | 1 | Serial logging (turn it off for a deployed build, §4.7) |
 
 `firmware/state_machine_test/state_machine_test.ino` is a reduced test
@@ -493,16 +439,18 @@ no central connected:
 - **`ACTIVE_RECORDING`** (moving): logs the quaternion at about 10 Hz
   (exactly `activeHz`, on scheduled slots).
 - **`STATIC_POSTURE`** (after 10 s still): logs at about 1 Hz.
-- **`IDLE`** (after 60 s still, or about 8 s lying flat: ON_TABLE gives 3 s
-  to STATIC, then 5 s to IDLE): logs nothing, sleeps between sensor
+- **`IDLE`** (after 60 s still): logs nothing, sleeps between sensor
   interrupts, and advertises. **Offload works only in IDLE**, so the laptop
   is disconnected while the node records and connects afterwards.
+- **Lying flat is faster.** When the BNO086's stability classifier reports
+  `ON_TABLE` (the node lying flat and still, as on a table or charger), the
+  firmware uses shorter timeouts: 3 s in ACTIVE moves it to STATIC
+  (`ON_TABLE_DEBOUNCE_ACTIVE_MS`), and 5 more seconds moves it to IDLE
+  (`ON_TABLE_FAST_PATH_MS`). A node taken off and laid down therefore
+  reaches IDLE in about 8 s instead of 70 s.
 - **Flash watermark:** once the flash is 80% full, the node halves its ACTIVE
   rate (10 → 5 → 2 Hz). At 10 Hz this happens after about 2.3 h of ACTIVE
-  recording, and logging stops at about 2.6 h. Still and idle time cost far
-  less, so a block with rests lasts longer. On paper the battery lasts about
-  28 h of recording (600 mAh at about 21 mA, not yet measured), so the flash,
-  not the battery, is the expected limit.
+  recording, and logging stops at about 2.6 h.
 
 ![The node state machine: IDLE wakes to ACTIVE on motion, ACTIVE drops to STATIC after 10 s still or 3 s lying flat, STATIC goes to IDLE after 60 s still or 5 more seconds lying flat, and a full flash goes straight to IDLE](img/diagrams/node-states.png)
 
@@ -528,39 +476,36 @@ stateDiagram-v2
 
 </details>
 
+
 How these timings shape the recording protocol is described in
 [§5.5.2](#552-timings-and-the-settings-behind-them).
 
 ### 4.3 BLE protocol — talking to a node
 
-This section gives what a central needs to enroll a node, get its log off,
-and write it as a capture folder
+This section gives what a central (the laptop today, a phone app later)
+needs to find a node, enroll it, and get its log off as a capture folder
 ([chapter 2](#2-the-capture-folder-data-format)). The reference functions in
 `tools/multinode_test.py` are named for each step.
 
-#### 4.3.1 Finding a node
+#### 4.3.1 Finding a node, and the GATT layout
 
-- Each node advertises as **`HULC-IMU-XXXX`**, the last 4 hex digits of its
-  BLE MAC address. The name is unique and stable for each board, and it is
-  the `node_id` of the capture format.
-- A node advertises **only in IDLE** (once per second), and stops while a
-  central is connected. Recording happens with no central connected.
-- Reference: `scan()`, `connect_with_retry()`.
+A node advertises as **`HULC-IMU-XXXX`** (the `node_id` of the capture
+format) **only in IDLE**, once per second, and stops while a central is
+connected. Reference: `scan()`, `connect_with_retry()`.
 
-#### 4.3.2 GATT
+The node's GATT service and its characteristics use 128-bit UUIDs of the
+form `A001000N-B0CE-4A4A-8F0B-0011223344FF`, where `N` is 0 for the service
+and 1–5 for the characteristics:
 
-Service `A0010000-B0CE-4A4A-8F0B-0011223344FF`; the characteristics share its
-suffix:
-
-| UUID | Name | Access | Size | Use |
+| N | Name | Access | Size | Use |
 |---|---|---|---|---|
-| `A0010001-…` | Quaternion stream | NOTIFY | 20 B | Debugging only (a live record, when streaming is on) |
-| `A0010002-…` | Control | WRITE | ≤ 9 B | Commands, below |
-| `A0010003-…` | Status | READ | 6 B | State, log size, segment |
-| `A0010004-…` | Log offload | NOTIFY | ≤ 200 B | The log, framed (below) |
-| `A0010005-…` | Time Info | READ | 16 B | Clock-offset measurement (optional) |
+| 1 | Quaternion stream | NOTIFY | 20 B | Debugging only (a live record, when streaming is on) |
+| 2 | Control | WRITE | ≤ 9 B | Commands (§4.3.2) |
+| 3 | Status | READ | 6 B | State, log size, segment |
+| 4 | Log offload | NOTIFY | ≤ 200 B | The log, framed (§4.3.3) |
+| 5 | Time Info | READ | 16 B | Clock-offset measurement (optional) |
 
-**Status (A0010003), 6 bytes**
+**Status (N = 3), 6 bytes:**
 
 | Byte | Field |
 |---|---|
@@ -568,38 +513,49 @@ suffix:
 | 1 | Flags: bit 0 streaming, bit 1 time-synced |
 | 2–3 | Log size in KB (`uint16` LE) |
 | 4 | Segment config tag: `0x01` when byte 5 is a valid assignment |
-| 5 | Segment code (0 torso … 6 hand_r, `0xFF` unassigned; the table in [§2.3](#23-the-header-segjson)) |
+| 5 | Segment code (the table in [§2.3](#23-the-header-segjson); `0xFF` unassigned) |
 
 Reference: `read_status()`, `_read_segment()`.
 
-**Time Info (A0010005), 16 bytes, little-endian**
+**Time Info (N = 5), 16 bytes, little-endian:**
 
 | Bytes | Field |
 |---|---|
-| 0–3 | Node `millis()` now |
-| 4–11 | Sync epoch in ms (`uint64`, 0 if never synced) |
-| 12–15 | Node `millis()` at the last sync |
+| 0–3 | `node_millis_now`: the node's `millis()` clock at the moment of reading |
+| 4–11 | `sync_epoch_ms`: the Unix time in ms that the central sent with the last time-sync command (`uint64`, 0 if never synced) |
+| 12–15 | `sync_millis`: the node's `millis()` at the moment it received that command |
 
-A central computes a node's current epoch as
-`sync_epoch_ms + (node_millis_now − sync_millis)`, and the difference between
-two nodes is their clock offset. The analysis does not need this, because it
-aligns the clocks from the motion (§4.5); it is useful for checking a link.
-Reference: `read_syncinfo()`, `report_offsets()`.
+A central converts the node's clock to Unix time as:
 
-**Control (A0010002)**
+```math
+\text{node time now} = \texttt{sync\_epoch\_ms} + \bigl(\texttt{node\_millis\_now} - \texttt{sync\_millis}\bigr)
+```
+
+That is, the time the central gave the node, plus how long the node's own
+clock has run since then. Doing this for two nodes and taking the difference
+gives their clock offset. The analysis does not need it, because it aligns
+the clocks from the motion (§4.5); it is used for link checks. Reference:
+`read_syncinfo()`, `report_offsets()`.
+
+#### 4.3.2 Commands (Control, N = 2)
+
+The command byte comes first, followed by its payload, e.g.
+`[0x06, off0, off1, off2, off3, len0, len1, len2, len3]`.
 
 | Command | Payload | Does | When |
 |---|---|---|---|
 | `0x00` / `0x01` | — | Stop / start the debug quaternion stream | Any time |
 | `0x02` | `uint32` LE Unix seconds | Time sync (seconds, legacy) | Any time |
 | `0x05` | `uint64` LE Unix ms | Time sync (ms) | Any time |
-| `0x03` | — | Erase the log (whole chip, verified blank; about 30 s) | After a verified offload |
-| `0x04` | — | Start the offload over A0010004 | **IDLE only** (ignored otherwise) |
-| `0x06` | `uint32` LE offset, `uint32` LE length | Resend that byte range of the log | **IDLE only** |
 | `0x07` | `uint8` segment code 0–6 | Store this node's segment in its flash header (kept through power cycles and erases) | Enroll |
+| `0x04` | — | Start the offload over N = 4 | **IDLE only** (ignored otherwise) |
+| `0x06` | `uint32` LE offset, `uint32` LE length | Resend that byte range of the log | **IDLE only** |
+| `0x03` | — | Erase the log (whole chip, verified blank; about 30 s) | After a verified offload |
 
-The command byte comes first, e.g.
-`[0x06, off0, off1, off2, off3, len0, len1, len2, len3]`.
+**Enrolling a node** (once per board): power on one node at a time, connect,
+write `[0x07, code]` for its segment, and read status bytes 4–5 back to
+confirm it. Every later offload can then write the `.seg.json` from the node
+itself. Reference: `enroll()`, `set_segment()`, `read_segments()`.
 
 #### 4.3.3 Getting the log off (offload)
 
@@ -629,59 +585,43 @@ sequenceDiagram
 
 </details>
 
-1. Connect to a node in IDLE (status byte 0 = 0) and subscribe to A0010004.
-   The node requests a 15–30 ms connection interval (§4.5).
-2. Write `0x04`. The node first sends a **header notification**,
-   `[0xFFFFFFFF (uint32 LE)][total length (uint32 LE)]`, which gives the
-   exact byte count of the log.
-3. The node then sends **data notifications**,
-   `[offset (uint32 LE)][up to 196 bytes]`, where the offset is the position
-   of the payload in the log. Place each payload at its offset.
-4. Notifications are not acknowledged, and some are dropped. When the stream
-   goes quiet (about 3 s), compute the **missing ranges** against the total
-   and request each one with `0x06`. Repeat until the log is complete (the
+1. Connect to a node in IDLE (status byte 0 = 0) and subscribe to the log
+   offload characteristic (N = 4). The node requests a 15–30 ms connection
+   interval (§4.5).
+2. Write `0x04`. The node first sends a **header**,
+   `[0xFFFFFFFF][total length]` (two `uint32` LE), then **data
+   notifications**, `[offset][up to 196 bytes]`, where the offset is the
+   payload's position in the log. Place each payload at its offset.
+3. Notifications are not acknowledged, so some are dropped. When the stream
+   goes quiet (about 3 s), compare what arrived with the total, and request
+   each missing range with `0x06`. Repeat until the log is complete (the
    laptop tries up to 4 passes, `OFFLOAD_MAX_ATTEMPTS`). Reference:
    `measure_offload()`, `_offload_pass()`, `_missing_ranges()`.
-5. Write the bytes unchanged as the node's `.bin`. Any range still missing
-   stays **zero-filled** at its offset (never close the gap). Read status
-   bytes 4–5 and write the `.seg.json` header next to the `.bin` (`node_id`,
-   `segment`, `code`). Together these make the capture folder.
-6. Only after the transfer is verified as complete (bytes received equal the
-   total), and preferably after the folder has been checked
-   (`hulc-ms validate`), write `0x03` to erase. The node keeps the log until
-   then, so a failed transfer can be repeated.
+4. Write the bytes unchanged as the node's `.bin`; any range still missing
+   stays **zero-filled** at its offset (never close the gap). Write the
+   `.seg.json` from status bytes 4–5.
+5. Erase with `0x03` only after the transfer is verified as complete, and
+   preferably after `hulc-ms validate`. The node keeps its log until then, so
+   a failed transfer can be repeated.
 
-**Why the framing.** Before the framing was added, each 200-byte
-notification carried 10 records back to back, and a dropped notification
-silently removed 10 records from the middle of the file. Downstream, this
-appeared as gaps of about 1.2 s with clean data on both sides. With offsets,
-a drop leaves a hole whose position is known. Two further pieces make
-recovery work. First, the firmware applies **backpressure**: when the BLE
-transmit buffer is full, `writeValue()` fails and the same notification is
-retried instead of skipped (without this, the sender alone dropped about
-45%). Second, recovery uses **small range requests** rather than a full
-re-offload, which would recreate the same burst and tend to drop the same
-chunk again.
+Two firmware details make recovery reliable. The node applies
+**backpressure**: when the Bluetooth transmit buffer is full, the same
+notification is retried rather than skipped (without this, the node itself
+dropped about 45% of them). And recovery uses **small range requests**
+rather than a full re-offload, which would repeat the same burst and tend to
+drop the same data again.
 
-Reading the laptop's output: `pass 1 (full): 3528/5300 bytes, 5 hole(s)` (the
-drops are located), then `pass 2: re-requesting 5 range(s)...`, then
-`COMPLETE — saved N bytes`. `[!] INCOMPLETE after 4 attempts` saves the file
-zero-filled and lists the missing offsets; run `offload` again to fill them
-(the log is still on the node).
+Reading the laptop's output: `pass 1 (full): 3528/5300 bytes, 5 hole(s)`,
+then `pass 2: re-requesting 5 range(s)...`, then `COMPLETE — saved N bytes`.
+`[!] INCOMPLETE after 4 attempts` saves the file zero-filled and lists the
+missing offsets; run `offload` again to fill them.
 
-#### 4.3.4 Enrolling a node (once per board)
+#### 4.3.4 Things a central must not do
 
-Power on one node at a time, connect, write `[0x07, code]` for its segment,
-and read the status back to confirm it (bytes 4–5). The assignment stays on
-the node, so every later offload can write the `.seg.json` from the node
-itself. Reference: `enroll()`, `set_segment()`, `read_segments()`.
-
-#### 4.3.5 Things a central must not do
-
-- Offload or erase while the node is recording. Offload is refused outside
-  IDLE, and an erase loses whatever has not yet been offloaded.
+- Offload or erase while the node is recording (offload is refused outside
+  IDLE).
 - Erase before the offload is verified.
-- Renumber the segment codes. They are stored on deployed nodes.
+- Renumber the segment codes; they are stored on deployed nodes.
 
 ### 4.4 The flash log
 
@@ -696,70 +636,44 @@ itself. Reference: `enroll()`, `set_segment()`, `read_segments()`.
  0x200000 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The flash holds a 4 KB header sector followed by 20-byte records, written
-  append-only. Offload sends everything after the header (record layout:
+- A 4 KB header sector is followed by 20-byte records, written append-only.
+  Offload sends everything after the header (record layout:
   [§2.2](#22-the-log-bin)).
-- The header (with the write pointer) is saved again every `FSYNC_EVERY` (10)
-  samples. This is a 4 KB sector erase, write and readback, about once a
-  second at 10 Hz, so a power cut loses at most about 1 s of samples.
+- The header (with the write pointer) is saved every `FSYNC_EVERY` (10)
+  samples, so a power cut loses at most about 1 s of samples at 10 Hz.
 - **Erase between blocks.** The write pointer is kept across reboots, so a
-  node that is power-cycled without being erased adds the next recording to
-  the end of the log. Since `millis()` restarts at 0, the log then holds two
-  sessions with a backward jump in time. The analysis keeps the longest
-  monotonic part and warns (`clock restart` / `non-monotonic`), but old data
-  builds up. Use `hulc-ms nodes erase` before a block, or
-  `offload --erase-after` (each node is erased only after its offload is
-  verified `COMPLETE`).
+  node that restarts without being erased adds the next recording to the end
+  of the log, and since `millis()` restarts at 0, the log then holds a
+  backward jump in time. The analysis keeps the longest monotonic part and
+  warns (`clock restart` / `non-monotonic`).
 - `eraseLog()` erases the whole chip in 64 KB blocks and **checks that the
-  data region reads back blank before it resets the write pointer**. A
-  silently failed erase therefore leaves the log intact at its real size,
-  rather than reporting `log=0KB`.
+  data region reads back blank before it resets the write pointer**, so a
+  failed erase leaves the log intact rather than reporting `log=0KB`.
 
 ### 4.5 Multi-node time alignment
 
-**Requirements:** every node records the movement, the samples can be
-aligned afterwards, and the logs can be moved off the nodes to free the
-flash. **Constraints (decided):** no wire between nodes (BLE only), analysis
-**offline** after collection, and quaternions at about 10 Hz, so the
-alignment target is **25–50 ms** (a fraction of a sample) rather than single
-milliseconds.
+Each sample carries the node's own `millis()`, and the clocks are aligned
+afterwards from the motion: the nodes' motion during the sync movement at
+the start of each block is cross-correlated (`tools/reconcile_nodes.py`;
+the math is in [chapter 6](#6-clock-alignment)). Because the nodes never
+stream live, Bluetooth latency does not affect the result. The target is
+**25–50 ms**, a fraction of a sample at 10 Hz, and the synthetic self-test
+recovers a known offset to about 15–18 ms. The method needs shared motion,
+which is why the sync movement must move every node. The Bluetooth time sync
+(`0x05` and Time Info) is kept for link checks only.
 
-**Offline analysis changes the problem.** Because the analysis happens
-afterwards, BLE latency does not affect the data: the nodes never stream
-live. Each sample carries the node's `millis()`, and the clocks are aligned
-afterwards. The method used is to **cross-correlate the nodes' motion**
-around the sync movement at the start of every block
-(`tools/reconcile_nodes.py`; the math, its confidence measure and its limits
-are in [chapter 6](#6-clock-alignment)). It is not affected by BLE latency,
-and its synthetic self-test recovers a known offset to about 15–18 ms. It
-needs **shared motion**: two limbs moving independently give nothing to
-match. This is why every block starts with a sync movement that moves every
-node. The BLE time sync (`0x05`, A005) is kept for link checks.
+**Offload speed depends on the central.** The firmware requests a 15–30 ms
+connection interval (`setConnectionInterval(12, 24)`); 15 ms is the shortest
+that iOS accepts. A Windows desktop `bleak` central imposed about 850 ms per
+read, so a full flash would take hours. In an early test with the nRF Connect
+app, an iPhone moved a 48 KB log in 2.46 s (about 20 KB/s), which
+corresponds to a full 2 MB flash in about 1.7 min.
 
-**The BLE connection interval decides the offload speed.** Measurements
-showed that the limit was the **central**, not the firmware. A Windows
-desktop `bleak` central imposes slow intervals (about 850 ms per read, so a
-full flash would take hours). In an early test with the nRF Connect app, an
-**iPhone moved a 48 KB log in 2.46 s (about 20 KB/s, about 10 ms per
-chunk)**, which corresponds to a full 2 MB flash in about 1.7 min. The
-firmware requests **15–30 ms** (`setConnectionInterval(12, 24)`). The lower
-limit is 15 ms because Apple requires a minimum interval of at least 15 ms;
-otherwise iOS falls back to its slow default. **The product's central should
-therefore be a platform that honours fast intervals: iOS, Android or Linux
-(BlueZ), rather than a Windows desktop.** Only the iPhone has been measured
-so far.
-
-**Coordinated trigger (decided against).** Each node runs its own motion
-detector, so a segment with little motion (e.g. the torso) could stay in
-IDLE and miss an event. A shared "any node moves, every node records"
-trigger with a pre-roll buffer was proposed. After discussion with the PIs,
-it was not built: each node's own idle behaviour is sufficient for the
-project, and the trigger would cost design flexibility, battery and flash.
-The STATIC timeout and the recording protocol's rule of never staying still
-for a minute cover the torso case.
-
-Open questions here are the sync-read latency from iOS, the offload pacing,
-and whether 10 Hz is enough.
+**Not built: a coordinated trigger.** A shared "any node moves, every node
+records" trigger with a pre-roll buffer was considered, so that a node with
+little motion (e.g. the torso) does not stay in IDLE. It was not built: the
+STATIC timeout and the protocol's rule of never staying still for a minute
+cover this, and the trigger would cost battery and flash.
 
 ### 4.6 IDLE wake source and the ~6.5 s IDLE reset
 
@@ -774,303 +688,182 @@ and whether 10 Hz is enough.
 | | `IDLE_WAKE_DETECTOR` (default) | `IDLE_WAKE_CLASSIFIER` | `IDLE_WAKE_SIGMOTION` |
 |---|---|---|---|
 | Sensor | Stability Detector `0x1C` | Stability Classifier `0x13` | Significant Motion `0x12` |
-| Sensing | Accelerometer only (on change) | Accelerometer + gyroscope (MotionEngine) | Accelerometer only (one-shot) |
-| Idle reset | About 6.7 s (inherent, harmless) | **None** | **None** |
-| Idle current | About 8.8 mA | Higher (gyroscope running) | **About 7.4 mA** (lowest) |
-| Sensitivity to slow motion | Good | Good | **Poor**: misses slow, held-limb motion |
+| Sensing | Accelerometer only (on change) | Accelerometer + gyroscope (runs the fusion engine) | Accelerometer only (one-shot) |
+| Idle reset | About every 6.7 s (harmless) | Not triggered, because the fusion engine keeps the sensor active | Not triggered |
+| Idle current | About 8.8 mA | Higher (gyroscope running) | About 7.4 mA (lowest) |
+| Sensitivity to slow motion | Good | Good | Poor: misses slow, held-limb motion |
 
-**Recommendation (the current default):** use the **detector** for on-body
-recording, because it is the only source that reliably wakes on slow,
-deliberate motion. Use **SIGMOTION** only for off-body standby, and the
-**classifier** only if an idle state without resets becomes more important
-than current. In every case, keep the `i2cBusRecover()` safeguard in
-`setup()`.
+The **detector** is the default because it is the only low-power source that
+reliably wakes on slow, deliberate movement. SIGMOTION suits off-body
+standby only. Keep the `i2cBusRecover()` safeguard in `setup()` with every
+source.
 
-**The sensor's own sleep mode (devSleep) was tried and dropped.** With the
-hub in devSleep, the detector's wake events were merged or rarely delivered,
-so shaking the node did not wake it from IDLE to ACTIVE. Every wake source
-therefore keeps the hub awake; going lower needs a hardware wake (§4.7.2).
+The sensor's own sleep mode (devSleep) was tried and dropped: the
+detector's wake events were then rarely delivered, so the node did not wake.
+The sensor therefore stays awake in IDLE; going lower needs a hardware wake
+(§4.7.2).
 
-**To compare them:** build each value, test it on the bench with the serial
-monitor open (test slow motions, not only shakes), and watch for the
-`DETECTOR: 0x1C val=` / `CLASSIFIER: MOTION` / `SIGMOTION:` lines and the
-IDLE to ACTIVE transition. `handleIdle()` logs each self-reset as
-`IDLE: BNO reset — <ms> since last reset`; with the classifier or SIGMOTION,
-this line never prints, which is the expected result.
+To compare the sources, build each value and test on the bench with the
+serial monitor open, using slow motions as well as shakes. `handleIdle()`
+logs each sensor restart as `IDLE: BNO reset — <ms> since last reset`.
 
-#### 4.6.2 The ~6.5 s IDLE reset (known, understood, harmless)
+#### 4.6.2 The ~6.5 s IDLE reset
 
-In IDLE with the detector, the BNO086 **restarts itself about every 6.5 s**.
-This was investigated with the `state_machine_test` program, changing one
-thing at a time:
+In IDLE with the detector, the BNO086 restarts itself about every 6.5 s.
+Tests with `state_machine_test`, changing one thing at a time, ruled out the
+sensor's sleep mode, the report rate and a slow host. The reset happened
+with every accelerometer-only sensor and never with the Rotation Vector.
+The likely explanation is that accelerometer-only sensors leave the sensor's
+processor in a low-activity state that restarts itself, while anything that
+runs the fusion engine keeps it active.
 
-| Tried | Result | Rules out |
-|---|---|---|
-| devSleep off (fully awake) | Still about 6.5 s | Sleep |
-| Report interval 50 ms → 5 s | Still about 6.5 s (worse when slow) | Report rate |
-| Constant polling instead of sleeping | Identical | A slow host |
-| Plain accelerometer instead of the detector | Still about 6.5 s | Misuse of the detector |
-| I²C at 400 kHz | A reset about every 130 ms, plus corrupted data | (The board is unstable at 400 kHz; stay at 100 kHz) |
-| **Rotation Vector instead** | **No reset**, 300+ reports | **The cause is the non-fusion sensors** |
-
-**Explanation:** accelerometer-only sensors (the detector, the raw
-accelerometer) leave the hub in a low-activity state that restarts itself.
-Anything that runs the fusion engine (the classifier, the Rotation Vector)
-keeps it active, and it does not restart. This is probably why the
-behaviour is rarely reported elsewhere: most projects stream a fused output
-continuously. The datasheet's "host too slow" watchdog applies to the older
-BNO080, not to the BNO085/086.
-
-**Why it does not matter:** IDLE logs nothing, and the firmware sets the wake
-sensor up again automatically. ACTIVE streams the Rotation Vector and never
-resets. The reset is the cost of the low-power wake sensor. **The one real
-risk** is a reset during an I²C transaction, which could hold the SDA line
-low and freeze the node until it is power-cycled. This has never been
-observed, and `i2cBusRecover()` guards against it.
-
-*Note from the investigation:* a test that read the "reset cause" on every
-restart reported "External Reset", but the test itself was causing those
-resets (the driver hard-resets the chip when its SHTP traffic becomes
-confused). It was removed, and it showed why the bus-recovery routine is
-worth keeping.
+It does not affect the data: IDLE logs nothing, and the firmware sets the
+wake sensor up again automatically. The one real risk is a reset during an
+I²C transfer, which could hold the SDA line low until the node is
+power-cycled. This has never been observed, and `i2cBusRecover()` guards
+against it.
 
 #### 4.6.3 Not done: tuning SIGMOTION
 
-SIGMOTION has a threshold (FRS record `SIG_MOTION_DETECT_CONFIG`, `0xC274`:
-an acceleration threshold and a window), but the SparkFun library provides no
-way to write FRS records. Making it work would need the exact record layout
-from the SH-2 Reference Manual, a way to write FRS records (extending the
-library, or using CEVA's `sh2_setFrs()`), and bench tests against real slow
-held-limb motion and false wakes. Even then, a detector based on energy over a
-window may still miss slow stretches.
+SIGMOTION's threshold is an FRS record (`SIG_MOTION_DETECT_CONFIG`,
+`0xC274`), which the SparkFun library cannot write. Tuning it would need the
+record layout from the SH-2 Reference Manual, a way to write FRS records
+(e.g. CEVA's `sh2_setFrs()`) and bench tests against slow held-limb motion,
+and it may still miss slow movement.
 
 ### 4.7 Power
 
-**Measured now:** about 8.8 mA in IDLE (detector) and about 20–21 mA while
-recording in ACTIVE (full fusion). Before the optimization work, the figures
-were about 12 mA and 22 mA. Battery life on the current firmware has
-**not** been measured on the bench yet.
+**Measured:** about 8.8 mA in IDLE (detector) and about 20–21 mA while
+recording (full fusion), down from about 12 mA and 22 mA before the
+optimization work. Battery life on the current firmware has not been
+measured.
 
 #### 4.7.1 Landed
 
-None of these change the recorded data format or the state logic. Each is
-commented where it is made in `firmware.ino`.
+None of these change the data format or the state logic; each is commented
+where it is made in `firmware.ino`.
 
-1. **DC/DC regulator** (`NRF_POWER->DCDCEN = 1`): more efficient than the LDO
-   in every state.
-2. **Low-cost advertising in IDLE only:** an interval of about 1 s
-   (`ADV_INTERVAL_UNITS`), and no advertising while recording (offload works
-   in IDLE only anyway).
-3. **BNO086 report rate matched to the log rate** (Rotation Vector at 100 ms
-   instead of 65 ms), so no fused samples are computed only to be discarded.
-4. **Game Rotation Vector switch** (`ACTIVE_FUSION_SOURCE`, Rotation Vector
-   by default): 6-axis with no magnetometer, so it is not affected by
-   magnetic interference, but its yaw drifts slowly. **Measured: no
-   meaningful power saving**, so the choice should be made on data quality
-   alone; switch only if recordings show heading errors caused by the
-   magnetometer. The Game Rotation Vector path has not been compile-checked
-   against the installed library.
-5. **QSPI flash deep power-down in IDLE** (`qspiSleep()`/`qspiWake()`): a
-   small saving, kept for completeness. *Tried and removed:* also disabling
-   the nRF QSPI peripheral made idle current **worse** (about 9 → 11 mA)
-   because of nRF52840 Errata 122. Revisit only with Nordic's register
-   workaround.
-6. **STATIC sets the Rotation Vector to about 1 Hz** instead of 10 Hz
-   (`BnoRunningCfg`: `BNO_CFG_ACTIVE` / `BNO_CFG_STATIC`); the classifier
-   still drives every transition. This gives about 4× fewer nRF wakes in
-   STATIC. Only the fusion report is set again on an ACTIVE ↔ STATIC switch,
-   to avoid the SparkFun premature-reset problem (library issue #2).
-7. **Selectable IDLE wake source** (§4.6).
-8. **Detector reported on change** (a 60 s keepalive instead of an
-   approximately 1 Hz heartbeat): about 0.2 mA.
-9. **STATIC logs every Rotation Vector report (about 1 Hz, previously
-   0.2 Hz)**, for data quality: the torso is mostly in STATIC during arm
-   work, and every shoulder angle is measured against it. In simulation
-   (`tools/evaluation/timing_bench.py`), shoulder axial rotation improved from
-   6.3° to 1.9° RMS, and elevation from 5.1° to 2.5°. The cost is about 14%
-   more of a torso node's log. The write energy has not yet been measured on
-   the bench.
-10. **ACTIVE logs at exactly `activeHz`** (scheduled slots with a slack of a
-    quarter period, `ACTIVE_SAMPLE_SLACK_DIV`): the old gate logged at
-    6.9–8.3 Hz when the report timing did not line up. This logs about
-    20–44% more ACTIVE records than older firmware did; if storage was sized
-    on the observed rate, lower `DEFAULT_ACTIVE_HZ`. Not yet measured on
-    hardware.
+| Change | Effect |
+|---|---|
+| DC/DC regulator (`NRF_POWER->DCDCEN = 1`) | More efficient than the LDO in every state |
+| Advertising only in IDLE, about every 1 s (`ADV_INTERVAL_UNITS`) | No radio use while recording |
+| BNO086 report rate matched to the log rate (100 ms instead of 65 ms) | No fused samples computed only to be discarded |
+| STATIC sets the Rotation Vector to about 1 Hz (`BNO_CFG_STATIC`) | About 4× fewer microcontroller wakes in STATIC; only the fusion report is changed on a state switch, to avoid SparkFun library issue #2 |
+| Detector reported on change (60 s keepalive) | About 0.2 mA |
+| QSPI flash deep power-down in IDLE (`qspiSleep()`/`qspiWake()`) | Small; disabling the QSPI peripheral as well made idle worse (about 9 → 11 mA, nRF52840 Errata 122) |
+| Game Rotation Vector switch (`ACTIVE_FUSION_SOURCE`) | No meaningful saving; choose it only for data quality (no magnetometer, but slow yaw drift). Not compile-checked against the installed library |
+| STATIC logs every report (about 1 Hz, previously 0.2 Hz) | For data quality: in simulation (`tools/evaluation/timing_bench.py`), shoulder axial rotation error fell from 6.3° to 1.9° RMS and elevation from 5.1° to 2.5°, for about 14% more of a torso node's log |
+| ACTIVE logs at exactly `activeHz` (`ACTIVE_SAMPLE_SLACK_DIV`) | The old gate logged at 6.9–8.3 Hz; this logs about 20–44% more ACTIVE records. Not yet measured on hardware |
 
 #### 4.7.2 Backlog — worth exploring
 
-Listed roughly by benefit; each needs bench time or a design decision.
+Listed roughly by benefit:
 
-- **Set the BNO086 rate again when the watermark throttle engages.** When
-  the flash fills, `writeQuaternionSample()` halves `activeHz` (10 → 5 → 2),
-  but the BNO086 keeps reporting at 10 Hz, so this saves flash but not power.
-  Set the fusion report again at the throttled rate through the same
-  per-transition path as item 6 (note the SparkFun issue #2 caution).
-- **Sleep instead of looping while connected and idle.** In
-  `waitForIMUData()`, the branch for a BLE connection busy-loops on
-  `BLE.poll()` for up to 100 ms; a `__WFE()` between polls would let the core
-  sleep. Similarly, the fast connection interval is only needed during
-  offload and could be relaxed at other times.
-- **Production build without USB serial.** `DEBUG_SERIAL 1` keeps USB CDC (and
-  the HFCLK) running, and the `Serial.print`/`Serial.begin` calls in the QSPI
-  helpers and `setup()` are **not** behind the macro, so they need to be gated
-  as well.
-- **fsync tuning.** `FSYNC_EVERY = 10` costs a sector erase, write and
-  readback about every second at 10 Hz. Raising it accepts slightly more data
-  at risk on power loss in exchange for fewer power-hungry erases and less
-  wear.
-- **LEDs:** cut the LED jumpers on the boards. In firmware, the blue
-  "connected" LED stays on for the whole connection and could blink instead.
-- **Going below about 8.8 mA while keeping the slow-motion wake needs
-  hardware:** a separate low-power motion sensor whose interrupt wakes the
-  nRF, which then powers the BNO086. The remaining gap to SIGMOTION is the
-  detector's self-reset, which no report-rate change affects.
-- **Disable the QSPI peripheral** (item 5), only with the Errata 122
-  workaround. Low priority, since idle current is dominated by the BNO086 hub
-  (about 8 mA).
+- **Lower the BNO086 rate when the watermark halves `activeHz`.** Today this
+  saves flash but not power, because the sensor still reports at 10 Hz.
+- **Sleep between radio polls while connected** (`__WFE()` in the
+  `BLE.poll()` loop of `waitForIMUData()`), and relax the connection interval
+  outside offload.
+- **Production build without USB serial.** `DEBUG_SERIAL 1` keeps USB running,
+  and some `Serial` calls in `setup()` and the QSPI helpers are not behind
+  the macro.
+- **Fewer header saves** (`FSYNC_EVERY` above 10): fewer erases and less wear,
+  at the cost of slightly more data at risk on power loss.
+- **LEDs:** cut the LED jumpers on the boards; the blue "connected" LED could
+  blink instead of staying on.
+- **Below about 8.8 mA with slow-motion wake** needs a separate low-power
+  motion sensor that wakes the microcontroller, which then powers the BNO086.
 
 ---
 
 ## 5. Design decisions: identity, time, calibration, and the recording protocol
 
-This chapter records the reasoning behind stages 3–5, so that a later change
-does not undo it without knowing why it was made.
+This chapter records the reasoning behind steps 3–5 of the pipeline, so that
+a later change does not undo it without knowing why it was made.
 
-### 5.1 Starting facts (from the firmware)
+### 5.1 Starting facts
 
-- The nodes log the **full Rotation Vector** (report `0x05`), which is
-  **referenced to the magnetometer**. Every node's orientation is therefore
-  already in a **shared world frame** (gravity and magnetic north), rather
-  than in the arbitrary per-node heading that a Game Rotation Vector would
-  give.
+- The nodes log the **full Rotation Vector** (BNO086 report `0x05`), which is
+  referenced to the magnetometer, so every node's orientation is already in
+  a **shared world frame**. A Game Rotation Vector would give each node its
+  own arbitrary heading instead.
 - Each sample is timestamped with the node's free-running **`millis()`**,
-  which starts at zero on **power-up** (when the battery is plugged in).
-  There is no real-time clock.
-- Each node advertises a unique identity, `HULC-IMU-XXXX` (from the BLE MAC
-  address).
+  which starts at zero when the battery is plugged in. There is no real-time
+  clock.
 
 ### 5.2 Node identity: the segment is stored on the node
 
 "Which node is where" (configuration) is kept separate from "how the sensor
-sits on the bone" (calibration), because the two last for different lengths
-of time.
-
-- The segment is a **1-byte code in the log header** (in reserved header
-  bytes, with a tag that marks it as valid), not stored per record and not a
-  string. It is kept through power cycles and erases, set over BLE with
-  control `0x07` at enroll, and reported on the status characteristic. The
-  list of codes is `motion_capabilities.SEGMENT_CODES`, which is the single
-  source for both sides.
-- This makes every **offloaded log self-describing** and removes the risk of
-  mislabelling a file after offload. Offload writes the montage from the
-  headers, so the user only confirms it (§3.3).
-- *Not built, worth trying:* **automatic assignment**, where a scripted
-  "raise your right arm" detects which node moved and assigns its segment.
+sits on the bone" (calibration), because they last for different lengths of
+time. The segment is a **1-byte code in the log header** (with a tag that
+marks it as valid), set over BLE with `0x07` at enroll, kept through power
+cycles and erases, and reported in the status characteristic (§4.3). The
+codes are `motion_capabilities.SEGMENT_CODES`, the single source for the
+firmware and the analysis. Every offloaded log therefore says what it
+measured, and offload builds the block's montage from the nodes (§3.3).
 
 ### 5.3 Time offset versus mounting calibration
 
 Two quantities are measured again at the start of each block. They are
-**independent** and should not be confused:
+independent and should not be confused:
 
 | | Aligns | Changed by | Can be reused? | Measured by |
 |---|---|---|---|---|
 | **Time offset** | The nodes' clocks (in time) | **Drift** (tens of ppm, a few seconds a day) and any **restart** | **No** | The sync movement (cross-correlation in reconcile) |
 | **Mounting calibration** | Sensor to segment (in space) | Every **re-mount** | **Yes** | The freeze, or reuse after a check |
 
-- **The time offset is not reused.** The nodes stay powered while they
-  charge, so `millis()` keeps running between blocks. However, each clock
-  started when its battery was plugged in and ticks at its own rate (tens of
-  ppm apart, a few seconds a day), and a node whose battery runs flat starts
-  again at zero. Rather than track the offset across a collection period,
-  each block measures it again from its own sync movement. Within a block
-  the offset holds (drift is negligible over minutes; for long sessions, see
-  [§6.11](#611-long-session-drift-tracking-textoffsett-as-a-fitted-curve)).
-- **The mounting calibration is kept through a power cycle** (it is
-  physical) and is lost only when the node is re-mounted, so it can be
-  reused after a check.
-- Charging between blocks renews **both**: the straps come off, and each
-  charge is also when the nodes are offloaded and erased, so every block
-  starts a new log that is aligned and calibrated on its own. This is why
-  the sync movement and the freeze form one routine at the start of every
-  block. A node that restarts in the middle of a log is caught by
-  reconcile's clock-restart check.
-
-![What changes the time offset and the mounting calibration between blocks, and how the sync movement and the freeze restore them](img/diagrams/time-vs-mount.png)
-
-<!-- diagram: time-vs-mount -->
-<details><summary>Mermaid source</summary>
-
-```text
-flowchart LR
-    P["Clocks drift apart,<br/>or a node restarts"] --> TO["Time offset changes"]
-    RM["Straps re-mounted"] --> MO["Mounting calibration is lost"]
-    CH["Charging between blocks"] --> RM
-    CH --> E["Offload + erase:<br/>a new log per block,<br/>analyzed on its own"] --> TO
-    TO --> S["Fixed by the sync movement<br/>(reconcile)"]
-    MO --> F["Fixed by the freeze<br/>(calibrate_segments)"]
-    S & F --> B["Every block starts with:<br/>sync movement, then freeze"]
-```
-
-</details>
+The nodes stay powered while they charge, so their clocks keep running
+between blocks, but they never agree: each started at a different moment and
+ticks at its own rate, and a node whose battery runs flat starts again at
+zero. Each block therefore measures the offset again from its own sync
+movement; within a block, drift is negligible (for long recordings, see
+[§6.11](#611-long-session-drift-tracking-textoffsett-as-a-fitted-curve)).
+The mounting calibration is physical: it survives a power cycle and changes
+only when the node is re-mounted, so it can be reused after a check. A node
+that restarts in the middle of a log is caught by reconcile's clock-restart
+check.
 
 ### 5.4 Calibration: the sensor-to-segment solve
 
-A sensor strapped to the arm reports its orientation correctly in the world
-frame, but it sits on the arm at some unknown angle, so its reading does not
-yet describe the bone. The one unknown is that angle: the fixed rotation
-between the sensor and the bone. To find it, the subject holds a pose whose
-answer is known (the N-pose: arms down, palms to the thighs). Whatever the
-sensor reads in that pose is the correction. Removing it from every later
-reading makes the numbers anatomical. A joint angle is then one corrected
-sensor relative to its neighbour (upper arm relative to torso gives the
-shoulder), and it reads zero in the freeze pose.
+A sensor reports its orientation correctly in the world frame, but it sits on
+the segment at an unknown angle, the **mounting offset**. During the freeze
+the subject holds a pose whose joint angles are known (arms down, palms to the
+thighs), so whatever each sensor reads then is its mounting offset. Removing
+it from every later reading makes the orientation the bone's, and makes
+every joint angle read zero in the freeze pose.
 
-The freeze has three purposes: it **solves the mounting offset**, **sets the
-anatomical zero**, and serves as a **fallback for aligning the headings**
-where the magnetometer is disturbed near metal. The pose sets each segment's
-zero, but its axes still follow the world compass. To tie the joint axes to
-the body (X anterior, Y superior, Z right), calibration also needs the
-subject's **facing**. It comes from the torso node, otherwise from the elbow
-hinge axis (which needs at least 30° of flexion), otherwise from
-`--facing-deg`, otherwise it is unknown. It is stored as `anatomical_frame`
-in `calibration.json`, and joint angles are clinical only when it is
-present.
+The freeze sets each segment's zero, but its axes still follow the world
+compass. To tie the joint axes to the body (X anterior, Y superior, Z right),
+calibration also needs the subject's **facing**. It comes from the torso
+node, otherwise from the elbow's hinge axis (which needs at least 30° of
+flexion), otherwise from `--facing-deg`. It is stored as `anatomical_frame`
+in `calibration.json`; without it, angles are relative only.
 
 ![The same freeze before and after calibration, side view: Raw (left) shows the sensors' own orientation; Calibrated (right) shows the arm hanging straight, which is what the freeze pose should look like](img/review-neutral-raw-vs-calibrated.png)
 
 What `calibrate_segments.py` implements:
 
-- **Freeze window:** `--window`, otherwise the montage's `t_window_ms` (only
-  if the data there is still), otherwise automatic detection: the first
-  hold of at least 3 s, at most 0.04 rad/s at its quietest, after the sync
-  movement (`hold-first` recordings take the first hold of the log).
-- **Session end:** no closing pose is needed. The log's final rest in a pose
-  that no body holds (the nodes lying on the charger) marks the nodes coming
-  off (`find_session_end`; `--end` sets it by hand). An earlier version
-  required a closing hold, which could not be guaranteed in practice.
+- **Freeze window:** `--window` if given; otherwise the montage's
+  `t_window_ms` if the data there is still; otherwise detected automatically
+  as the first hold of at least 3 s after the sync movement whose quietest
+  2 s average at most 0.04 rad/s (`hold-first` recordings take the first
+  hold of the log).
+- **Session end:** detected where the nodes come off (§5.5.4), or set with
+  `--end`.
 - **Gating:** every metric that depends on calibration is gated on
-  `calibration.captured` **and** each node's `calibrated` flag. When either is
-  false, the metric is still listed but marked **relative only**, never as a
-  clinical number. An uncalibrated segment affects every joint it is part of
-  (an uncalibrated `forearm_r` flags both `elbow_r` and `wrist_r`).
+  `calibration.captured` and each node's `calibrated` flag; when either is
+  false, the metric is marked relative only. An uncalibrated segment affects
+  every joint it is part of (an uncalibrated `forearm_r` flags both
+  `elbow_r` and `wrist_r`).
 - **Reuse after a check:** `calibration.json` stores the offsets and a
   consistency baseline, and `calibrate_segments.py verify` checks a later
   still pose against it. A small residual means the calibration can be
-  reused; one over the threshold means the pose must be held again. The same
-  check catches strap slippage within a session.
+  reused; the same check catches a strap that slipped.
 
-**Placement:** a node does not need to be aligned with the anatomy, only
-placed **the same way each time** (a fixed tilt is part of the mounting
-offset and is removed). The sensitive axis is roll around the limb, which
-corrupts pronation/supination and axial rotation, so each node goes on a
-consistent flat spot next to a bony landmark.
-
-**Easier calibration, in order of effort** (1 and 2 are built): (1) include
-the pose in the routine at the start of each block; (2) reuse after a check;
-(3) functional calibration from ordinary motion (gravity gives the vertical,
-and a joint's gyroscope axis gives the hinge), which removes the deliberate
-pose; (4) rigid, anatomically shaped pockets in the garment, so that (2) can
-reuse the calibration more often.
+A node does not need to be aligned with the anatomy, only placed the same way
+each time, because a fixed tilt is part of the mounting offset. The most
+sensitive direction is roll around the limb, which affects
+pronation/supination and axial rotation.
 
 ---
 
@@ -1083,80 +876,22 @@ which pipeline or firmware setting each number comes from.
 
 | Step | What the pipeline gets from it | Without it |
 |---|---|---|
-| **1 Strap on** | Nothing; nothing from this part is used. The nodes may sit still for minutes, and the analysis only starts after the sync movement. | — |
-| **2 Sync movement** | One strong motion shared by every node, so that their independent clocks can be aligned (`reconcile_nodes.py`); the landmark that calibration uses to find the freeze; and motion that wakes every node and settles its magnetic heading. | Clocks off by milliseconds to tens of seconds, and the freeze cannot be told apart from stillness during setup |
-| **3 Freeze** | The sensor-to-segment mounting offsets and the zero of every angle (`calibrate_segments.py`), plus which way the subject faces (torso node). It comes after the movement, so the nodes are awake and any strap shift from the twisting is already part of the calibration. | Every angle is measured against a wrong zero |
+| **1 Strap on** | Nothing; this part is not analyzed. | — |
+| **2 Sync movement** | One strong motion shared by every node, so that their clocks can be aligned (`reconcile_nodes.py`); the landmark that calibration uses to find the freeze; and motion that wakes every node and settles its magnetic heading. | Clocks off by milliseconds to tens of seconds, and the freeze cannot be told apart from stillness during setup |
+| **3 Freeze** | The mounting offsets and the zero of every angle (`calibrate_segments.py`), plus the facing (torso node). Coming after the movement, it includes any strap shift from the twisting. | Every angle is measured against a wrong zero |
 | **4 Task** | The movement of interest. With no torso node, elbow bends also give the facing. | — |
-| **5 Nodes taken off** | Where the analysis ends: the nodes lie still on the charger in a pose that no body holds, then go to IDLE. | — (detected, §5.5.4) |
-
----
+| **5 Nodes taken off** | Where the analysis ends (§5.5.4). | — |
 
 #### 5.5.2 Timings and the settings behind them
 
 | Step | Duration | Why (the setting) |
 |---|---|---|
-| Sync movement | At least 4 s, ideally about 10 s: 3–5 cycles of about 1–1.5 s | The clocks are aligned by matching the nodes' world angular-velocity vectors, and one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognizes the movement as every node moving (≥ 0.4 rad/s) **and turning together** (coherence of their rotation vectors ≥ 0.8) for at least 3 s (`SYNC_MIN_RAD_S`, `SYNC_MIN_COHERENCE`, `SYNC_MIN_MS`). In real recordings, trunk twists moved the torso at only 0.4–0.8 rad/s but with a coherence of 0.84–0.96; strapping a node on moves the nodes independently (coherence 0.2–0.7), so it never counts. Faster than about 2 cycles per second aliases at 10 Hz. 10 s lets a node that wakes late still record most of it. |
-| Freeze | At least 3 s, ideally about 5 s, at most 8 s; starting within 20 s of the movement | The freeze is the **first still stretch after the sync movement that lasts at least 3 s and whose quietest 2 s average at most 0.04 rad/s (about 2°/s)** (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`). Pauses in motion only slow to about 0.06–0.09 rad/s, so the subject has to hold fully still. After 10 s still, a node drops to 1 Hz STATIC (`NOT_MOTION_TO_STATIC_MS`); this is still usable, but 5 s keeps 10 Hz. |
+| Sync movement | At least 4 s, ideally about 10 s: 3–5 cycles of about 1–1.5 s | The clocks are aligned by matching the nodes' world angular-velocity vectors, and one clear shared burst gives a distinct peak (`sync_peak_ratio` ≥ 1.25, `VECTOR_PEAK_RATIO_MIN`). Calibration recognizes the movement as every node moving (≥ 0.4 rad/s) and turning together (coherence of their rotation vectors ≥ 0.8) for at least 3 s (`SYNC_MIN_RAD_S`, `SYNC_MIN_COHERENCE`, `SYNC_MIN_MS`). In real recordings, trunk twists moved the torso at only 0.4–0.8 rad/s but with a coherence of 0.84–0.96, while strapping a node on gives 0.2–0.7, so it never counts. Faster than about 2 cycles per second aliases at 10 Hz. |
+| Freeze | At least 3 s, ideally about 5 s, at most 8 s; starting within 20 s of the movement | The first still stretch after the sync movement lasting at least 3 s whose quietest 2 s average at most 0.04 rad/s, about 2°/s (`SYNC_TO_HOLD_MAX_MS`, `NEUTRAL_MIN_HOLD_MS`, `NEUTRAL_QUIET_RAD_S`). Pauses in motion only slow to about 0.06–0.09 rad/s. After 10 s still, a node drops to 1 Hz (`NOT_MOTION_TO_STATIC_MS`). The palms facing the thighs define the forearm's zero, as `metrics.py` and the OpenSense models assume. |
 | Rests in the task | 5–8 s | At least 5 s separates sets in the repetition count (`REP_PAUSE_S`); at most 8 s keeps the nodes at 10 Hz. |
-| Still in the task | Less than 60 s | After 60 s without motion, a node goes to IDLE and stops logging until it is moved (`NOT_MOTION_TO_IDLE_MS`), and the first moments after waking can be lost. After a long break, repeat steps 2–3. |
-| Nodes taken off | Lying flat for at least 10 s | IDLE needs ON_TABLE (3 s to STATIC, then 5 s to IDLE), and offload needs IDLE. |
-
-An example composition of a block (seconds; the task part varies):
-
-![An example composition of a block over about 95 seconds: strap on, sync movement, freeze, two task sets with a rest, nodes taken off; the analysis window runs from the freeze to the nodes coming off](img/diagrams/block-timeline.png)
-
-<!-- diagram: block-timeline -->
-<details><summary>Mermaid source</summary>
-
-```text
-%%{init: {"gantt": {"useWidth": 960, "fontSize": 18, "sectionFontSize": 18, "barHeight": 30, "barGap": 8, "leftPadding": 170}}}%%
-gantt
-    dateFormat X
-    axisFormat %s s
-    section Subject
-    Strap on (not analyzed)       :a1, 0, 20
-    Sync movement (4–10 s)        :crit, a2, 20, 30
-    Freeze (3–8 s, within 20 s)   :crit, a3, 30, 35
-    Task set 1                    :a4, 35, 55
-    Rest (5–8 s)                  :a5, 55, 61
-    Task set 2                    :a6, 61, 81
-    Nodes taken off, flat (≥ 10 s) :a7, 81, 95
-    section Analysis window
-    Calibrated and measured       :active, b1, 30, 81
-```
-
-</details>
-
-##### The freeze pose (N-pose)
-
-- Standing upright, weight even, looking ahead. Sitting is fine if the trunk
-  is upright and the arms hang freely clear of the chair.
-- Arms straight down at the sides, **elbows fully straight**, shoulders
-  relaxed.
-- **Palms facing the thighs** (thumbs forward). This defines the forearm's
-  zero, and it is what `metrics.py` and the OpenSense models assume.
-
-##### The sync movement, per montage
-
-| Montage | Movement | Key points |
-|---|---|---|
-| upper arm + forearm | **Whole-arm swings** forward and back from the shoulder, with the elbow **locked straight**, about 60–90° each way | Bending the elbow during the swing weakens the match. |
-| torso + upper arm | **Trunk twists** left and right, ±30–45°, with the hand **on the hip** | An arm swing leaves the torso still, so it cannot align the torso node. |
-| torso + upper arm + forearm | **Trunk twists** as above, with the whole arm against the side | One movement moves all three nodes. |
-
-##### Task rules
-
-- **Speed:** at 10 Hz, at most about 1 repetition per second, smooth. Fast
-  snaps (above about 300°/s) are where the angles and model fits are worst.
-- **Range:** the full range of interest, but not past what the subject can
-  hold steadily. Wobble increases with speed and effort.
-- **No torso node:** the front direction comes from the elbow's hinge, which
-  needs at least 30° of elbow flexion somewhere in the block
-  (`HINGE_MIN_FLEX_DEG`). Curls cover this; otherwise, add three slow elbow
-  bends.
-- **Straps:** if a strap slips or is adjusted, the rest of the block has a
-  different mounting. End the block there (take the nodes off and offload)
-  and start a new one.
+| Still in the task | Less than 60 s | After 60 s without motion, a node goes to IDLE and stops logging until it is moved (`NOT_MOTION_TO_IDLE_MS`). |
+| Elbow bends (no torso node) | At least 30° of flexion somewhere in the block | The facing then comes from the elbow's hinge (`HINGE_MIN_FLEX_DEG`). |
+| Nodes taken off | Lying flat for at least 10 s | IDLE through the ON_TABLE timeouts (3 s, then 5 s, §4.2); offload needs IDLE. |
 
 #### 5.5.3 Why the torso node goes on the front of the chest
 
@@ -1164,52 +899,43 @@ The facing is found on the assumption that the torso node's face points out
 of the chest [`TORSO_FORWARD_IN_SENSOR` in `calibrate_segments.py`]. A node on
 the side of the trunk is flagged as low-confidence and the facing is lost. If
 the torso position is ever standardized elsewhere, that constant has to
-change with it. Otherwise, a placement only needs to be repeatable, not
-aligned: the freeze lines each node up with its bone, and a repeatable
-placement also lets `calibrate_segments.py verify` reuse a stored
-calibration.
+change with it.
 
 #### 5.5.4 Where the analysis ends
 
 No closing pose is needed. The end of the log is read node by node
-[`calibrate_segments.find_session_end`]: a node laid on the charger rests
-still, in a pose that no body holds (tilted more than 60° from the freeze,
-[`OFF_BODY_TILT_DEG`]), until the log ends. The nodes come off one at a time,
-so the **first** node found lying off the body marks the start of taking
-them off, even while another is still being handled. The analysis ends where
-taking them off began: at the last whole-body pause within 10 s before that
-point [`HANDLING_MAX_MS`], otherwise 5 s before it [`HANDLING_MARGIN_MS`]. If
-the log ends in motion, or with the nodes still worn, the analysis runs to
-the end and the block check reports it. The review page's Timeline lets a
-person correct either detection, which runs the analysis again with
-`--window t0,t1` or `--end t`.
+[`calibrate_segments.find_session_end`]: a node laid down rests still, in a
+pose that no body holds (tilted more than 60° from the freeze,
+[`OFF_BODY_TILT_DEG`]), until the log ends. The **first** node found lying
+off the body marks the start of taking the nodes off, and the analysis ends
+at the last whole-body pause within 10 s before that point
+[`HANDLING_MAX_MS`], otherwise 5 s before it [`HANDLING_MARGIN_MS`]. If the
+log ends in motion or with the nodes still worn, the analysis runs to the end
+and the block check reports it. The review page's Timeline can correct
+either detection, which runs the analysis again with `--window t0,t1` or
+`--end t`.
 
 #### 5.5.5 The block check: what each line reads
 
-`hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `UNUSABLE`
-and one line per check, also saved as `block_check.json`. What each check is
-computed from:
+`hulc-ms analyze` (and the app) ends with `BLOCK CHECK: OK` or `UNUSABLE` and
+one line per check, also saved as `block_check.json` [`block_check()` in
+`analyze_session.py`]:
 
-| Check | Looks at | UNUSABLE / NOTE when | For the next block |
-|---|---|---|---|
-| Sync | `aligned.quality.json` | UNUSABLE: a node is not aligned, or the vector peak ratio is below 1.25 | A bigger sync movement that moves every node |
-| Clock | `clock_restarts` | NOTE: a node restarted mid-block | Charge before the battery runs out |
-| Logging rate | Each log's median rate | NOTE: below 8 Hz | Check the firmware version and the flash watermark |
-| Freeze | Calibration `neutral.found_by` | UNUSABLE: no clean freeze after the sync movement (calibration fell back to a weaker choice); NOTE: a node was not fully still (pose spread above 3°) | Freeze for about 5 s right after the movement, palms to the thighs |
-| Facing | Calibration `heading` | NOTE: front direction unknown, so angles are relative only | Torso node flat on the sternum; with no torso node, include elbow bends |
-| Session end | Calibration `end` | NOTE: the nodes were not seen coming off | `--end <t_ms>` if the end of the log includes taking them off |
-| Trunk | Metrics: torso median tilt from the freeze | UNUSABLE: above 30° for most of the session, meaning the torso was calibrated in the wrong pose (e.g. its node still on the table) or its strap moved | Strap the torso node on before the sync movement, or set the real freeze with `--window` |
-| Angles | Metrics plausibility | UNUSABLE: a joint outside physiological limits for more than 25% of the session (a calibration or facing error); NOTE: implausible angles | Check the freeze pose, the facing and strap slip |
-| Model fit | OpenSense `fit_lost` | NOTE: the model lost the sensors for some seconds | Compare with the Sensors view on the review page |
+| Check | Computed from | UNUSABLE / NOTE when |
+|---|---|---|
+| Sync | `aligned.quality.json` | UNUSABLE: a node is not aligned, or the vector peak ratio is below 1.25 (`PEAK_RATIO_MIN`) |
+| Clock | `clock_restarts` | NOTE: a node restarted mid-block |
+| Logging rate | Each log's median rate | NOTE: below 8 Hz (`MIN_ACTIVE_HZ`) |
+| Freeze | Calibration `neutral.found_by` | UNUSABLE: no clean freeze after the sync movement; NOTE: a node's pose spread above 3° (`NOISY_POSE_DEG`) |
+| Facing | Calibration `heading` | NOTE: facing unknown, so angles are relative only |
+| Session end | Calibration `end` | NOTE: the nodes were not seen coming off |
+| Trunk | Metrics: torso median tilt from the freeze | UNUSABLE: above 30° (`TRUNK_MAX_MEDIAN_DEG`), meaning the torso was calibrated in the wrong pose or its strap moved |
+| Angles | Metrics plausibility | UNUSABLE: a joint outside physiological limits for more than 25% of the session (`OUTSIDE_LIMITS_UNUSABLE_FRAC`); NOTE: implausible angles |
+| Model fit | OpenSense `fit_lost` | NOTE: the model lost the sensors for some seconds |
 
-Only four checks can make a block UNUSABLE: Sync, Freeze, Trunk and Angles.
-Each of these makes every angle in the block wrong, not just part of it. The
-other checks give NOTEs, because the numbers stay usable with a caveat.
-UNUSABLE means that the numbers should be kept out of the results unless the
-analysis can fix them. The freeze and the end can be set on the Timeline
-(`--window`, `--end`), which fixes the Freeze and Trunk cases when a real
-still hold exists. The "For the next block" column is what the operator
-changes for the blocks still to come.
+Only Sync, Freeze, Trunk and Angles can make a block UNUSABLE, because each
+of them makes every angle in the block wrong; the other checks leave the
+numbers usable with a caveat.
 
 ---
 
@@ -1547,8 +1273,8 @@ against real hardware timing (§6.9).
 
 ### 6.8 Known limitations
 
-- **Shared motion is required** (§6.4). Without it, the sync movement at the
-  start of the block is what makes alignment possible.
+- **Shared motion is required** (§6.4), which is what the sync movement at
+  the start of each block provides.
 - **The clock model is a straight line** (Eq. 1). That holds over minutes. A
   long session in which temperature changes the crystals could need the offset
   to be re-estimated piece by piece; §6.11 describes how a full-day recording
@@ -1567,25 +1293,15 @@ against real hardware timing (§6.9).
 
 ---
 
-### 6.9 Algorithm / Technique Justification
+### 6.9 Basis of the method
 
-The method combines **standard techniques**:
-
-- **Cross-correlation to estimate a time delay**, the core of the method. The
-  classic reference is Knapp & Carter, *"The Generalized Correlation Method
-  for Estimation of Time Delay,"* IEEE Trans. ASSP, 1976 (the basis of GCC and
-  GCC-PHAT).
-- **Aligning unsynchronized sensors through a shared signal**, as is standard
-  for synchronizing multiple cameras, motion-capture systems, audio tracks and
-  multiple IMUs (by cross-correlating a common motion feature such as rotation
-  rate).
-- **An offset plus a linear drift** as the clock model, as in NTP, PTP and
-  sensor networks.
-- **Parabolic peak interpolation**, a textbook way to estimate a peak between
-  samples.
-
-**Status:** the implementation has **not** yet been benchmarked against
-hardware ground truth.
+The method combines standard techniques: cross-correlation to estimate a
+time delay (Knapp & Carter, *"The Generalized Correlation Method for
+Estimation of Time Delay,"* IEEE Trans. ASSP, 1976), aligning unsynchronized
+sensors through a shared signal (as is common for cameras, motion capture and
+multiple IMUs), an offset plus a linear drift as the clock model (as in NTP
+and PTP), and parabolic peak interpolation. It has not yet been checked
+against hardware ground truth.
 
 ---
 
@@ -1593,122 +1309,41 @@ hardware ground truth.
 
 1. **Measure the real error.** Wire a shared electrical sync pulse to an
    input pin on every node, timestamp it with `millis()`, and report the
-   actual alignment error in milliseconds instead of a confidence score.
-2. **GCC-PHAT.** Whiten the cross-spectrum before the inverse FFT. This gives
-   a much sharper and more robust delay peak when there is noise or there are
-   gaps.
-3. **Robust fitting.** Use RANSAC or weighted least squares for the offset and
-   drift, so that dropouts cannot pull the estimate off.
-4. **Richer feature.** Correlating the full angular-velocity vector rather
-   than only its size, to remove the direction ambiguity of §6.8. This is now
-   the default (§6.2.1).
+   actual alignment error in milliseconds.
+2. **GCC-PHAT.** Whiten the cross-spectrum before the inverse FFT, for a
+   sharper and more robust delay peak with noise or gaps.
+3. **Robust fitting.** Use RANSAC or weighted least squares for the offset
+   and drift, so that dropouts cannot pull the estimate off.
 
 ---
 
 ### 6.11 Long-session drift tracking: $\text{offset}(t)$ as a fitted curve
 
-The single straight line of §6.5 (one offset and one drift for the whole
-recording) assumes the clocks drift apart at a **constant** rate. That holds
-for a recording of minutes at a stable temperature. It does **not** hold for a
-full day of wear, when body and room temperature change the crystals' rates
-during the day (§6.8). This section describes the model for that long case,
-and clears up two ways the names "offset" and "drift" can mislead.
+The single straight line of §6.5 assumes the clocks drift apart at a
+constant rate, which holds for minutes at a stable temperature but not for a
+full day of wear, when temperature changes the crystals' rates. For that
+case, the offset is a curve, $\text{offset}(t)$, and its slope is the drift.
 
-#### 6.11.1 The model: one curve, sampled by events
+Every moment of shared motion (the sync movement, or everyday movements such
+as standing up or turning) gives one noisy measurement of the curve,
+$\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ through Eq. (6), with a
+confidence $r_j$ (Eq. 8). Each measurement stands on its own; they are not
+added together. Drift can only be seen once measurements are spread out in
+time, which is why the short sync movement gives a good offset but a poor
+drift. Repetitive movement such as steady walking pins the offset poorly.
 
-There is one underlying curve: the true clock difference between nodes $B$ and
-$A$ at every moment, and its slope.
+The measurements are combined rather than replaced: either a straight line
+fitted through the recent points within a sliding window, or a Kalman filter
+that predicts the offset between events and moves it towards each new
+measurement according to their relative confidence. Because the analysis
+runs afterwards on the whole log, the offset at any time can be interpolated
+between measurements on both sides, so extending an old value forward is
+only needed at the ends of the log or across a gap.
 
-```math
-\text{offset}(t) \quad [\text{ms}], \qquad \text{drift}(t) = \frac{d\,\text{offset}}{dt}
-```
-
-Every moment of shared motion (the sync movement at the start of a block, or
-everyday movement during the day, §6.11.2) gives one **noisy measurement** of
-this curve. Cross-correlating the two nodes' motion around the event (vector,
-or speed as the fallback) gives one point $\bigl(t_j,\
-\widehat{\text{offset}}_j\bigr)$ through Eq. (6), with a confidence $r_j$
-(Eq. 8). Reconciliation **rebuilds the curve** by fitting or interpolating
-through these points.
-
-The names can hide two things:
-
-- **Each offset measurement stands on its own.** Every event measures
-  $\text{offset}(t_j)$ directly. Event $j{+}1$'s offset is never added onto
-  event $j$'s, because that would count it twice. Error only builds up *between*
-  measurements, when the curve has to be extended forward
-  ($\approx \text{drift}\times\Delta t$): it is the cost of a gap, not part of
-  the model.
-- **Drift is the slope, not a separate measurement.** It can only be seen once
-  measurements are spread out in time. That is why the sync movement (a few
-  seconds) gives a good offset but a poor drift: the time span is too short to
-  rise above the noise [`DRIFT_RESOLVE_MS`, Eq. 10]. One event's offset is
-  noisy too, so the right approach is neither "trust it for $N$ minutes, then
-  jump to the next one" (which makes the curve jump and throws away good
-  measurements) nor ignoring the earlier estimate: the measurements are
-  **combined** (§6.11.2).
-
-#### 6.11.2 Getting the anchors, and combining them over time
-
-**Where the measurements come from.** They do not have to be deliberate. Over
-a day of wear the body produces many **shared** movements (standing up,
-starting to walk, turning), each giving a new
-$\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ through the same steps, with the
-confidence test (Eq. 9) deciding which pairs of nodes it is valid for.
-Sudden one-off movements (sit-to-stand, turns) are best. Repetitive movement
-(steady walking) matches equally well at several shifts (§6.3, §6.4) and pins
-the offset poorly even when shared. An event only re-anchors the nodes that
-moved together, and different events cover different nodes, so over a day
-this evens out. A node that stays still for a long time is not re-anchored,
-but its signal is flat then, so a small misalignment does no harm, and its
-next movement is itself a new anchor.
-
-**How the measurements are combined.** No fixed "valid for" time is needed.
-An old measurement stays useful while the error from extending it stays
-within budget. That depends on how fast the drift itself wanders
-(temperature changes, the *process noise*) compared with how precisely one
-event pins down the offset (the *measurement noise*). Two standard methods
-track offset and drift together as a running estimate instead of switching on
-a timer:
-
-- **Sliding-window least squares.** Fit a line through the recent
-  $\bigl(t_j, \widehat{\text{offset}}_j\bigr)$ points within a window $W$:
-  long enough for a reliable slope, short enough that the drift is roughly
-  constant inside it.
-- **Kalman filter.** Between events, predict
-  ($\text{offset}\mathrel{+}= \text{drift}\cdot\Delta t$, with the drift
-  allowed to wander slowly and the uncertainty growing); at each event, move
-  the estimate towards the measurement by an amount set by their relative
-  confidence. Old information fades gradually instead of being dropped, and
-  the process-noise setting controls how fast.
-
-Either way, a new event neither replaces the earlier estimate nor adds to it;
-it pulls the estimate *partway* towards itself. The drift only changes with
-temperature, so events need not be frequent.
-
-**Afterwards, most of this does not matter.** "How long is an old value
-good for?" is a real-time question, when only the past is available. This
-pipeline works afterwards, with the whole log available at reconcile time, so
-almost every moment has measurements **on both sides**. The offset at time
-$t$ is then found by **interpolating between the measurements on either
-side**, rather than extending an old one forward, and the error is much
-smaller. Extending forward is only needed at the very start and end of the
-log, or inside a gap with measurements on one side only.
-
-#### 6.11.3 Where the code is, and the upgrade path
-
-`reconcile_nodes.py` currently fits the **single straight line** of §6.5, the
-simplest version, which is correct for a recording of minutes at a stable
-temperature. Supporting full-day recordings means replacing that line with
-the **sliding-window fit or Kalman filter** of §6.11.2, started from the sync
-movement and fed by everyday movements, and then reading the offset by
-interpolation. The per-event measurement, the confidence test and the
-window measurements all exist already [`lag_and_confidence()`,
-`_windowed_lags()`, `_pearson_at_lag()`]. What is new is keeping offset and
-drift as a **running estimate over the whole log** instead of two fixed
-numbers. Robust fitting (§6.10, item 3) and GCC-PHAT (§6.10, item 2) fit in
-directly: they sharpen the individual measurements and reduce the weight of
-bad ones.
+`reconcile_nodes.py` currently fits the single straight line of §6.5. The
+pieces for the long case already exist [`lag_and_confidence()`,
+`_windowed_lags()`, `_pearson_at_lag()`]; what is new is keeping the offset
+and drift as a running estimate over the whole log.
 
 ---
 
@@ -1741,7 +1376,7 @@ presented as a solid one.
   names (flexion, abduction…) need not match the actual movement. On the
   review page these rows are dimmed in the raw view. Calibration is what
   turns a sensor's orientation into an *anatomical* angle
-  ([§5.4](#54-calibration-the-sensorsegment-solve)).
+  ([§5.4](#54-calibration-the-sensor-to-segment-solve)).
 - **Angles are unwrapped before measuring a range.** Angles wrap around at
   ±180°, so a real sweep through 180° would otherwise look like a jump of
   nearly 360°. The angle series is unwrapped first (`np.unwrap`), so the range
@@ -1750,8 +1385,8 @@ presented as a solid one.
   stretches where they are undefined (the plane of elevation, when the arm
   hangs at the side). Those are unwrapped only within each defined stretch,
   each stretch re-centred on its own [`unwrap_runs_deg`]. Inside an undefined
-  stretch the value is arbitrary, and unwrapping through it once added fake
-  full turns (a real session read a range of 1023°).
+  stretch the value is arbitrary, and unwrapping through it would add false
+  full turns.
 - **Implausible values are flagged.** Every movement gets a plausibility check
   (§7.3): a range of more than a full turn, sample-to-sample jumps larger than
   `JUMP_MAX_DEG`, or (when the anatomical axes are known) more than 2% of
@@ -1784,7 +1419,7 @@ in the same steps [`compute_joint_metrics`; `metrics.py` module docstring]:
 q_seg(t) = q_WS(t) ⊗ q_SB                     apply the cached mounting offset (stage 5)
 q_rel(t) = conj(q_seg_prox) ⊗ q_seg_dist      distal relative to proximal
 q_anat   = conj(q_WA) ⊗ q_rel ⊗ q_WA          re-express in anatomical axes
-(α,β,γ)  = euler(q_anat, sequence)            decompose in the joint's ISB/Wu sequence
+(α,β,γ)  = euler(q_anat, sequence)            decompose in the joint's Euler sequence
 angle_dof = (α|β|γ)[seq_index]                pick the slot that IS this clinical DOF
 ```
 
@@ -1804,11 +1439,11 @@ In words:
    facing that makes elbow movement a pure hinge,
    `estimate_facing_from_elbow`), else from `--facing-deg`. This step is
    needed because calibration zeroes each segment but leaves its axes pointing
-   along the world compass (Z = up), while the ISB recipes assume body axes.
+   along the world compass (Z = up), while the Euler sequences assume body axes.
    Without it, a pure elbow bend would land in whichever angle the facing
    happened to put it. If the facing is not known with confidence, there is no
    `q_WA` and the joint is `clinical: false`.
-4. **Split the rotation into three angles** using the joint's ISB Euler
+4. **Split the rotation into three angles** using the joint's Euler
    sequence, and keep the one that corresponds to each clinical movement.
 
 Some details:
@@ -1887,14 +1522,14 @@ each joint's declared main movement [`Joint.primary`]: elevation for the
 shoulder, flexion/extension for the elbow and wrist. If none is declared, or it
 is undefined all session, the movement with the largest swing is used.
 
-**Shoulder movements** use the ISB `YXY` names rather than flexion and
+**Shoulder movements** use the `YXY` names rather than flexion and
 abduction:
 
 | Key | Name | Meaning |
 |---|---|---|
-| `plane_elev` | Plane of elevation | *Which direction* the arm is raised in: 0° = to the side (abduction, frontal plane), +90° = forward (flexion), −90° = backward (extension). Computed as the raw first YXY angle + 180°, ISB's alternative form of the same rotation, so that elevation can be reported as positive. Undefined with the arm at the side or overhead |
+| `plane_elev` | Plane of elevation | *Which direction* the arm is raised in: 0° = to the side (abduction, frontal plane), +90° = forward (flexion), −90° = backward (extension). Computed as the raw first YXY angle + 180°, the equivalent alternative form of the same rotation, so that elevation can be reported as positive. Undefined with the arm at the side or overhead |
 | `elevation` | Elevation | *How far* the arm is raised, in whichever direction: raising it 60° forward or 60° to the side both read 60°. The main movement |
-| `axial_rot` | Axial rotation (internal / external) | Twist about the upper arm's long axis, internal rotation positive: the raw first + third YXY angles. ISB's own third angle changes with the plane (20° of internal rotation reads +20° with the arm out to the side but −70° with it forward); the sum reads +20° in both, and stays defined with the arm at the side. Undefined only overhead |
+| `axial_rot` | Axial rotation (internal / external) | Twist about the upper arm's long axis, internal rotation positive: the raw first + third YXY angles. The third angle on its own changes with the plane (20° of internal rotation reads +20° with the arm out to the side but −70° with it forward); the sum reads +20° in both, and stays defined with the arm at the side. Undefined only overhead |
 
 ---
 
@@ -2017,14 +1652,13 @@ All are defined at the top of `metrics.py`:
 
 Once each node is calibrated, the joint angles still have to be worked out
 from the segment orientations. The part of the analysis that does this is the
-**pose solver**, and this chapter explains which one to report, and why. Both
-solvers take the same input, each segment's calibrated orientation (a
-quaternion) at every timestamp, and produce joint angles; they differ in how
-they get from one to the other:
+**pose solver**. Both solvers compared here take the same input, each
+segment's calibrated orientation (a quaternion) at every timestamp, and
+produce joint angles:
 
 - **The default chain** (`calibrate_segments.py` → `metrics.py`) treats each
   joint separately. For the elbow, it takes the forearm's orientation
-  relative to the upper arm's and breaks that rotation into angles such as
+  relative to the upper arm's and splits that rotation into angles such as
   flexion and pronation (chapter 7). It is simple, fast and needs no other
   software.
 - **OpenSim OpenSense** (`opensense_ik.py`) works on a published
@@ -2032,10 +1666,9 @@ they get from one to the other:
   matching segment of the model (IMUPlacer, from the neutral pose), then, at
   every timestamp, searches for the pose whose virtual sensors best match the
   measured orientations (inverse kinematics). The joint angles are read off
-  that pose. Two published models were tried:
-  - the **Thoracoscapular Shoulder Model** (TSM; Seth et al. 2019), a model of
-    the right arm built for the upper limb;
-  - **Rajagopal 2016**, a full-body model built for walking.
+  that pose. Two models were tried: the **Thoracoscapular Shoulder Model**
+  (TSM; Seth et al. 2019), a right-arm model built for the upper limb, and
+  **Rajagopal 2016**, a full-body model built for walking.
 
 Neither solver changes the orientations themselves. If a sensor's reading is
 wrong (a slipped strap, magnetic disturbance, a poor freeze), both start from
@@ -2043,27 +1676,21 @@ the same wrong input.
 
 OpenSense was evaluated for three reasons:
 
-- **Physiologically possible poses.** The default chain computes each joint
-  on its own, so sensor noise or a calibration error can produce a pose no
-  real body segments can make. A musculoskeletal model links the segments
-  through anatomical joints with limited ranges of motion, so the fitted pose
-  is expected to stay physiologically possible.
+- **Physiologically possible poses.** A musculoskeletal model links the
+  segments through anatomical joints with limited ranges of motion, so the
+  fitted pose is expected to stay physiologically possible, whereas the
+  default chain computes each joint on its own.
 - **A possible gain in accuracy.** The model fits all the nodes at once, so
   an error in one sensor can be spread across the body instead of passing
   straight into one joint angle. Whether this improves accuracy can only be
-  settled against a lab motion-capture system; the comparison below could
-  show only whether the two solvers agree, and how each recovers simulated
-  ground truth.
-- **An established, citable method.** A paper's methods section has to
-  describe how joint angles were computed and justify it. OpenSense (Al Borno
-  et al. 2022) and the TSM (Seth et al. 2019) are peer-reviewed and used by
-  other groups, so the computation can be cited and reproduced, instead of
-  described and defended as a calculation developed for this project. It
-  does not replace validating the sensors themselves.
+  settled against a lab motion-capture system; the tests below show only
+  whether the solvers agree, and how each recovers simulated ground truth.
+- **An established, citable method.** OpenSense (Al Borno et al. 2022) and
+  the TSM (Seth et al. 2019) are peer-reviewed and used by other groups, so
+  the computation can be cited and reproduced. This does not replace
+  validating the sensors themselves.
 
-The comparison was run on 2026-09-25 with OpenSim 4.6, after the pipeline fixes
-made in the same series of changes: automatic freeze detection, facing from
-the elbow hinge, the wrist in its palms-in frame, and the plausibility flags.
+The comparison was run on 2026-09-25 with OpenSim 4.6.
 
 ### 8.1 Verdict
 
@@ -2074,59 +1701,37 @@ Shoulder Model** for right-arm sessions
 - It is as accurate as the default chain in every condition tested (within
   about 1°), with or without a torso node.
 - Its own joint coordinates agree with the angles the analysis reports.
-- It fits the real recording best (median residual 4.4°, i.e. the typical
-  angle between a sensor and the fitted skeleton) and solves in about 10 s.
-- The method can then be described as a published model, a published
-  inverse-kinematics method and angle conventions intended to follow the ISB
-  recommendations (§3.4; see *Methods text* below), instead of as a
-  calculation developed for this project.
+- It fits the real recording best (median residual 4.4°, the typical angle
+  between a sensor and the fitted skeleton) and solves in about 10 s.
 
 Keep the **default chain** as the path with no extra dependencies and as a
-built-in cross-check, and always look at it next to the model. Inverse
-kinematics can lose track of the sensors after a fast movement and hold a
-wrong pose for seconds (§8.3.1). Such stretches are now detected, shaded on the
-review page and left out of that model's numbers. The review page switches
-between the direct sensor view and each model's solution on the same timeline
-(`analyze_session.py run … --opensense-model A.osim --opensense-model
-B.osim`). Use **Rajagopal** only where TSM has no body part: the left arm and
-the wrists. Report its own joint coordinates only when there is a torso node
-(see finding 3).
+cross-check, and look at it next to the model. Inverse kinematics can lose
+track of the sensors after a fast movement and hold a wrong pose for several
+seconds (§8.3.1); such stretches are detected, shaded on the review page and
+left out of that model's numbers. Use **Rajagopal** only where the TSM has no
+body part (the left arm and the wrists), and report its own joint
+coordinates only when there is a torso node (§8.2.1, finding 3).
 
 ### 8.2 Synthetic ground truth (`tools/evaluation/compare_paths.py`)
 
-Measuring accuracy needs the true angles, so this test makes up a
-movement whose angles are known exactly, creates the sensor readings it would
-produce, and checks how close each method gets.
-
-**The true movement.** A 40 s session shaped like the recording protocol is
-played on the Rajagopal model:
-
-- a neutral hold (palms facing the thighs)
-- a shoulder swing
-- 4 curls with the palm up
-- pronation/supination at 65° abduction
-- a full swing with upper-arm rotation
-- rest, with the trunk swaying throughout
-
-**The sensors.** Virtual nodes are strapped on at random angles, and the
-subject faces 37° away from the world's +Y direction. The TSM runs solve on a
-*different* model from the one that made the true movement, so its joints do
-not exactly match the "subject's", as with a real arm.
-
-**Scoring.** Both methods get the same sensor streams and the same
-calibration, and every angle goes through the same ISB definitions in
-`metrics.py`.
-
-**Conditions:**
+This test makes up a movement whose angles are known exactly, creates the
+sensor readings it would produce, and checks how close each method gets. A
+40 s session shaped like the recording protocol (a neutral hold, a shoulder
+swing, curls, pronation/supination, a full swing with rotation, rest, with
+the trunk swaying throughout) is played on the Rajagopal model. Virtual
+nodes are strapped on at random angles, with the subject facing 37° away
+from the world's +Y direction. The TSM solves on a different model from the
+one that made the movement, as with a real arm. Both methods get the same
+sensor streams and calibration, and every angle goes through the same
+definitions in `metrics.py`.
 
 - **clean:** 60 Hz, about 1° RMS of slowly varying sensor error
-- **realistic:** 8.3 Hz (the firmware's rate when this was run; it now logs
-  about 10 Hz), about 3° RMS of slowly varying error per strap (sensor plus
-  soft tissue), and a 50 ms clock offset on the outer nodes
+- **realistic:** 8.3 Hz (the firmware's rate at the time; it now logs about
+  10 Hz), about 3° RMS of slowly varying error per strap, and a 50 ms clock
+  offset on the outer nodes
 
-Errors are RMS, in degrees (lower is better). Each solver column sits next to
-the default chain from its own run; the random draws differ slightly between
-runs.
+Errors are RMS in degrees (lower is better). Each solver column sits next to
+the default chain from its own run.
 
 **Full right arm (torso + upper arm + forearm; + hand for Rajagopal):**
 
@@ -2149,32 +1754,29 @@ runs.
 (The plane of elevation is undefined with the arm near the side; in the clean
 run the arm stayed there too often for it to be scored.)
 
-**Upper arm + forearm (no torso; today's recordings):**
+**Upper arm + forearm (no torso):**
 
 | elbow DOF | clean: default | clean: Rajagopal | clean: TSM | realistic: default | realistic: Rajagopal | realistic: TSM |
 |---|---|---|---|---|---|---|
 | flexion | 1.2 | 1.1 | 1.1 | 4.2 | 4.7 | 4.3 |
 | pro/sup | 8.3 | 8.1 | 8.2 | 9.4 | 9.2 | 9.2 |
 
-All three methods share the roughly 8° pronation/supination error in that
-table, and it comes from the test, not the methods: the true angles were
-split in the trunk's frame, but the elbow's hinge is 13° off that frame, so
-part of the flexion leaks into the "true" pronation/supination. Scored
-against the Rajagopal model's own coordinates instead, the default chain's
-pronation/supination error is 1.9° (clean) and 4.5° (realistic).
+The shared pronation/supination error of about 8° in this table comes from
+the test, not the methods: the true angles were split in the trunk's frame,
+but the elbow's hinge is 13° off that frame. Scored against the Rajagopal
+model's own coordinates, the default chain's error is 1.9° (clean) and 4.5°
+(realistic).
 
 #### 8.2.1 Findings
 
-1. **Both methods give the same reported angles.** With every method's pose
-   read out through the same ISB definitions, OpenSense and the default chain
-   differ by 0.1–1.3° RMS frame by frame on the no-torso sessions, and by about
-   1° or less in the tables above otherwise. Errors roughly double from clean
-   to realistic, and that comes from the input (8 Hz, strap wobble, clock
-   offset), not the method.
-2. **The model's joints help the shoulder slightly.** Elevation is 0.4–0.7°
-   better with either model when the elbow is included, because the model's
-   joints pull the upper arm into a consistent pose.
-3. **The models' own coordinates differ, and that decides which model can be
+1. **Both methods give the same angles.** OpenSense and the default chain
+   differ by 0.1–1.3° RMS frame by frame without a torso node, and by about 1°
+   or less otherwise. Errors roughly double from clean to realistic, which
+   comes from the input (sampling rate, strap wobble, clock offset), not the
+   method.
+2. **The model's joints help the shoulder slightly:** elevation is 0.4–0.7°
+   better with either model when the elbow is included.
+3. **The models' own coordinates differ, which decides which model can be
    cited.** OpenSense users usually report the model's own joint coordinates.
    Their RMS difference from the angles the analysis reports:
 
@@ -2185,89 +1787,59 @@ pronation/supination error is 1.9° (clean) and 4.5° (realistic).
    | Rajagopal `pro_sup_r` | 1.9° | 6.3–6.4° | 6.2° |
    | Rajagopal `elbow_flex_r` | 0.3° | 0.7–1.3° | 5.2° |
 
-   - Without a torso node, the facing comes from the elbow's hinge. That hinge
-     is 13° from the Rajagopal model's trunk axis, so Rajagopal places the
-     upper arm 13° rotated and its pronation/supination coordinate absorbs the
-     difference.
-   - TSM's forearm coordinate is unaffected.
-   - Without a torso node, TSM's `elbow_flexion` differs by about 4% of the
-     flexion range: its elbow axis is slightly oblique, so it defines flexion
-     slightly differently from the hinge frame.
-4. **TSM needed three changes before it could be used.** All are listed in
-   `opensense_ik.py`:
-   - its default pose set to the freeze pose (the published default has the
-     trunk tilted and the arm raised to the side);
-   - range limits switched on for the elbow and forearm, which ship without
-     them (one solve wandered to −368°);
-   - the shoulder (glenohumeral) angles left without limits: they need to wrap
-     around and have gimbal-lock poses at 0°/180°, where a limited solve got
-     stuck with the arm overhead.
-5. **Facing recovery:** from the torso node, within 0.8–3.7° (clean) and
+   Without a torso node, the facing comes from the elbow's hinge, which is
+   13° from the Rajagopal model's trunk axis, so Rajagopal's
+   pronation/supination coordinate absorbs the difference. The TSM's
+   `elbow_flexion` differs by about 4% of the range because its elbow axis
+   is slightly oblique.
+4. **The TSM needed three changes** (listed in `opensense_ik.py`): its
+   default pose set to the freeze pose; range limits switched on for the
+   elbow and forearm (one solve wandered to −368° without them); and the
+   shoulder angles left without limits, because a limited solve got stuck
+   with the arm overhead.
+5. **Facing recovery** from the torso node: within 0.8–3.7° (clean) and
    1.4–4.1° (realistic).
 
 ### 8.3 Real capture (upper arm + forearm, 2026-09-25)
 
 With real data there are no true angles, so this compares the methods with
-each other and checks how well each fits, rather than measuring accuracy.
+each other and checks how well each fits.
 
 | | default | Rajagopal | TSM |
 |---|---|---|---|
-| neutral window | auto 36.7–38.7 s (placeholder rejected) | same | same |
-| facing | elbow hinge −45° | same | same |
 | elbow flexion ROM | −21…145° | −18…145° | −12…145° |
 | pro/sup ROM | −80…100° | −83…92° | −82…99° |
 | vs default, frame by frame | — | 5.4° flex, 2.3° pro/sup | **1.8° flex, 1.4° pro/sup** |
 | fit residual, median / p95 | — | 5.6° / 20° | **4.4° / 16°** |
 | run time | < 1 s | ~35 s | ~10 s |
 
-The residual is large where the sensors disagree with any rigid skeleton. On
-this recording that happens during fast movements, where 8 Hz sampling and
-timing between the nodes (alignment confidence 0.52) dominate.
+The residual is large where the sensors disagree with any rigid skeleton,
+here during fast movements, where the sampling rate and the timing between
+the nodes dominate.
 
-#### 8.3.1 Solver stability: the model can lose the sensors (2026-09-27)
+#### 8.3.1 Solver stability: the model can lose the sensors
 
-Re-running the same recording after the switch to the vector clock alignment
-(which changed the node alignment by less than 1 ms) made TSM's fit settle in
-a wrong pose for **12 s** (25.7–37.6 s into the analysis window, during the
-wide shoulder swing). The elbow stuck at its 168° flexion limit while the
-sensors showed an almost straight arm, and every sensor was about 90° from the
-fitted skeleton. The earlier run, on the old alignment, tracked that stretch
-fine. Rajagopal, on the new alignment, lost the fit for only 1.1 s in short
-blips.
-
-Inverse kinematics solves each frame starting from the previous pose. A fast
-movement sampled at about 8 Hz can carry the arm past the right solution into
-a wrong one, and the fit stays there until the movement brings it back. The
-residual shows this clearly (median about 92° inside the stretch, against
-2–6° elsewhere), so `opensense_ik.py` now marks frames where any sensor is more
-than 30° [`FIT_LOST_DEG`] from the fitted skeleton as **fit lost**:
-
-- they are left out of that model's metrics (TSM's elbow range back to
-  −12…145° instead of −12…168°), and listed in `pose_solver.fit_lost`;
-- `opensense_fit.csv` records the fit for every frame, and the review page
-  shades those stretches on the angle graph, warns in the live panel and the
-  header, and blanks them from the solver-comparison overlay.
-
-For reporting: a model's angles are only as good as its fit, frame by frame.
-Report the fit-lost time with any model-based number, and use the direct
-sensor path for any long fit-lost stretch.
+On a re-run of the same recording, the TSM fit settled in a wrong pose for
+12 s during the wide shoulder swing: the elbow stuck at its 168° limit while
+the sensors showed an almost straight arm. Inverse kinematics starts each
+frame from the previous pose, so a fast movement sampled at about 8 Hz can
+carry the fit past the right solution. `opensense_ik.py` therefore marks
+frames where any sensor is more than 30° [`FIT_LOST_DEG`] from the fitted
+skeleton as **fit lost**: they are left out of that model's metrics and
+listed in `pose_solver.fit_lost`, `opensense_fit.csv` records the fit for
+every frame, and the review page shades those stretches. Report the fit-lost
+time with any model-based number.
 
 #### 8.3.2 Torso + upper arm: the model adds no constraint (2026-10-01)
 
-The first real torso + upper-arm session: two nodes, new firmware at about
-10.6 Hz; three sideways raises to about 125°, forward and sideways raises to
-about 70°, then fast small swings. With this montage, TSM has exactly as many
-free coordinates as the nodes measure (thorax 3 + shoulder 3 = 2 nodes × 3),
-so the fit matches the nodes exactly: median residual **0.0°**, and its
-elevation (0…126°) and axial rotation (−76…69°) equal the direct path's. A
-model can only add information where the nodes measure more than it needs,
-and two nodes on a ball joint never do. Rajagopal, whose shoulder has range
-limits, could not follow the large raises and lost the fit for 9.9 s.
-
-So with torso + upper arm, report the direct path (or TSM, which gives the
-same) and use the model as a cross-check. The model's constraints start to
-matter with a forearm node (the elbow hinge then over-determines the chain),
-or with joint limits that the subject's real movement respects.
+With torso + upper arm, the TSM has exactly as many free coordinates as the
+two nodes measure (thorax 3 + shoulder 3), so its fit matches the nodes
+exactly (median residual 0.0°) and gives the same angles as the default
+chain. A model only adds information where the nodes measure more than it
+needs, as with a forearm node, where the elbow hinge constrains the chain.
+With this montage, report the default chain and use the model as a
+cross-check. Rajagopal, whose shoulder has range limits, could not follow the
+large raises and lost the fit for 9.9 s.
 
 ### 8.4 Methods text (draft)
 
@@ -2283,8 +1855,8 @@ or with joint limits that the subject's real movement respects.
 > scapulothoracic coordinates were held at the model's resting posture, as
 > the scapula was not instrumented. Ranges were widened to elbow flexion
 > −15–160° and pro/supination ±100°. Shoulder, elbow and forearm angles were
-> expressed from the solved segment orientations following the ISB
-> recommendations [Wu 2005].
+> computed from the solved segment orientations using the Euler sequences in
+> §3.4.
 
 References (check volume and pages before use):
 
@@ -2293,38 +1865,28 @@ References (check volume and pages before use):
 - Al Borno M et al. 2022, *J NeuroEng Rehabil* 19:22
 - Seth A, Dong M, Matias R, Delp SL 2019, *Front Neurorobot* 13:90
 - Seth A et al. 2016, *PLoS ONE* 11(1)
-- Wu G et al. 2005, *J Biomech* 38(5)
 
-Limits to state with it:
-
-- **Scapula:** held fixed, so the "glenohumeral" (shoulder-joint) motion here
-  is the upper arm relative to the thorax.
-- **Validation:** OpenSense's published validation is for walking. This
-  device's accuracy still needs its own check against optical motion capture
-  or a goniometer.
-- **Coverage:** right arm only (TSM). The left arm needs Rajagopal or a
-  mirrored model.
+Limits to state with it: the scapula is held fixed, so the shoulder motion
+is the upper arm relative to the thorax; OpenSense's published validation is
+for walking, so this device's accuracy still needs its own check against
+optical motion capture or a goniometer; and the TSM covers the right arm
+only.
 
 ### 8.5 Recommendations
 
-1. **Record torso + upper arm** for shoulder work with two nodes. Every method
-   gets the shoulder right there (about 6° RMS realistic, 1° clean). Use the
-   upper arm + forearm pair for elbow and forearm sessions.
-2. **Report** the joint angles computed from the TSM-solved pose (conventions
-   as in §3.4). TSM's own coordinates agree for pronation/supination; use the
-   computed flexion.
-3. **The biggest gain in accuracy is still the input, not the method:** the
-   realistic condition roughly doubles every error.
-   - Raise the log rate from 10 Hz towards 30–60 Hz.
-   - Keep the full rate through the freeze.
-   - Tighten the straps.
+1. **Record torso + upper arm** for shoulder work with two nodes (about 6°
+   RMS realistic, 1° clean, with every method), and upper arm + forearm for
+   elbow and forearm sessions.
+2. **Report** the joint angles computed from the TSM-solved pose. The TSM's
+   own coordinates agree for pronation/supination; use the computed flexion.
+3. **The input matters more than the method:** the realistic condition
+   roughly doubles every error. Raise the log rate from 10 Hz towards
+   30–60 Hz, keep the full rate through the freeze, and tighten the straps.
 4. **Check every model fit against the direct sensor view** (the review page's
-   solver switch and the graph's "compare solvers" overlay), and report the
-   fit-lost time with any model-based number (§8.3.1).
-5. **Both arms:** TSM covers the right arm only. The published model could be
-   mirrored for the left arm (a modification that must be reported), or
-   Rajagopal used for the left, with the caveat about its own coordinates in
-   finding 3.
+   solver switch) and report the fit-lost time (§8.3.1).
+5. **Both arms:** the TSM could be mirrored for the left arm (a modification
+   that must be reported), or Rajagopal used for the left, with the caveat in
+   §8.2.1, finding 3.
 
 ### 8.6 Reproduce
 
@@ -2342,43 +1904,17 @@ python tools/evaluation/compare_paths.py --model $TSM --truth-model $RAJ # Thora
 
 ### 8.7 Appendix: OpenSense feasibility and partial montages (2026-09-25)
 
-The question: could OpenSim's OpenSense (Stanford, Apache-2.0 licence) replace
-the project's own calibration and joint-angle stage, and what happens when only some
-of the nodes are worn? This study came before the solver comparison above,
-and answered it on synthetic data with known true angles, with no hardware
-[`tools/evaluation/opensense_feasibility.py`]. Run on 2026-09-25 with OpenSim
-4.6.
+An earlier study, on synthetic data with known true angles, asked what
+OpenSense can recover when only some of the nodes are worn
+[`tools/evaluation/opensense_feasibility.py`]. Setup: the Rajagopal OpenSense
+model (legs, lumbar spine and pelvis position locked); a 20 s session at
+60 Hz with every arm movement at once (shoulder flexion to 140°, abduction
+to 70°, elbow 5–125°, pronation/supination 7–83°, wrist ±45°) and trunk sway
+of 8–18°; virtual nodes at random angles with 1° of noise, the subject facing
+37° from magnetic north; calibration from the neutral hold through IMUPlacer.
 
-#### 8.7.1 Setup
-
-- **Install:** `pip install opensim`, the official Stanford packages for
-  Windows / macOS / Linux, Python 3.11–3.13. No conda needed.
-- **Model:** `Rajagopal2015_opensense.osim` from `opensim-org/opensim-models`
-  (the OpenSense tutorial model). It has a trunk (torso), both upper arms, the
-  forearm bones (elbow and pronation/supination) and hands (wrist flexion and
-  deviation). The legs, lumbar spine and pelvis position were locked; the
-  pelvis rotations stand in for trunk movement.
-- **Synthetic session:** 20 s at 60 Hz with a 1 s neutral hold. Every arm
-  movement happens at once: shoulder flexion to 140°, abduction to 70°,
-  upper-arm rotation ±35°, elbow 5–125°, pronation/supination 7–83°, wrist
-  ±45° / −14–22°. The trunk tilts, leans and twists by 8–18°.
-- **Virtual sensors:**
-  - limb nodes strapped on at random angles; the torso node's +z axis points
-    forward (with a 5° tilt);
-  - the sensors' world is Z-up, and the subject faces 37° away from magnetic
-    north;
-  - 1° of orientation noise per sample.
-- **Calibration:** the average orientation over the neutral hold (Markley's
-  quaternion average), given to IMUPlacer (OpenSense's sensor-registration
-  step). Inverse kinematics runs over the whole recording. Error = model
-  coordinate − true angle, reported as RMS / maximum in degrees after the
-  neutral hold.
-
-#### 8.7.2 Results (wide shoulder ranges; RMS / max °)
-
-"—" means the angle cannot be measured with that montage (no sensor on one
-side of the joint), so it was locked and is not reported. UA = upper arm,
-FA = forearm.
+Results, RMS / max in degrees ("—" = not measurable with that montage; UA =
+upper arm, FA = forearm):
 
 | Montage (nodes) | Trunk | Shoulder flex / add / rot | Elbow | Pro/sup | Wrist flex / dev |
 |---|---|---|---|---|---|
@@ -2392,88 +1928,29 @@ FA = forearm.
 | **E2** FA + hand, upper chain left free | — | meaningless | meaningless | meaningless | 0.8 / 0.8 |
 | **F** both UAs, no torso (facing known) | — | R 16 / 10 / 17, L 12 / 11 | — | — | — |
 
-Speed: about 45–75 s per 1200 frames (about 40–65 ms per frame) on one
-processor core, which is fine for analysis after the session.
+Findings:
 
-#### 8.7.3 Findings
-
-1. **The full set of nodes works well.** With the facing handled (point 3) and
-   the shoulder's range limits widened (point 4), the elbow and wrist come out
-   at about 1–2° RMS, pronation/supination at about 3°, and the trunk under 1°.
-2. **The shoulder is the weak joint, because of how the model defines it.**
-   Rajagopal's shoulder is a flexion → adduction → rotation sequence directly
-   between the torso and the upper arm (no shoulder blade).
-   - The 19° spikes all happen with the arm raised far to the side (abduction
-     around 60–70°). There, the flexion and rotation errors are equal and
-     opposite: the model is near gimbal lock, and one rotation is shared
-     between two nearly lined-up axes.
-   - The upper arm's orientation relative to the torso is still accurate: 4.5°
-     RMS, 8.3° maximum.
-   - These are not the Y-X-Y shoulder angles that the analysis reports. Switching to
-     OpenSense would mean either accepting the model's shoulder definition, or
-     splitting the upper-arm-to-torso rotation in the analysis.
-3. **OpenSense's facing correction does not reach the fitting step.**
-   IMUPlacer's `base_imu_label` / `base_heading_axis` settings only affect how
-   the sensors are placed on the model; the data used for inverse kinematics is
-   not rotated.
-   - Symptom: a constant 40° error in trunk rotation, plus 4–5° of crosstalk
-     into trunk tilt and lean.
-   - Fix: before writing the input file (`.sto`), rotate all orientations about
-     vertical by the torso node's heading at the freeze. This is what
-     `calibrate_segments.compute_heading` already provides.
-4. **The model's default range limits must be widened for rehabilitation.** As
-   shipped, shoulder flexion is limited to ±90° (and the arms are locked).
-   With those limits, a 140° reach fails without any warning: flexion is off
-   by up to 50°, and the fit bends the trunk (up to 25°) and the elbow (up to
-   25°) to make up for it, which spoils joints that were measured correctly.
-   The test widens flexion to −90…180° and adduction to −180…90°. Range limits
-   will also hide real hypermobility, so choose limits suited to the patient.
-5. **With partial montages, OpenSense cannot recover what is not measured.** A
-   joint angle is only valid when **both** of its segments carry a node, which
-   is the same rule that `motion_capabilities.JOINTS` already follows.
-   - **Missing middle segment (C):** the forearm's orientation (3 numbers) has
-     to be shared across the shoulder, elbow and pronation/supination (5
-     movements), so there are more unknowns than measurements. The result is a
-     plausible-looking but wrong pose (elbow 36° RMS). A torso + forearm
-     montage cannot give elbow or shoulder angles.
-   - **No torso node (D, F):** the elbow and pronation/supination stay good
-     (about 1°) *if the facing is known*. Shoulder angles become "upper arm
-     relative to an assumed upright trunk", so any real trunk sway goes into
-     them (16° RMS here, with 8–18° of sway). Report them as "arm relative to
-     vertical", not as shoulder joint angles.
-   - **No torso and unknown facing (D2):** the wrong heading gets built into
-     each sensor's calibration, and errors spread to every joint, including
-     pronation/supination (25° RMS). Without a torso node the facing has to
-     come from somewhere else, e.g. `--facing-deg`.
-   - **Only the outer segments (forearm + hand, E/E2):** the wrist angle is
-     only right if the chain *above* the forearm node is left free to absorb
-     its orientation (E2: wrist 0.8°). Lock it, and the fit distorts the wrist
-     as a compromise (E: 28°). Coordinates above the forearm node come out as
-     arbitrary numbers and must be masked, not reported.
-   - **Coordinates with no node on either side** are not constrained at all.
-     The fit leaves them anywhere, so lock them or drop them from the output.
-
-#### 8.7.4 What adopting OpenSense would take
-
-- **Export:** the aligned stream written as a `DataType=Quaternion` `.sto` file
-  with `<body>_imu` columns (w,x,y,z), heading-corrected and rotated from Z-up
-  to OpenSim's axes (`sensor_to_opensim_rotations = (−90°, 0, 0)`), plus a
-  one-row calibration `.sto` from the neutral window.
-- **Montage → model mapping:**
-  - torso → `torso`
-  - upper_arm_* → `humerus_*`
-  - forearm_* → `radius_*` (it carries pronation/supination)
-  - hand_* → `hand_*`
-- **A prepared model:** legs locked, shoulder ranges widened, and coordinates
-  that are not measured locked per session.
-- **Output handling:** a mask per montage so that only measurable joints are
-  reported. The project's metrics (range of motion, speed, repetitions,
-  SPARC) then run on the model's coordinates instead of the default chain's
-  Euler angles. For the shoulder
-  definition, see point 2.
-- **Validation:** OpenSense's published validation (Al Borno et al., 2022) is
-  for the lower body; the upper-limb accuracy of *this device* still needs a
-  check against optical motion capture or a goniometer.
+1. **The full set of nodes works well:** elbow and wrist about 1–2° RMS,
+   pronation/supination about 3°, trunk under 1°. The shoulder spikes (up to
+   19°) occur near gimbal lock in the model's own shoulder definition, which
+   differs from the `YXY` angles the analysis reports.
+2. **Facing has to be applied to the data.** IMUPlacer's heading settings
+   only affect sensor placement, so all orientations must be rotated about
+   vertical by the torso node's heading before fitting (as
+   `calibrate_segments.compute_heading` provides); otherwise the trunk
+   rotation is off by about 40°.
+3. **The model's range limits must be widened for rehabilitation.** As
+   shipped, shoulder flexion is limited to ±90°, and a 140° reach then fails
+   silently while the fit distorts the trunk and elbow by up to 25°.
+4. **A partial montage cannot recover what is not measured.** A joint angle
+   is valid only when both of its segments carry a node, which is the rule
+   `motion_capabilities.JOINTS` follows. Without the middle segment (C) the
+   pose is plausible-looking but wrong; without a torso node (D, F) the
+   shoulder angles become "arm relative to vertical" and absorb trunk sway;
+   with an unknown facing (D2) errors spread to every joint; and with only
+   the outer segments (E/E2), the wrist is right only if the chain above it
+   is left free, while the coordinates above it are meaningless and must be
+   masked.
 
 ---
 
@@ -2494,6 +1971,17 @@ editing files inside it does nothing useful.
   folders; the analysis never talks to hardware.
 - **Every change is checked twice:** `hulc-ms selftest` (synthetic data, in
   CI) and `hulc-ms regress run` (real recordings, before and after).
+
+The modules around the pipeline steps (§1.2), in `tools/` unless noted:
+
+| Module | Role |
+|---|---|
+| `app.py` | The HULC-MS app: a local web page around `analyze_session.py` |
+| `validate_capture.py` | `hulc-ms validate`: checks a capture folder against chapter 2 |
+| `regress.py` | `hulc-ms regress`: the regression library of real recordings (chapter 9) |
+| `hulc_paths.py` | Where the tools write, and how one tool starts another (`tool_cmd`) |
+| `hulc-ms.py` (repository root) | The `hulc-ms` command, and the standalone build's entry point |
+| `tools/evaluation/` | Synthetic-truth studies behind the design (`timing_bench`, `compare_paths`, `opensense_feasibility`) |
 
 ### 9.2 Each change
 
@@ -2598,7 +2086,7 @@ What it has to do to replace `hulc-ms nodes` (protocol:
 [§4.3](#43-ble-protocol--talking-to-a-node); format: chapter 2):
 
 1. Enroll each board once (`0x07` segment code), or read the stored segment.
-2. At each charging checkpoint: offload every node (framed notifications,
+2. After each block: offload every node (framed notifications,
    range re-requests until complete), and store each block as a capture folder:
    `<node>.bin` (the bytes as received) + `<node>.seg.json`; a `montage.json`
    with the subject id if the app knows it.
