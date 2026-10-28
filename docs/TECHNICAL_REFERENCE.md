@@ -1871,6 +1871,32 @@ produce joint angles:
   (TSM; Seth et al. 2019), a right-arm model built for the upper limb, and
   **Rajagopal 2016**, a full-body model built for walking.
 
+**How OpenSense finds the pose.** It works in two steps.
+
+1. **Placing the virtual sensors** (IMUPlacer). With the model standing in
+   its default pose, which is set to the freeze pose, each virtual sensor is
+   attached to its body segment at the orientation its node measured during
+   the freeze. This plays the same role as the mounting offset in §5.3.
+2. **Inverse kinematics.** At every sample, the solver searches the model's
+   joint coordinates (the angle of each model joint) for the pose whose
+   virtual sensors best match the measured orientations:
+
+   ```math
+   \hat{\mathbf c}(t) = \arg\min_{\mathbf c}\ \sum_i \, d\bigl(q_i^{\text{meas}}(t),\ q_i^{\text{model}}(\mathbf c)\bigr)^2
+   ```
+
+   $\mathbf c$ is the list of the model's joint coordinates;
+   $q_i^{\text{model}}(\mathbf c)$ is the orientation of virtual sensor $i$
+   when the model is in pose $\mathbf c$; $q_i^{\text{meas}}(t)$ is what node
+   $i$ measured; and $d$ is the angle between two orientations,
+   $2\arccos\lvert q_1 \cdot q_2\rvert$ (§3.4.1). The sum adds the squared
+   mismatch of every sensor, and $\arg\min$ means "the $\mathbf c$ that makes
+   it smallest". The search keeps each coordinate within the model's range
+   limits and starts from the previous sample's pose (§8.3.1).
+
+The default chain, in contrast, uses no search: it computes each joint
+directly from its two nodes (§7.2).
+
 Neither solver changes the orientations themselves. If a sensor's reading is
 wrong (a slipped strap, magnetic disturbance, a poor freeze), both start from
 the same wrong input.
@@ -1931,17 +1957,39 @@ one that made the movement, as with a real arm. Both methods get the same
 sensor streams and calibration, and every angle goes through the same
 definitions in `metrics.py`.
 
+Each run is done in two conditions:
+
 - **clean:** 60 Hz, about 1° RMS of slowly varying sensor error
 - **realistic:** 8.3 Hz (the firmware's rate at the time; it now logs about
   10 Hz), about 3° RMS of slowly varying error per strap, and a 50 ms clock
   offset on the outer nodes
 
-Errors are RMS in degrees (lower is better). Each solver column sits next to
-the default chain from its own run.
+The "slowly varying error" imitates sensor drift and a strap that moves on
+the skin: each virtual node's reading is turned by a small extra rotation
+made of three slow waves (0.15–0.8 Hz) about random axes, scaled to 1° or
+3° RMS, plus 0.1° of sample-to-sample noise [`node_streams()` in
+`compare_paths.py`]. The clock offset makes the outer nodes read 50 ms late.
+
+For each movement, the error is the difference from the true angle at every
+sample $n$, wrapped into ±180°, summarized as its root mean square:
+
+```math
+e[n] = \theta_{\text{method}}[n] - \theta_{\text{true}}[n], \qquad
+\text{RMS} = \sqrt{\frac{1}{N}\sum_{n=1}^{N} e[n]^2}
+```
+
+$N$ is the number of samples. Squaring makes every error positive and
+weights large errors more, so an RMS of 2° means the angle is typically
+about 2° off. Lower is better.
+
+The test was run twice, once with each model as the solver. The two runs
+use different random mountings and noise, so the default chain's numbers
+differ slightly between them; compare each solver with the default column
+of its own run.
 
 **Full right arm (torso + upper arm + forearm; + hand for Rajagopal):**
 
-| DOF | clean: default | clean: Rajagopal | clean: default | clean: TSM | realistic: default | realistic: Rajagopal | realistic: default | realistic: TSM |
+| DOF | clean, Rajagopal run: default | clean: Rajagopal | clean, TSM run: default | clean: TSM | realistic, Rajagopal run: default | realistic: Rajagopal | realistic, TSM run: default | realistic: TSM |
 |---|---|---|---|---|---|---|---|---|
 | shoulder elevation | 2.7 | 2.1 | 2.7 | **2.0** | 6.0 | 5.6 | 6.2 | **5.6** |
 | shoulder axial rot. | 0.8 | 0.8 | 0.8 | 0.8 | 4.7 | 4.7 | 4.6 | 4.6 |
@@ -1969,14 +2017,20 @@ run the arm stayed there too often for it to be scored.)
 
 The shared pronation/supination error of about 8° in this table comes from
 the test, not the methods: the true angles were split in the trunk's frame,
-but the elbow's hinge is 13° off that frame. Scored against the Rajagopal
+but the elbow's hinge is 13° off that frame. Splitting the same rotation
+about axes tilted by 13° moves part of each elbow bend into the other
+angles, so the "true" pronation/supination differs from what either method
+measures about its own axes. Scored against the Rajagopal
 model's own coordinates, the default chain's error is 1.9° (clean) and 4.5°
 (realistic).
 
 #### 8.2.1 Findings
 
-1. **Both methods give the same angles.** OpenSense and the default chain
-   differ by 0.1–1.3° RMS frame by frame without a torso node, and by about 1°
+1. **Both methods give the same angles.** The frame-by-frame difference is
+   the RMS formula above with the other method in place of the truth,
+   $e[n] = \theta_{\text{OpenSense}}[n] - \theta_{\text{default}}[n]$.
+   OpenSense and the default chain differ by 0.1–1.3° RMS without a torso
+   node, and by about 1°
    or less otherwise. Errors roughly double from clean to realistic, which
    comes from the input (sampling rate, strap wobble, clock offset), not the
    method.
@@ -2003,8 +2057,9 @@ model's own coordinates, the default chain's error is 1.9° (clean) and 4.5°
    elbow and forearm (one solve wandered to −368° without them); and the
    shoulder angles left without limits, because a limited solve got stuck
    with the arm overhead.
-5. **Facing recovery** from the torso node: within 0.8–3.7° (clean) and
-   1.4–4.1° (realistic).
+5. **Facing recovery** from the torso node (§5.3): the facing that
+   calibration worked out was within 0.8–3.7° (clean) and 1.4–4.1°
+   (realistic) of the true 37°.
 
 ### 8.3 Real capture (upper arm + forearm, 2026-09-25)
 
@@ -2019,6 +2074,20 @@ each other and checks how well each fits.
 | fit residual, median / p95 | — | 5.6° / 20° | **4.4° / 16°** |
 | run time | < 1 s | ~35 s | ~10 s |
 
+The **fit residual** measures how well the fitted pose explains the
+sensors. For sensor $i$ at frame $n$, it is the angle between the measured
+orientation and the virtual sensor on the fitted model:
+
+```math
+d_i[n] = 2\arccos\bigl\lvert q_i^{\text{meas}}[n] \cdot q_i^{\text{model}}(\hat{\mathbf c}[n])\bigr\rvert
+```
+
+This is the quantity the inverse kinematics made as small as it could. The
+table gives its median over all sensors and frames (half are smaller) and
+its 95th percentile, p95 (95% are smaller) [`residual_stats()` in
+`opensense_ik.py`]. The ROM rows give each method's smallest and largest
+angle; the "vs default" row is the frame-by-frame RMS difference of §8.2.1.
+
 The residual is large where the sensors disagree with any rigid skeleton,
 here during fast movements, where the sampling rate and the timing between
 the nodes dominate.
@@ -2028,21 +2097,37 @@ the nodes dominate.
 On a re-run of the same recording, the TSM fit settled in a wrong pose for
 12 s during the wide shoulder swing: the elbow stuck at its 168° limit while
 the sensors showed an almost straight arm. Inverse kinematics starts each
-frame from the previous pose, so a fast movement sampled at about 8 Hz can
-carry the fit past the right solution. `opensense_ik.py` therefore marks
-frames where any sensor is more than 30° [`FIT_LOST_DEG`] from the fitted
-skeleton as **fit lost**: they are left out of that model's metrics and
-listed in `pose_solver.fit_lost`, `opensense_fit.csv` records the fit for
-every frame, and the review page shades those stretches. Report the fit-lost
+frame's search from the previous pose and adjusts it step by step to
+reduce the mismatch. An arm
+turning at 300°/s and sampled at about 8 Hz moves about 36° between frames,
+so the search can settle in a wrong pose that also fits the sensors
+locally, and then follow it. `opensense_ik.py` therefore takes the worst
+sensor in each frame,
+
+```math
+f[n] = \max_i\ d_i[n]
+```
+
+and marks the frame as **fit lost** when $f[n] > 30^\circ$ [`FIT_LOST_DEG`,
+`fit_series()`]. Such frames are left out of that model's metrics and
+listed in `pose_solver.fit_lost`; `opensense_fit.csv` records $f[n]$ for
+every frame; and the review page shades those stretches. Report the fit-lost
 time with any model-based number.
 
 #### 8.3.2 Torso + upper arm: the model adds no constraint (2026-10-01)
 
-With torso + upper arm, the TSM has exactly as many free coordinates as the
-two nodes measure (thorax 3 + shoulder 3), so its fit matches the nodes
-exactly (median residual 0.0°) and gives the same angles as the default
-chain. A model only adds information where the nodes measure more than it
-needs, as with a forearm node, where the elbow hinge constrains the chain.
+Counting what is measured against what the model can change shows why.
+Each node measures an orientation, which is 3 numbers. With torso + upper
+arm, the nodes give 3 + 3 = 6 numbers, and the TSM has 6 free coordinates to
+match them: 3 for the thorax and 3 for the shoulder. Six equations in six
+unknowns have an exact solution, so the fit matches the nodes exactly
+(median residual 0.0°) and gives the same angles as the default chain.
+
+Adding a forearm node adds 3 measured numbers but only 2 coordinates
+(elbow flexion and pronation/supination), because the model's elbow cannot
+bend sideways. With 9 numbers and 8 unknowns, the fit can no longer match
+every sensor exactly, and the elbow's hinge decides how a sensor error is
+shared out. That is the only place a model adds information.
 With this montage, report the default chain and use the model as a
 cross-check. Rajagopal, whose shoulder has range limits, could not follow the
 large raises and lost the fit for 9.9 s.
@@ -2124,8 +2209,10 @@ to 70°, elbow 5–125°, pronation/supination 7–83°, wrist ±45°) and trunk
 of 8–18°; virtual nodes at random angles with 1° of noise, the subject facing
 37° from magnetic north; calibration from the neutral hold through IMUPlacer.
 
-Results, RMS / max in degrees ("—" = not measurable with that montage; UA =
-upper arm, FA = forearm):
+Results are RMS errors in degrees, as defined in §8.2. Where a cell has
+several numbers, they are the movements named in the column header, in
+order; "max" is the largest single error. "—" means not measurable with that
+montage. UA = upper arm, FA = forearm.
 
 | Montage (nodes) | Trunk | Shoulder flex / add / rot | Elbow | Pro/sup | Wrist flex / dev |
 |---|---|---|---|---|---|
@@ -2155,8 +2242,12 @@ Findings:
    silently while the fit distorts the trunk and elbow by up to 25°.
 4. **A partial montage cannot recover what is not measured.** A joint angle
    is valid only when both of its segments carry a node, which is the rule
-   `motion_capabilities.JOINTS` follows. Without the middle segment (C) the
-   pose is plausible-looking but wrong; without a torso node (D, F) the
+   `motion_capabilities.JOINTS` follows. Counting as in §8.3.2 shows why.
+   In montage C, the forearm node's 3 numbers must be explained by 3
+   shoulder angles and 2 elbow angles. Five unknowns and three equations
+   have endless solutions: many combinations of shoulder and elbow angle
+   put the forearm in the same orientation, and the solver returns whichever
+   it reaches first. The pose then looks plausible but is wrong; without a torso node (D, F) the
    shoulder angles become "arm relative to vertical" and absorb trunk sway;
    with an unknown facing (D2) errors spread to every joint; and with only
    the outer segments (E/E2), the wrist is right only if the chain above it
