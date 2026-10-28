@@ -26,7 +26,7 @@ Offload names each file by node id (e.g. HULC-IMU-485C.bin), so this tool
 resolves every node's log from --capture-dir and feeds reconcile the files in
 the RIGHT order.
 Run it once per BLOCK (one mounting, offloaded at its charging checkpoint into
-its own folder — see docs/SOP.md §6, the recording routine).
+its own folder — see docs/TECHNICAL_REFERENCE.md §6.3, the recording protocol).
 
 Usage (`hulc-ms analyze …` runs this; `python tools/analyze_session.py run …` too)
 -----
@@ -143,7 +143,7 @@ def warn_segment_disagreements(nodes, capture_dir):
 
     Offload writes a `<node_id>.seg.json` sidecar carrying the segment the node
     reported for itself. The montage stays AUTHORITATIVE (source-of-truth rule,
-    docs/TECHNICAL_REFERENCE.md §3.3) — this only warns, so a swapped or
+    docs/TECHNICAL_REFERENCE.md §5.3) — this only warns, so a swapped or
     mislabeled node surfaces instead of silently binding to the wrong body part.
     Non-fatal and best-effort: a node captured on older firmware has no sidecar.
     """

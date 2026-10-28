@@ -17,5 +17,5 @@ hulc-ms.app/Contents/MacOS/hulc-ms; Linux: ./hulc-ms):
   hulc-ms nodes erase --count 2
   hulc-ms selftest
 
-The recording card and the full documentation are in the repository:
-docs/SOP.md (the operating manual; §6 is the recording routine).
+How the system works inside is in the repository:
+docs/TECHNICAL_REFERENCE.md.

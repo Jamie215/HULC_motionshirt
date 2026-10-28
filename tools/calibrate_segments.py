@@ -6,7 +6,7 @@ Turns the aligned multi-node stream (reconcile_nodes.py output) into an
 anatomically-referenced one, by solving the ONE thing the shared world frame does
 not give us: how each sensor housing sits rotated/tilted on its bone. That
 per-segment **mounting offset** is what flips every joint angle / ROM number from
-"relative only" to clinical (see docs/TECHNICAL_REFERENCE.md §5.4).
+"relative only" to clinical (see docs/TECHNICAL_REFERENCE.md chapter 6).
 
 Why this is a mounting solve, not a "resting quaternion" capture
 ---------------------------------------------------------------
@@ -57,7 +57,7 @@ NEUTRAL_QUIET_RAD_S — and that quietest window. A warm-up pause (short, and
 only slowed to ~0.06–0.09 rad/s) does not qualify; it was taken for the hold on
 a real capture and skewed every angle by 20–30°. WHICH hold depends on the
 recording's order (`--protocol`, or the montage's `calibration.protocol`):
-sync-first (default, the SOP) takes the first hold right after the sync
+sync-first (default, the recording protocol) takes the first hold right after the sync
 gesture — every node moving fast together — so setup stillness before it, of
 any length, is never taken; hold-first (older recordings) takes the first hold
 of the log. With no such hold, the first window under NEUTRAL_MAX_RAD_S, then
@@ -190,14 +190,14 @@ NEUTRAL_MAX_RAD_S = 0.10
 # A deliberate hold is far stiller and longer than a pause in the warm-up: on
 # real captures the hold's quietest 2 s sat at 0.004–0.017 rad/s for 9–42 s,
 # while warm-up pauses sat at 0.06–0.09 rad/s for 2–4 s. So the first stretch
-# that lasts the SOP's minimum hold AND reaches this quiet is the neutral hold;
+# that lasts the protocol's minimum hold AND reaches this quiet is the neutral hold;
 # the 0.10 rule above is the fallback when no stretch does.
 NEUTRAL_QUIET_RAD_S = 0.04
 NEUTRAL_MIN_HOLD_MS = 3000.0
 
 # ---- protocol order: sync gesture, THEN the neutral hold (the default) ------
 # Nodes power up and wake one by one, so the start of a log is setup of any
-# length, possibly with still stretches as long as a hold. The SOP therefore
+# length, possibly with still stretches as long as a hold. The protocol therefore
 # runs wake-up -> sync gesture -> neutral hold, and the hold is the first
 # deliberate hold that starts within SYNC_TO_HOLD_MAX_MS after a stretch of
 # SHARED motion: every node moving (2 s mean >= SYNC_MIN_RAD_S) and turning

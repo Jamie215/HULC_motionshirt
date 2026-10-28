@@ -10,7 +10,12 @@ self-contained HTML review page of the movement.
 The project has two halves that meet at one documented hand-over format, the
 **capture folder**:
 
-```mermaid
+![The two halves of the project: the nodes record on the body, the laptop (later a mobile app) offloads them over Bluetooth into one capture folder per block, and the analysis turns each folder into a block check and a review page](docs/img/diagrams/system.png)
+
+<!-- diagram: system -->
+<details><summary>Mermaid source</summary>
+
+```text
 flowchart LR
     subgraph W["The wearable (firmware/)"]
         N1["Node: torso"]
@@ -25,12 +30,14 @@ flowchart LR
         B["Block check<br/>OK / UNUSABLE"]
         V["Review page<br/>3-D movement, angles, ROM"]
     end
-    W -- "BLE, while charging" --> L
+    W -- "BLE, when idle" --> L
     W -. "BLE, later" .-> M
     L --> C
     M -.-> C
     C --> A --> B & V
 ```
+
+</details>
 
 **Where it is heading:** the nodes will hand their logs to a **mobile app**
 that stores every block during a collection period; afterwards the whole
@@ -41,15 +48,14 @@ mobile app can replace today's laptop offload without changing it.
 
 | You want to… | Read |
 |---|---|
-| take over the project: current state, open work, first steps | [`HANDOFF.md`](HANDOFF.md) |
-| build a node, install the software, run a session, review it, troubleshoot | [`docs/SOP.md`](docs/SOP.md), the operating manual ([§6](docs/SOP.md#6-recording-a-block) is the recording routine) |
-| understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
+| use the software: install it, analyze a block, the `hulc-ms` commands | this page, below |
+| understand or change how it works: the pipeline and data format, the nodes' firmware and Bluetooth protocol, the math behind every number, the solver comparison, running and fixing an analysis by hand, releasing a build | [`docs/TECHNICAL_REFERENCE.md`](docs/TECHNICAL_REFERENCE.md) |
 
 ---
 
 ## Analyzing sessions
 
-A session is recorded in **blocks** (one mounting, one charge). Each block is
+A session is recorded in **blocks** (mount, collect, offload). Each block is
 offloaded into its own capture folder. Analyzing that folder gives a **block
 check** (OK / UNUSABLE, and what to change for the next block) and a **review page** (3-D movement,
 joint angles, range of motion). There are two ways to do it, and both run the
@@ -125,18 +131,32 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 
 (In PowerShell, type `.\hulc-ms`.)
 
+The values in angle brackets (`<n>`, `<folder>`, …) are placeholders: replace
+each one with your own value, as explained below the table.
+
 | Command | What it does |
 |---|---|
 | `hulc-ms` (no command) | the HULC-MS app |
-| `hulc-ms nodes enroll --segments torso,upper_arm_r` | once per rig: power one node at a time; each node stores its body part |
-| `hulc-ms nodes offload --count 2 --out-dir ./capture/block1 --subject S01` | while charging: each node's log + the block's `montage.json` into the folder |
-| `hulc-ms analyze --capture-dir ./capture/block1 --outdir ./out/block1` | the analysis: block check printed at the end, review page `out/block1/session.html` |
-| `hulc-ms validate --capture-dir ./capture/block1` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
-| `hulc-ms nodes erase --count 2` | wipe the nodes for the next block |
-| `hulc-ms nodes check --count 2` | link check: sync and cross-node clock offset |
-| `hulc-ms regress run --data D:/regress_data` | the regression library (before and after any analysis change) |
+| `hulc-ms nodes enroll --segments <segments>` | once per set of nodes: power one node at a time; each node stores its body part |
+| `hulc-ms nodes offload --count <n> --out-dir <folder> --subject <id>` | after a block (nodes idle): each node's log + the block's `montage.json` into the folder |
+| `hulc-ms analyze --capture-dir <folder> --outdir <folder>` | the analysis: block check printed at the end, review page `session.html` in the output folder |
+| `hulc-ms validate --capture-dir <folder>` | check a capture folder against the data format (`--recursive`: a whole export of many blocks) |
+| `hulc-ms nodes erase --count <n>` | wipe the nodes for the next block |
+| `hulc-ms nodes check --count <n> --duration <s>` | link check: sync and cross-node clock offset |
+| `hulc-ms regress run --data <folder>` | the regression library (before and after any analysis change) |
 | `hulc-ms opensense fetch-models` | once, for body-model solves (Python install with OpenSim) |
 | `hulc-ms selftest` | every tool's selftest: checks an install or a build |
+
+| Placeholder | What to put | Example |
+|---|---|---|
+| `<n>` (after `--count`) | the number of nodes to connect to | `--count 2` |
+| `<segments>` (after `--segments`) | the segments to enroll, separated by commas, in the order you will power the nodes on: `torso`, `upper_arm_r`, `forearm_r`, `hand_r` (`_l` for the left side) | `--segments torso,upper_arm_r` |
+| `<s>` (after `--duration`) | how long to measure, in seconds (default 60) | `--duration 30` |
+| `<folder>` (after `--out-dir`) | a new folder for this block's offload | `--out-dir ./capture/block1` |
+| `<id>` (after `--subject`) | the participant ID (an ID, never a name) | `--subject S01` |
+| `<folder>` (after `--capture-dir`) | the block's folder to analyze or check | `--capture-dir ./capture/block1` |
+| `<folder>` (after `--outdir`) | where the analysis writes its results | `--outdir ./out/block1` |
+| `<folder>` (after `--data`) | the folder that holds the regression library's recordings | `--data D:/regress_data` |
 
 `hulc-ms <command> --help` lists the options. The `analyze` options you may need:
 
@@ -147,14 +167,56 @@ This is the same program, with a command after it. What to type for `hulc-ms`:
 - `--facing-deg`: no torso node and too little elbow bending
 - `--no-opensense`
 
+### Example: two nodes on the right arm, from enrolling to the first block
+
+Type `hulc-ms` as shown above for your installation. The example uses an
+upper-arm node and a forearm node for participant `S01`; change the
+segments, the number of nodes and the IDs to suit your session.
+
+**1. Enroll the nodes (once per set of nodes).** Power on only the node that
+the prompt asks for, press Enter, and type how the node is marked (for
+example "blue tape, 485C"). Repeat for the second node.
+
+```bash
+hulc-ms nodes enroll --segments upper_arm_r,forearm_r
+hulc-ms nodes read-segments          # check which segment each node stores
+```
+
+**2. Erase the nodes before the first block.**
+
+```bash
+hulc-ms nodes erase --count 2
+```
+
+**3. Record the block.** Strap the nodes on, then the sync movement, the
+freeze and the task. No commands are needed while recording.
+
+**4. Offload, analyze and erase.** Take the nodes off and lay them flat for
+about 10 s so that they are idle, then:
+
+```bash
+hulc-ms nodes offload --count 2 --out-dir ./capture/S01_block1 --subject S01
+hulc-ms analyze --capture-dir ./capture/S01_block1 --outdir ./out/S01_block1
+hulc-ms nodes erase --count 2
+```
+
+Each node should report `COMPLETE` after the offload; if one does not, run
+the same offload command again. The analysis prints the block check at the
+end, and the review page is `./out/S01_block1/session.html` (or drop the
+`./capture/S01_block1` folder on the HULC-MS app instead of running
+`analyze`).
+
+**5. Next block.** Re-mount the nodes and repeat steps 3 and 4 with a new
+folder name, for example `./capture/S01_block2`.
+
 ---
 
 ## Repository layout
 
 ```
-README.md, HANDOFF.md        start here
-docs/                        SOP.md (operating manual), TECHNICAL_REFERENCE.md (how it works, and why)
-  img/                       photos, screenshots and figures (make_screenshots.cjs remakes the screenshots)
+README.md                    start here
+docs/                        TECHNICAL_REFERENCE.md (how it works, and why)
+  img/                       photos, screenshots and diagrams (make_screenshots.cjs and make_diagrams.cjs redraw them)
 hardware/                    the 3-D printed case (HULC_MS_Wearable_Case.stl)
 hulc-ms.py                   the hulc-ms command (and the standalone app's entry point)
 hulc-ms.bat / .command       start the HULC-MS app from the repository; `hulc-ms …` commands
