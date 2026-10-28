@@ -3,7 +3,7 @@
 HULC Motion Shirt — check a capture folder against the data format.
 
 The capture folder is where acquisition hands over to analysis
-(docs/TECHNICAL_REFERENCE.md chapter 2): today `hulc-ms nodes offload` writes it; later the
+(docs/TECHNICAL_REFERENCE.md chapter 3): today `hulc-ms nodes offload` writes it; later the
 mobile app's export will. This checks a folder (or, with --recursive, every
 block folder under an export) before it is analysed, and says what is wrong
 in plain words:

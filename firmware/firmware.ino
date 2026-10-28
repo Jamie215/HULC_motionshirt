@@ -22,7 +22,7 @@
 //   to within a few ms, so this build adds a millisecond-resolution sync
 //   (command 0x05) and a read-only Time Info characteristic (A005) the central
 //   reads from each node to measure cross-node clock offset. See
-//   docs/TECHNICAL_REFERENCE.md §4.3 (BLE protocol), docs/TECHNICAL_REFERENCE.md §9.8 (bench checks) and tools/multinode_test.py.
+//   docs/TECHNICAL_REFERENCE.md §2.3 (BLE protocol), docs/TECHNICAL_REFERENCE.md §2.8 (bench checks) and tools/multinode_test.py.
 //
 // BLE GATT layout:
 //   Service  : IMU Motion Service         (UUID A0010000-...)
@@ -174,7 +174,7 @@
 #define UUID_SYNCINFO  "A0010005-B0CE-4A4A-8F0B-0011223344FF"
 
 // Advertising interval in ArduinoBLE 0.625ms units (1600 = 1000ms). Slowed and
-// gated to IDLE to save radio power; see docs/TECHNICAL_REFERENCE.md §4.7.
+// gated to IDLE to save radio power; see docs/TECHNICAL_REFERENCE.md §2.7.
 #define ADV_INTERVAL_UNITS    1600
 
 // Offload transfer tuning
@@ -214,7 +214,7 @@
 // ── BNO hub power note ─────────────────────────────────────────────────────
 // The hub's own devSleep was explored as a low-power idle path and DROPPED: with
 // the hub asleep the detector's EXITED wake event is coalesced/rarely delivered,
-// so shaking failed to wake IDLE→ACTIVE (see docs/TECHNICAL_REFERENCE.md §4.6.1,
+// so shaking failed to wake IDLE→ACTIVE (see docs/TECHNICAL_REFERENCE.md §2.6.1,
 // "devSleep"). All wake sources now run the hub AWAKE — the proven
 // config. Getting below hub-awake idle would need a hardware wake (a separate
 // low-power accel/motion interrupt waking the nRF), not the BNO's own devSleep.
@@ -235,12 +235,12 @@
 //              Its accel threshold + window ARE tunable via the FRS record
 //              SIG_MOTION_DETECT_CONFIG (0xC274), but the SparkFun library exposes
 //              no FRS-write path, so we cannot set it today (see docs/TECHNICAL_REFERENCE.md
-//              §4.6.3 "Tuning SIGMOTION"). Even tuned, its energy/
+//              §2.6.3 "Tuning SIGMOTION"). Even tuned, its energy/
 //              window nature is a poor fit for slow motion. Suitable only where
 //              slow-motion wake latency is acceptable (e.g. off-body standby), not
 //              for on-body capture.
 //
-// See docs/TECHNICAL_REFERENCE.md §4.6 for the full investigation (and the ~6.5 s IDLE
+// See docs/TECHNICAL_REFERENCE.md §2.6 for the full investigation (and the ~6.5 s IDLE
 // reset found with state_machine_test/). Flip IDLE_WAKE_SOURCE and reflash to A/B compare.
 #define IDLE_WAKE_DETECTOR    0
 #define IDLE_WAKE_CLASSIFIER  1
@@ -272,7 +272,7 @@
 // IDLE_WAKE_SOURCE). The 20-byte record format is identical either way, so
 // nothing downstream changes — only the fusion source. The tradeoff (power
 // measured negligible; absolute heading vs. slow yaw drift; magnetometer
-// interference) is written up in docs/TECHNICAL_REFERENCE.md §4.7.
+// interference) is written up in docs/TECHNICAL_REFERENCE.md §2.7.
 //   RV  — Rotation Vector (0x05): 9-axis, absolute heading, uses magnetometer.
 //   GRV — Game Rotation Vector (0x08): 6-axis, no mag; yaw drifts slowly.
 #define ACTIVE_FUSION_RV      0
@@ -322,12 +322,12 @@
 #define ACTIVE_SAMPLE_SLACK_DIV     4
 // RV report interval, matched to the ACTIVE log period (1000/DEFAULT_ACTIVE_HZ
 // = 100ms) so the BNO doesn't fuse and ship samples we'd only discard. Tier A;
-// rationale and the STATIC-specific follow-up are in docs/TECHNICAL_REFERENCE.md §4.7.
+// rationale and the STATIC-specific follow-up are in docs/TECHNICAL_REFERENCE.md §2.7.
 #define BNO_RV_INTERVAL_MS          100
 // STATIC-specific (slow) RV interval — Tier B. STATIC logs posture at ~1 Hz
 // (STATIC_SAMPLE_INTERVAL_MS), so running the fusion vector at that same slow
 // rate saves the reads the 10Hz rate would discard. The Classifier stays at ACTIVE_STABILITY_MS, so motion
-// detection is unaffected. See docs/TECHNICAL_REFERENCE.md §4.7.
+// detection is unaffected. See docs/TECHNICAL_REFERENCE.md §2.7.
 #define BNO_RV_STATIC_INTERVAL_MS   1000
 #define ACTIVE_STABILITY_MS         500
 // Classifier report interval when IDLE_WAKE_SOURCE == IDLE_WAKE_CLASSIFIER.
@@ -341,7 +341,7 @@
 // so the periodic report is only a keepalive. It is set long (on-change) so the
 // detector stays silent while still instead of waking the nRF ~1×/s — a small
 // idle-current trim with no loss of motion sensitivity and no effect on the
-// detector's inherent ~6.7s self-reset. See docs/TECHNICAL_REFERENCE.md §4.7.
+// detector's inherent ~6.7s self-reset. See docs/TECHNICAL_REFERENCE.md §2.7.
 #define IDLE_DETECTOR_INTERVAL_MS   60000UL      // on-change: 60s keepalive, EXITED fires immediately
 
 
@@ -620,7 +620,7 @@ bool initQSPI() {
 //
 // Only the chip is parked, not the nRF QSPI peripheral: deactivating the
 // peripheral was tried and made idle WORSE (~9mA → ~11mA) via nRF52840 Errata
-// 122, so it was removed. See docs/TECHNICAL_REFERENCE.md §4.7.
+// 122, so it was removed. See docs/TECHNICAL_REFERENCE.md §2.7.
 // ---------------------------------------------------------------------------
 static bool qspiSimpleCmd(uint8_t opcode) {
   nrf_qspi_cinstr_conf_t cinstr = {
@@ -1803,7 +1803,7 @@ void handleActiveRecording() {
 // SECTION 22b — I2C Bus Recovery
 // =============================================================================
 // If the BNO086 resets in the middle of an I2C read (see the periodic idle
-// reset investigated in docs/TECHNICAL_REFERENCE.md §4.6.2), it can be left holding
+// reset investigated in docs/TECHNICAL_REFERENCE.md §2.6.2), it can be left holding
 // SDA low, waiting for clock pulses that never come. The nRF52840 then cannot
 // issue a START (START requires SDA high first), so every transfer fails — a
 // permanent hang until power-cycle, the worst outcome for an unattended logger.
@@ -1853,7 +1853,7 @@ void setup() {
   // Enable the nRF52840 internal DC/DC (buck) regulator — more efficient than
   // the default LDO in every state (the XIAO populates the REG1 inductor). Raw
   // register write; the mbed/Cordio stack doesn't manage it. See
-  // docs/TECHNICAL_REFERENCE.md §4.7.
+  // docs/TECHNICAL_REFERENCE.md §2.7.
   NRF_POWER->DCDCEN = 1;
 
   pinMode(PIN_LED_BLUE, OUTPUT);

@@ -295,7 +295,7 @@ def report_offsets(nodes: list) -> None:
         print(f"\n  NOTE: read windows of ~{best_unc:.0f}-{med_unc:.0f} ms floor this")
         print("  measurement. Treat the offset as an upper bound, not a")
         print("  calibrated value. For true ms-level validation use a shared")
-        print("  physical event (see docs/TECHNICAL_REFERENCE.md §9.8).")
+        print("  physical event (see docs/TECHNICAL_REFERENCE.md §2.8).")
     print("====================================\n")
 
 
@@ -1032,8 +1032,9 @@ async def read_segments(montage_path, registry_path, subject, session,
                         scan_timeout):
     """Build a montage by reading each node's OWN segment assignment.
 
-    The §2.2 "user only confirms" flow: once nodes have been enrolled (their
-    segment written to the header), the montage no longer has to be hand-typed —
+    The "user only confirms" flow (docs/TECHNICAL_REFERENCE.md §3.6): once
+    nodes have been enrolled (their segment written to the header), the
+    montage no longer has to be hand-typed —
     connect to whatever is advertising, read each node's self-reported segment,
     and assemble the montage from that. Column order follows the canonical segment
     code so the result is deterministic. Nodes reporting no assignment are listed
